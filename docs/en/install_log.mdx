@@ -5,7 +5,7 @@ sourceSHA: 43c205dddc9e388e85534a59523781e91fd162be11d7944847ee072df7a84cfa
 
 # Install
 
-The platform's logging system consists of two plugins: Alauda Container Platform Log Collector and Alauda Container Platform Log Storage. This chapter will introduce you to the installation of these two plugins.
+The platform's logging system consists of three plugins:Alauda Container Platform Log Essentails ,  Alauda Container Platform Log Collector and Alauda Container Platform Log Storage. This chapter will introduce you to the installation of these plugins.
 
 :::warning
 
@@ -30,6 +30,83 @@ So , before installing the log storage plugin , you need to plan the cluster and
   - Dedicate exclusive nodes for log storage, avoiding co-deployment with other applications or platform components. Log storage requires high I/O throughput and may be affected by interference.
 
   - Mount dedicated SSD disks for log storage to significantly enhance performance.
+
+
+## Install Alauda Container Platform Log Essentials via console
+
+1. Navigate to **App Store Management** > **Cluster Plugin** and select the `global` cluster.
+
+2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Essentials** > **Install**.
+
+3. Click **Install**.
+
+## Install Alauda Container Platform Log Essentials via YAML
+
+### 1. Check available versions
+
+Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
+
+```shell
+
+# kubectl get moduleplugin | grep log-api
+log-api                       30h
+# kubectl get moduleconfig | grep log-api
+log-api-v4.2.0                30h
+
+```
+
+This indicates that the ModulePlugin `log-api` exists in the cluster and version `v4.2.0` is published.
+
+### 2. Create a ModuleInfo
+
+Create a ModuleInfo resource to install the plugin without any configuration parameters:
+
+```yaml
+apiVersion: cluster.alauda.io/v1alpha1
+kind: ModuleInfo
+metadata:
+  annotations:
+    cpaas.io/display-name: log-api
+    cpaas.io/module-name: '{"en": "Alauda Container Platform Log Essentials", "zh":
+      "Alauda Container Platform Log Essentials"}'
+  labels:
+    cpaas.io/cluster-name: global
+    cpaas.io/module-name: log-api
+    cpaas.io/module-type: plugin
+    cpaas.io/product: Platform-Center
+  name: global-b4a67e6adb67bad47544354e9bf2bdff
+spec:
+  version: v4.2.0
+```
+
+YAML field reference:
+
+| Field path | Description |
+| --- | --- |
+| `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the plugin is installed. |
+| `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
+| `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+
+### 3. Verify installation
+
+Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
+
+```shell
+kubectl get moduleinfo -l cpaas.io/module-name=log-api
+NAME                                             CLUSTER         MODULE      DISPLAY_NAME   STATUS    TARGET_VERSION   CURRENT_VERSION   NEW_VERSION
+global-e671599464a5b1717732c5ba36079795          global          log-api   log-api      Running   v4.2.0          v4.2.0           v4.2.0
+```
+
+Field explanations:
+
+* `NAME`: ModuleInfo resource name
+* `CLUSTER`: Cluster where the plugin is installed
+* `MODULE`: Plugin name
+* `DISPLAY_NAME`: Display name of the plugin
+* `STATUS`: Installation status; `Running` means successfully installed and running
+* `TARGET_VERSION`: Intended installation version
+* `CURRENT_VERSION`: Version before installation
+* `NEW_VERSION`: Latest available version for installation
 
 ## Install Alauda Container Platform Log Storage with ElasticSearch via console
 
