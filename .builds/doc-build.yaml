@@ -118,4 +118,4 @@ spec:
             value: product-docs-build
       params:
         - name: doc-base
-          value: compliance-service
+          value: logging-service
