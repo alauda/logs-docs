@@ -17,6 +17,12 @@ The platform's logging system consists of three plugins:Alauda Container Platfor
 
 ## Installation Planning
 
+:::info
+Some components of the Logging are resource-intensive. We recommend running them on infra nodes and setting nodeSelector and tolerations to ensure they run only on those nodes. If you are evaluating the product and have not provisioned infra nodes, you can remove these settings so the components run on all nodes.
+
+For guidance on planning infra nodes, see <ExternalSiteLink name="acp" href="/configure/clusters/acp-node-planning.html" children="Cluster Node Planning" />.
+:::
+
 Alauda Container Platform Log Storage plugins can be installed in any cluster, and any cluster's log storage component can be selected for log collection to interface with the storage data.
 
 So , before installing the log storage plugin , you need to plan the cluster and node where the log storage component will be installed.
@@ -77,6 +83,16 @@ metadata:
   name: global-b4a67e6adb67bad47544354e9bf2bdff
 spec:
   version: v4.2.0
+  valuesOverride:
+    ait/chart-alauda-log-api:
+      global:
+        nodeSelector:
+          node-role.kubernetes.io/infra: "true"
+        tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          value: reserved
+          operator: Equal
 ```
 
 YAML field reference:
@@ -86,6 +102,8 @@ YAML field reference:
 | `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the plugin is installed. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.valuesOverride.ait/chart-alauda-log-api.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
+| `spec.valuesOverride.ait/chart-alauda-log-api.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 ### 3. Verify installation
 
@@ -222,6 +240,16 @@ spec:
       logSystem: 7
       logWorkload: 7
   version: v4.1.0
+  valuesOverride:
+    ait/chart-alauda-log-center:
+      global:
+        nodeSelector:
+          node-role.kubernetes.io/infra: "true"
+        tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          value: reserved
+          operator: Equal
 ```
 
 YAML field reference:
@@ -270,6 +298,8 @@ YAML field reference:
 | `spec.config.ttl.logSystem` | Retention days for system logs. |
 | `spec.config.ttl.logWorkload` | Retention days for workload logs. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
+| `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 ### 3. Verify installation
 
@@ -382,6 +412,16 @@ spec:
       logPlatform: 7
       logSystem: 7
       logWorkload: 7
+  valuesOverride:
+    ait/chart-alauda-log-clickhouse:
+      global:
+        nodeSelector:
+          node-role.kubernetes.io/infra: "true"
+        tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          value: reserved
+          operator: Equal
 ```
 
 YAML field reference (ClickHouse):
@@ -410,6 +450,8 @@ YAML field reference (ClickHouse):
 | `spec.config.ttl.logSystem` | Retention days for system logs. |
 | `spec.config.ttl.logWorkload` | Retention days for workload logs. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
+| `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 
 ### 3. Verify installation
@@ -494,6 +536,16 @@ spec:
     storage:
       type: Elasticsearch
   version: v4.1.0
+  valuesOverride:
+    ait/chart-alauda-log-agent:
+      global:
+        nodeSelector:
+          node-role.kubernetes.io/infra: "true"
+        tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          value: reserved
+          operator: Equal
 ```
 
 YAML field reference (Log Collector):
@@ -518,6 +570,8 @@ YAML field reference (Log Collector):
 | `spec.config.dataSource.workload` | Collect workload logs. |
 | `spec.config.storage.type` | `Elasticsearch` or `Clickhouse`. |
 | `spec.version` | Plugin version to install. |
+| `spec.valuesOverride.ait/chart-alauda-log-agent.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
+| `spec.valuesOverride.ait/chart-alauda-log-agent.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 
 ### 3. Verify installation
