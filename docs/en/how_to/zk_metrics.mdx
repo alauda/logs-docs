@@ -1,0 +1,31 @@
+---
+weight: 40
+---
+
+# How to Collect Zookeeper Metrics
+
+::::warning
+For security reasons, the Zookeeper metrics port is disabled by default because it exposes an unauthenticated endpoint.  
+If you need to collect Zookeeper metrics, follow the steps below to safely enable the exporter.
+::::
+
+## Configuration Steps
+
+1. Find the corresponding minfo for your Log Center cluster
+    ```bash
+    kubectl get minfo | grep logcenter | grep <cluster-name>
+    ```
+
+2. Edit the minfo to enable the Zookeeper exporter
+    ```bash
+    kubectl edit minfo <minfo-name>
+    ```
+
+3. In the opened spec, add (or merge) the following configuration:
+    ```yaml
+    spec:
+    valuesOverride:
+        ait/chart-alauda-log-center:
+        zookeeper:
+            exporterEnabled: true
+    ```
