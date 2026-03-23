@@ -1,0 +1,4 @@
+interface:
+  display_name: "ACP Logging Docs"
+  short_description: "Maintain ACP Logging docs with Doom guidance"
+  default_prompt: "Use $acp-logging-docs to add or revise ACP Logging documentation in this repository while preserving Doom and repo conventions."
