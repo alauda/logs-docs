@@ -5,13 +5,13 @@ sourceSHA: 43c205dddc9e388e85534a59523781e91fd162be11d7944847ee072df7a84cfa
 
 # Installation
 
-The platform's logging system consists of three plugins:Alauda Container Platform Log Essentails ,  Alauda Container Platform Log Collector and Alauda Container Platform Log Storage. This chapter will introduce you to the installation of these plugins.
+This chapter introduces how to install the following logging plugins: **Alauda Container Platform Log Essentials**, **Alauda Container Platform Log Collector**, **Alauda Container Platform Log Storage for ClickHouse**, and **Alauda Container Platform Log Storage for Elasticsearch**.
 
 :::warning
 
 1. The `global` cluster can query the log data stored on any workload cluster within the platform. Ensure that the `global` cluster can access port 11780 of the  workload cluster.
 
-2. The Alauda Container Platform Log Storage with Clickhouse plugin needs Clickhouse operator, before installing the plugin, please ensure that the Clickhouse operator is uploaded in the cluster.
+2. **Alauda Container Platform Log Storage for ClickHouse** depends on **ClickHouse Operator**. Before installing the plugin, ensure that ClickHouse Operator has been uploaded to the cluster.
 
 :::
 
@@ -40,9 +40,9 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
 ## Install Alauda Container Platform Log Essentials via console
 
-1. Navigate to **App Store Management** > **Cluster Plugin** and select the `global` cluster.
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the `global` cluster.
 
-2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Essentials** > **Install**.
+2. Click the action button to the right of **Alauda Container Platform Log Essentials** and select **Install**.
 
 3. Click **Install**.
 
@@ -126,23 +126,29 @@ Field explanations:
 * `CURRENT_VERSION`: Version before installation
 * `NEW_VERSION`: Latest available version for installation
 
-## Install Alauda Container Platform Log Storage with ElasticSearch via console
+## Install Alauda Container Platform Log Storage for Elasticsearch via console
 
-1. Navigate to **App Store Management** > **Cluster Plugin** and select the target cluster.
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
-2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Storage with ElasticSearch** > **Install**.
+2. Click the action button to the right of **Alauda Container Platform Log Storage for Elasticsearch** and select **Install**.
 
 3. Refer to the following instructions to configure relevant parameters.
 
-   | Parameter                      | Description                                                                                                                                                                                                                                                                              |
-   | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-   | **Connect External Elasticsearch** | Keep closed to install the log storage plugin within the platform.                                                                                                                                                                                                                   |
-   | **Component installation Settings** | **LocalVolume**: Local storage, log data will be stored in the local storage path of the selected node. The advantage of this method is that the log component is directly bound to local storage, eliminating the need to access storage over the network and providing better storage performance.<br />**StorageClass**: Dynamically create storage resources using storage classes to store log data. The advantage of this method is a higher degree of flexibility; when multiple storage classes are defined for the entire cluster, administrators can select the corresponding storage class for the log components based on usage scenarios, reducing the impact of host malfunction on storage. However, the performance of StorageClass may be affected by factors such as network bandwidth and latency, and it relies on the redundancy mechanisms provided by the storage backend to achieve high availability of storage. |
-   | **Retention Period**               | The maximum time logs, events, and audit data can be retained on the cluster. Data exceeding the retention period will be automatically cleaned up.<br />**Tip**: You may back up data that needs to be retained for a long time. If you need assistance, please contact technical support personnel. |
+   | Parameter | Description |
+   | --- | --- |
+   | **External Elasticsearch** | Keep this switch off to install the platform-managed Elasticsearch storage plugin. |
+   | **size** | Choose `Single Node`, `Small Cluster`, or `Big Cluster` based on the target scale. |
+   | **Storage Method** | Choose `LocalVolume` or `StorageClass` for the storage backend. |
+   | **Log Node** | Displayed when `LocalVolume` is used. Select the Elasticsearch data nodes. |
+   | **Storage path on host** | Displayed when `LocalVolume` is used. Enter the absolute host path for Elasticsearch data. |
+   | **Capacity** | Reserve storage capacity in Gi for the current data section. The page uses this label for both Elasticsearch data and Kafka data sections. |
+   | **Log data nodes resources** | Configure CPU and memory requests and limits for Elasticsearch data nodes. |
+   | **Kafka Nodes** | Select the Kafka nodes used by the plugin. |
+   | **LogPlatform / LogWorkload / LogSystem / LogKubernetes / Kubernetes Event / Audit** | Configure retention days by log type in the **Log reserve config, in days** section. |
 
 4. Click **Install**.
 
-## Install Alauda Container Platform Log Storage with ElasticSearch via YAML
+## Install Alauda Container Platform Log Storage for Elasticsearch via YAML
 
 ### 1. Check available versions
 
@@ -178,8 +184,9 @@ metadata:
   name: <cluster>-log-center
 spec:
   config:
-    clusterView:
-      isPrivate: "true"
+    self:
+      storage:
+        disabled: false
     components:
       elasticsearch:
         address: ""
@@ -258,7 +265,7 @@ YAML field reference:
 | --- | --- |
 | `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the plugin is installed. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
-| `spec.config.clusterView.isPrivate` | Visibility setting for cluster view. |
+| `spec.config.self.storage.disabled` | Whether to disable platform-managed storage for this plugin. Keep it `false` when installing the built-in Elasticsearch storage plugin. |
 | `spec.config.components.elasticsearch.address` | External Elasticsearch address; leave empty to use platform-installed Elasticsearch. |
 | `spec.config.components.elasticsearch.basicAuthSecretName` | Secret name for external Elasticsearch basic auth; leave empty for platform Elasticsearch. |
 | `spec.config.components.elasticsearch.hostpath` | Data path for Elasticsearch. |
@@ -323,7 +330,7 @@ Field explanations:
 * `NEW_VERSION`: Latest available version for installation
 
 
-## Install Alauda Container Platform Log Storage with Clickhouse via console
+## Install Alauda Container Platform Log Storage for ClickHouse via console
 
 ### Prepare an S3 Secret
 
@@ -360,34 +367,35 @@ Field notes:
 | `REGION` | Region of the S3 service. Leave empty only if the backend does not require it. |
 | `BUCKET` | Bucket used by ClickHouse. |
 
-1. Navigate to **App Store Management** > **Cluster Plugin** and select the target cluster.
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
-2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Storage with Clickhouse** > **Install**.
+2. Click the action button to the right of **Alauda Container Platform Log Storage for ClickHouse** and select **Install**.
 
 3. Refer to the following instructions to configure relevant parameters.
 
    | Parameter | Description |
    | --- | --- |
-   | **Storage Policy** | Controls how ClickHouse stores metadata and log data.<br />Available values:<br />- **Default**: Use the standard local or StorageClass-based storage for ClickHouse data.<br />- **Separation of storage and compute**: Store ClickHouse metadata locally while storing log data in remote S3 storage.<br />This setting cannot be changed after deployment. |
-   | **Storage Type** | Displayed when **Storage Policy** is **Default**. Available values: `LocalVolume` and `StorageClass`.<br />- `LocalVolume`: Store ClickHouse log data on selected nodes and host paths.<br />- `StorageClass`: Store ClickHouse log data through the selected storage class. |
-   | **MetaData Storage Type** | Displayed when **Storage Policy** is **Separation of storage and compute**. Available values: `LocalVolume` and `StorageClass`.<br />- `LocalVolume`: Store ClickHouse metadata on selected nodes and host paths.<br />- `StorageClass`: Store ClickHouse metadata through the selected storage class. |
-   | **Log Nodes** | Displayed when the selected storage type is `LocalVolume`.<br />- Under **Default**, select the nodes that store ClickHouse log data locally.<br />- Under **Separation of storage and compute**, select the nodes that store ClickHouse metadata locally. |
-   | **Storage Path** | Displayed when **Storage Policy** is **Default** and **Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`.<br />Enter an absolute host path for storing ClickHouse log data. |
-   | **MetaData Storage Path** | Displayed when **MetaData Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`.<br />Enter an absolute host path for storing ClickHouse metadata. |
-   | **Log Instances** | Displayed when the selected storage type is `StorageClass`.<br />- Under **Default**, controls the number of ClickHouse instances created for data storage.<br />- Under **Separation of storage and compute**, controls the number of ClickHouse instances created for metadata storage. |
-   | **StorageClass** | Displayed when **Storage Policy** is **Default** and **Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse log data. |
-   | **MetaData StorageClass** | Displayed when **MetaData Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse metadata. |
-   | **Capacity** | Displayed when **Storage Policy** is **Default**. Capacity reserved for ClickHouse log data. |
-   | **MetaData Capacity** | Capacity reserved for ClickHouse metadata. The recommended value is `20 Gi`. |
-   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3`. This Secret contains the S3 endpoint, bucket, and credentials for log data storage. This setting cannot be changed after deployment. |
-   | **Retention Period** | Maximum retention time for logs, events, and audit data in the active ClickHouse storage. Data exceeding the retention period will be automatically cleaned up or moved according to the configured cold storage policy. |
-   | **Cold and Hot Separation** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set the cold data retention period for each log type. This switch cannot be changed after deployment. |
-   | **S3 for Cold Data** | Displayed when **Cold and Hot Separation** is enabled. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3` for cold data storage. This setting cannot be changed after deployment. |
-   | **Retention Time for Cold Data** | Displayed when **Cold and Hot Separation** is enabled. Configure the retention period for cold data by log type. A value of `0` means that this type of log is not transferred to cold storage. This setting can be updated after deployment. |
+   | **Size** | Choose `Single Node`, `Small Cluster`, or `Big Cluster` based on the target scale. |
+   | **Storage Policy** | Controls how ClickHouse stores metadata and log data. Available values are **Default** and **Separation of storage and compute**. This setting cannot be changed after deployment. |
+   | **Storage Method** | Displayed when **Storage Policy** is **Default**. Available values are `LocalVolume` and `StorageClass`. |
+   | **Metadata Storage Type** | Displayed when **Storage Policy** is **Separation of storage and compute**. Available values are `LocalVolume` and `StorageClass`. |
+   | **Log Node** | Displayed when local storage is used. Under **Default**, select the nodes that store ClickHouse log data locally. Under **Separation of storage and compute**, select the nodes that store ClickHouse metadata locally. |
+   | **Storage Path on Host** | Displayed when **Storage Policy** is **Default** and **Storage Method** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. |
+   | **Metadata Storage Path** | Displayed when **Metadata Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. |
+   | **Log Replicas** | Displayed when the selected storage mode uses `StorageClass`. Configure the number of ClickHouse replicas created for the active storage section. |
+   | **StorageClass** | Displayed when **Storage Policy** is **Default** and **Storage Method** is `StorageClass`. Select the StorageClass used for ClickHouse log data. |
+   | **Metadata StorageClass** | Displayed when **Metadata Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse metadata. |
+   | **Capacity** | Displayed when **Storage Policy** is **Default**. Reserve capacity in Gi for ClickHouse log data. |
+   | **Metadata Capacity** | Reserve capacity in Gi for ClickHouse metadata. The page recommends `20 Gi`. |
+   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3`. This setting cannot be changed after deployment. |
+   | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure hot-data retention days by log type in the **Log Retention Settings** section. |
+   | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after deployment. |
+   | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3` for cold data storage. This setting cannot be changed after deployment. |
+   | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the **Cold and Hot Separation Settings** section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
 
 4. Click **Install**.
 
-## Install Alauda Container Platform Log Storage with Clickhouse via YAML
+## Install Alauda Container Platform Log Storage for ClickHouse via YAML
 
 ### 1. Check available versions
 
@@ -504,6 +512,7 @@ YAML field reference (ClickHouse):
 | `spec.config.components.clickhouse.storagePolicy.type` | Storage policy type. Use `Default` for standard local or StorageClass-backed data storage, or `SSC` for separation of storage and compute. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec` | Configuration block for the `Default` storage policy. Use either `defaultSpec` or `sscSpec`. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.type` | Data storage type for the default policy: `LocalVolume` or `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.size` | Data storage size reserved for ClickHouse in Gi when the default policy is used. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.localVolumeSpec.nodes` | Node IP list used by ClickHouse data when the default policy uses `LocalVolume`. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.localVolumeSpec.path` | Local path used by ClickHouse data when the default policy uses `LocalVolume`. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.storageClassSpec.name` | StorageClass name used by ClickHouse data when the default policy uses `StorageClass`. |
@@ -536,15 +545,17 @@ YAML field reference (ClickHouse):
 | `spec.config.components.clickhouse.type` | Cluster size: `single`, `normal`, or `big`. |
 | `spec.config.components.razor.resources` | Resource requests/limits for Razor. |
 | `spec.config.components.vector.resources` | Resource requests/limits for Vector. |
+| `spec.config.components.vector.storage.path` | Local path used by Vector for temporary storage. |
+| `spec.config.components.vector.storage.size` | Storage size reserved for Vector in Gi. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
 | `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 Upgrade notes:
 
-- Upgrading the ClickHouse storage plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separation** on or off.
+- Upgrading the ClickHouse storage plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separate** on or off.
 - After deployment, only the effective retention settings, such as hot or cold retention days, should be adjusted.
-- To use this capability, upgrade **Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Storage with Clickhouse** to compatible versions together.
+- To use this capability, upgrade **Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Storage for ClickHouse** to compatible versions together.
 - In disaster recovery scenarios, use different S3 buckets for the primary and standby ClickHouse deployments.
 
 
@@ -572,9 +583,9 @@ Field explanations:
 
 ## Install Alauda Container Platform Log Collector Plugin
 
-1. Navigate to **App Store Management** > **Cluster Plugin** and select the target cluster.
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
-2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Collector** > **Install**.
+2. Click the action button to the right of **Alauda Container Platform Log Collector** and select **Install**.
 
 3. Select the **Storage Cluster** (where Alauda Container Platform Log Storage has been installed) and click ***Select/Deselect*** log types to set the scope of log collection in the cluster.
 
@@ -628,7 +639,7 @@ spec:
       system: false
       workload: true
     storage:
-      type: Elasticsearch
+      type: ElasticSearch
   version: v4.1.0
   valuesOverride:
     ait/chart-alauda-log-agent:
@@ -652,7 +663,8 @@ YAML field reference (Log Collector):
 | `metadata.labels.cpaas.io/module-name` | Must be `logagent`. |
 | `metadata.labels.cpaas.io/module-type` | Must be `plugin`. |
 | `metadata.labels.cpaas.io/product` | Product identifier, typically `Platform-Center`. |
-| `metadata.labels.logcenter.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed. |
+| `metadata.labels.logcenter.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the Elasticsearch storage plugin. |
+| `metadata.labels.logclickhouse.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the ClickHouse storage plugin. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
 | `spec.config.crossClusterDependency.logcenter` | Name of the Elasticsearch-based log storage cluster. |
 | `spec.config.crossClusterDependency.logclickhouse` | Set to `null` when using Elasticsearch storage; otherwise set to ClickHouse cluster name. |
@@ -662,7 +674,7 @@ YAML field reference (Log Collector):
 | `spec.config.dataSource.platform` | Collect platform logs. |
 | `spec.config.dataSource.system` | Collect system logs. |
 | `spec.config.dataSource.workload` | Collect workload logs. |
-| `spec.config.storage.type` | `Elasticsearch` or `Clickhouse`. |
+| `spec.config.storage.type` | `ElasticSearch` or `ClickHouse`. |
 | `spec.version` | Plugin version to install. |
 | `spec.valuesOverride.ait/chart-alauda-log-agent.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-agent.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |

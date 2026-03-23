@@ -34,6 +34,44 @@ Read [references/edit-patterns.md](references/edit-patterns.md) when creating ne
 4. Validate with `yarn lint` when content or MDX structure changed.
 5. Run `yarn build` after navigation, shared assets, OpenAPI sources, or page composition changes.
 
+## ACP console verification
+
+Use this workflow when the task says doc labels must match the live ACP console, especially for install guides and plugin pages.
+
+1. Treat the English UI as the source of truth for clickable labels, field names, and plugin names.
+2. Switch the ACP console to English before recording labels from the page.
+3. Prefer inspecting the live plugin pages under **Marketplace** > **Cluster Plugins** instead of inferring labels from existing docs.
+4. Separate two kinds of truth:
+   - UI labels come from the live install or detail page DOM.
+   - YAML field paths come from the plugin's `ModuleConfig` or installed `ModuleInfo`, not from the form labels.
+5. Do not submit install forms just to inspect labels. Open the dialog, switch options if needed to reveal conditional fields, and stop there.
+
+### Browser session pattern
+
+- In this environment, Safari WebDriver is the practical path for ACP console inspection.
+- Start `safaridriver -p 4444` and use the active browser session for authenticated inspection.
+- If direct `curl` to ACP APIs is awkward because of auth or network restrictions, use WebDriver `execute/sync` to run `fetch(...)` inside the logged-in page.
+- If Safari automation fails, first check Safari Develop settings and remote automation permissions instead of assuming the page is broken.
+
+### ACP endpoints already proven useful
+
+When checking logging plugin docs against the live console, these same-origin endpoints were useful and can be fetched from the logged-in browser session:
+
+- `/apis/cluster.alauda.io/v1alpha1/moduleconfigs`
+- `/apis/app.alauda.io/v1alpha2/modulepluginviews`
+- `/apis/cluster.alauda.io/v1alpha1/moduleinfoes`
+- `/kubernetes/<cluster>/api/v1/secrets?labelSelector=cpaas.io%2Fcredentials%3DS3`
+- `/kubernetes/<cluster>/apis/storage.k8s.io/v1/storageclasses`
+- `/kubernetes/<cluster>/api/v1/nodes?labelSelector=kubernetes.io%2Fos%3Dlinux`
+
+### Logging-specific reminders
+
+- Current console product names observed from ACP should override older wording in docs:
+  - `Alauda Container Platform Log Storage for ClickHouse`
+  - `Alauda Container Platform Log Storage for Elasticsearch`
+  - `Alauda Container Platform Log Collector`
+- For collector and storage docs, verify both the console path names and the YAML field names. They drift independently.
+
 ## Editing rules
 
 - Preserve existing frontmatter keys such as `weight`, `sourceSHA`, and `i18n` unless there is a clear reason to change them.

@@ -4,7 +4,7 @@ weight: 15
 
 # How to Use S3 Storage with ClickHouse
 
-This guide explains how to configure the ACP Log Storage with ClickHouse plugin to use S3 for log data storage.
+This guide explains how to configure **Alauda Container Platform Log Storage for ClickHouse** to use S3 for log data storage.
 
 ClickHouse supports two S3-based usage modes:
 
@@ -48,9 +48,9 @@ Secret field description:
 
 ## Use S3 for Log Data Storage
 
-When installing **Alauda Container Platform Log Storage with Clickhouse**, set **Storage Policy** to **Separation of storage and compute**.
+When installing **Alauda Container Platform Log Storage for ClickHouse**, set **Storage Policy** to **Separation of storage and compute**.
 
-Keep **Cold and Hot Separation** disabled if you want to use the S3-only mode.
+Keep **Cold and Hot Separate** disabled if you want to use the S3-only mode.
 
 In this mode:
 
@@ -70,23 +70,23 @@ Configure the following fields during installation:
 | Field | Description |
 | --- | --- |
 | **Storage Policy** | Select **Separation of storage and compute**. |
-| **MetaData Storage Type** | Select `LocalVolume` or `StorageClass` for ClickHouse metadata. |
-| **MetaData Storage Path** | Required when `LocalVolume` is selected. The default path is `/cpaas/data/clickhouse`. |
-| **MetaData StorageClass** | Required when `StorageClass` is selected. |
-| **MetaData Capacity** | Recommended value is `20 Gi`. |
+| **Metadata Storage Type** | Select `LocalVolume` or `StorageClass` for ClickHouse metadata. |
+| **Metadata Storage Path** | Required when `LocalVolume` is selected. The default path is `/cpaas/data/clickhouse`. |
+| **Metadata StorageClass** | Required when `StorageClass` is selected. |
+| **Metadata Capacity** | Recommended value is `20 Gi`. |
 | **S3 for Log Data** | Select the S3 Secret prepared in `cpaas-system`. |
-| **Cold and Hot Separation** | Keep this switch disabled for the S3-only mode. |
+| **Cold and Hot Separate** | Keep this switch disabled for the S3-only mode. |
 
-## Enable Cold and Hot Separation
+## Enable Cold and Hot Separate
 
-If you want ClickHouse to keep active data locally and transfer cold data to S3, enable **Cold and Hot Separation** during installation.
+If you want ClickHouse to keep active data locally and transfer cold data to S3, enable **Cold and Hot Separate** during installation.
 
 After the switch is enabled, configure:
 
 | Field | Description |
 | --- | --- |
-| **S3 for Cold Data** | Select the S3 Secret used for cold data storage. |
-| **Retention Time for Cold Data** | Configure the retention period for each log type before it is transferred to cold storage. |
+| **S3 for Log Cold Data** | Select the S3 Secret used for cold data storage. |
+| **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure the cold-data retention period for each log type before it is transferred to cold storage. |
 
 Behavior notes:
 
@@ -98,7 +98,7 @@ Behavior notes:
 
 - The current plugin installation workflow supports configuring one S3 target for log data storage and one S3 target for cold storage.
 - S3 credentials must be stored in Kubernetes Secrets. Do not expose access keys in plain text in installation records or screenshots.
-- The storage policy type and the cold/hot separation switch cannot be changed after deployment.
+- The storage policy type and the **Cold and Hot Separate** switch cannot be changed after deployment.
 - Cold data retention settings can be adjusted after deployment.
 - This capability is different from the log export or archive solution described in [How to Archive Logs to Third-Party Storage](./log_archive.mdx). The archive guide describes exporting logs out of the platform, while this guide describes ClickHouse native storage behavior.
 - In disaster recovery scenarios, do not configure the primary and standby ClickHouse deployments to use the same S3 bucket.

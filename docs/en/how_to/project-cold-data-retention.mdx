@@ -4,14 +4,14 @@ weight: 25
 
 # How to Set the Retention Time of Cold Data for a Project
 
-This guide explains how to configure a project-level cold data retention policy when ClickHouse cold and hot separation is enabled.
+This guide explains how to configure a project-level cold data retention policy when ClickHouse cold storage is enabled through the **Cold and Hot Separate** switch.
 
 ## Before You Begin
 
 Make sure the following conditions are met:
 
-1. The cluster uses **Alauda Container Platform Log Storage with Clickhouse**.
-2. **Cold and Hot Separation** is enabled for the ClickHouse storage plugin.
+1. The cluster uses **Alauda Container Platform Log Storage for ClickHouse**.
+2. **Cold and Hot Separate** is enabled for the ClickHouse storage plugin.
 3. A cold data S3 Secret has already been configured for the ClickHouse storage plugin.
 4. Project-level log policy is enabled for the target project.
 
