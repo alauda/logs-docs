@@ -36,6 +36,7 @@ Clickhouse is a high-performance columnar database designed for Online Analytica
 - Real-time analysis: Capable of processing real-time data streams, suitable for real-time data analysis scenarios.
 - High throughput: Optimized for the performance of large-scale data writing and querying, making it very suitable for big data scenarios.
 - Flexible SQL support: Compatible with standard SQL, easy to get started, reducing the usage threshold.
+- Flexible storage planning: Supports S3-backed storage planning for ClickHouse data and tiered cold storage scenarios.
 
 ## Function Comparison
 
@@ -55,3 +56,5 @@ Clickhouse is a high-performance columnar database designed for Online Analytica
 - If you depend on the platform's Jenkins pipeline or service mesh features, it is recommended that you continue to use the ACP Log Storage with ElasticSearch plugin.
 
 - If you have high requirements for the performance and resource consumption of the log component but only have basic needs for log querying, it is recommended that you choose to use the ACP Log Storage with Clickhouse plugin.
+
+- If you need to integrate object storage or use S3-based cold and hot separation for ClickHouse log data, it is recommended that you evaluate the ACP Log Storage with Clickhouse plugin first.

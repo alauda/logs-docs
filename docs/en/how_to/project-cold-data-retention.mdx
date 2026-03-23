@@ -1,0 +1,72 @@
+---
+weight: 25
+---
+
+# How to Set the Retention Time of Cold Data for a Project
+
+This guide explains how to configure a project-level cold data retention policy when ClickHouse cold and hot separation is enabled.
+
+## Before You Begin
+
+Make sure the following conditions are met:
+
+1. The cluster uses **Alauda Container Platform Log Storage with Clickhouse**.
+2. **Cold and Hot Separation** is enabled for the ClickHouse storage plugin.
+3. A cold data S3 Secret has already been configured for the ClickHouse storage plugin.
+4. Project-level log policy is enabled for the target project.
+
+## About Project-Level Retention Settings
+
+Project-level settings override the default retention behavior for logs that belong to the specified project.
+
+Use the following labels on the `Project` resource:
+
+| Label | Description |
+| --- | --- |
+| `cpaas.io/project.hotDataRetentionDays` | Retention time of hot data kept in active ClickHouse storage. |
+| `cpaas.io/project.coldDataRetentionDays` | Retention time of cold data after it is transferred to S3 cold storage. |
+| `cpaas.io/project.logPolicyEnabled` | Enables the project-level log policy. |
+
+Legacy labels still exist in some environments, but new configurations should use the labels above.
+
+## Edit the Project Resource
+
+1. Log in to the `global` cluster.
+2. Open the target project resource:
+
+   ```bash
+   kubectl edit project <project-name>
+   ```
+
+3. Add or update the following labels:
+
+   ```yaml
+   apiVersion: auth.alauda.io/v1
+   kind: Project
+   metadata:
+     name: bookinfo
+     labels:
+       cpaas.io/project.hotDataRetentionDays: '7'
+       cpaas.io/project.coldDataRetentionDays: '30'
+       cpaas.io/project.logPolicyEnabled: 'true'
+   ```
+
+## Label Behavior
+
+- `cpaas.io/project.hotDataRetentionDays`
+  Controls how long the project's hot data remains in active ClickHouse storage before it is moved or deleted according to the storage policy.
+- `cpaas.io/project.coldDataRetentionDays`
+  Controls how long the project's cold data is retained after it has been transferred to S3.
+- `cpaas.io/project.logPolicyEnabled`
+  Must be set to `true` for the project-level retention policy to take effect.
+
+## Version Notes
+
+- In ACP 4.2 environments, some old and new labels may coexist because of compatibility handling.
+- In ACP 4.3 and later environments, use the new labels as the source of truth.
+- If your environment still contains legacy labels such as `cpaas.io/project.esIndicesKeepDays` or `cpaas.io/project.esPolicyEnabled`, prefer the new labels for new configurations.
+
+## Related Topics
+
+- For plugin-side cold storage configuration, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
+- For ClickHouse installation parameters, see [Installation](../install_log.mdx).

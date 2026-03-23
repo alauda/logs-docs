@@ -325,16 +325,65 @@ Field explanations:
 
 ## Install Alauda Container Platform Log Storage with Clickhouse via console
 
+### Prepare an S3 Secret
+
+If you want to use S3 as the ClickHouse log data storage or cold data storage, first create an S3 Secret in the `cpaas-system` namespace of the target storage cluster.
+
+The Secret must include the label `cpaas.io/credentials: S3`. The plugin installation page filters available Secrets by this label.
+
+Example:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickhouse-s3-config
+  namespace: cpaas-system
+  labels:
+    cpaas.io/credentials: S3
+type: Opaque
+stringData:
+  ACCESS_KEY_ID: <access-key-id>
+  SECRET_ACCESS_KEY: <secret-access-key>
+  ENDPOINT: https://<s3-endpoint>
+  REGION: <region>
+  BUCKET: <bucket-name>
+```
+
+Field notes:
+
+| Field | Description |
+| --- | --- |
+| `ACCESS_KEY_ID` | Access key for the S3 service. |
+| `SECRET_ACCESS_KEY` | Secret key for the S3 service. |
+| `ENDPOINT` | S3 service endpoint. |
+| `REGION` | Region of the S3 service. Leave empty only if the backend does not require it. |
+| `BUCKET` | Bucket used by ClickHouse. |
+
 1. Navigate to **App Store Management** > **Cluster Plugin** and select the target cluster.
 
 2. In the **Plugins** tab, click the action button to the right of **Alauda Container Platform Log Storage with Clickhouse** > **Install**.
 
 3. Refer to the following instructions to configure relevant parameters.
 
-   | Parameter                      | Description                                                                                                                                                                                                                                                                              |
-   | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-   | **Component installation Settings** | **LocalVolume**: Local storage, log data will be stored in the local storage path of the selected node. The advantage of this method is that the log component is directly bound to local storage, eliminating the need to access storage over the network and providing better storage performance.<br />**StorageClass**: Dynamically create storage resources using storage classes to store log data. The advantage of this method is a higher degree of flexibility; when multiple storage classes are defined for the entire cluster, administrators can select the corresponding storage class for the log components based on usage scenarios, reducing the impact of host malfunction on storage. However, the performance of StorageClass may be affected by factors such as network bandwidth and latency, and it relies on the redundancy mechanisms provided by the storage backend to achieve high availability of storage. |
-   | **Retention Period**               | The maximum time logs, events, and audit data can be retained on the cluster. Data exceeding the retention period will be automatically cleaned up.<br />**Tip**: You may back up data that needs to be retained for a long time. If you need assistance, please contact technical support personnel. |
+   | Parameter | Description |
+   | --- | --- |
+   | **Storage Policy** | Controls how ClickHouse stores metadata and log data.<br />Available values:<br />- **Default**: Use the standard local or StorageClass-based storage for ClickHouse data.<br />- **Separation of storage and compute**: Store ClickHouse metadata locally while storing log data in remote S3 storage.<br />This setting cannot be changed after deployment. |
+   | **Storage Type** | Displayed when **Storage Policy** is **Default**. Available values: `LocalVolume` and `StorageClass`.<br />- `LocalVolume`: Store ClickHouse log data on selected nodes and host paths.<br />- `StorageClass`: Store ClickHouse log data through the selected storage class. |
+   | **MetaData Storage Type** | Displayed when **Storage Policy** is **Separation of storage and compute**. Available values: `LocalVolume` and `StorageClass`.<br />- `LocalVolume`: Store ClickHouse metadata on selected nodes and host paths.<br />- `StorageClass`: Store ClickHouse metadata through the selected storage class. |
+   | **Log Nodes** | Displayed when the selected storage type is `LocalVolume`.<br />- Under **Default**, select the nodes that store ClickHouse log data locally.<br />- Under **Separation of storage and compute**, select the nodes that store ClickHouse metadata locally. |
+   | **Storage Path** | Displayed when **Storage Policy** is **Default** and **Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`.<br />Enter an absolute host path for storing ClickHouse log data. |
+   | **MetaData Storage Path** | Displayed when **MetaData Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`.<br />Enter an absolute host path for storing ClickHouse metadata. |
+   | **Log Instances** | Displayed when the selected storage type is `StorageClass`.<br />- Under **Default**, controls the number of ClickHouse instances created for data storage.<br />- Under **Separation of storage and compute**, controls the number of ClickHouse instances created for metadata storage. |
+   | **StorageClass** | Displayed when **Storage Policy** is **Default** and **Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse log data. |
+   | **MetaData StorageClass** | Displayed when **MetaData Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse metadata. |
+   | **Capacity** | Displayed when **Storage Policy** is **Default**. Capacity reserved for ClickHouse log data. |
+   | **MetaData Capacity** | Capacity reserved for ClickHouse metadata. The recommended value is `20 Gi`. |
+   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3`. This Secret contains the S3 endpoint, bucket, and credentials for log data storage. This setting cannot be changed after deployment. |
+   | **Retention Period** | Maximum retention time for logs, events, and audit data in the active ClickHouse storage. Data exceeding the retention period will be automatically cleaned up or moved according to the configured cold storage policy. |
+   | **Cold and Hot Separation** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set the cold data retention period for each log type. This switch cannot be changed after deployment. |
+   | **S3 for Cold Data** | Displayed when **Cold and Hot Separation** is enabled. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3` for cold data storage. This setting cannot be changed after deployment. |
+   | **Retention Time for Cold Data** | Displayed when **Cold and Hot Separation** is enabled. Configure the retention period for cold data by log type. A value of `0` means that this type of log is not transferred to cold storage. This setting can be updated after deployment. |
 
 4. Click **Install**.
 
@@ -357,7 +406,7 @@ This indicates that the ModulePlugin `logclickhouse` exists in the cluster and v
 
 ### 2. Create a ModuleInfo
 
-Create a ModuleInfo resource to install the plugin without any configuration parameters:
+Create a ModuleInfo resource to install the plugin. The following example uses **Separation of storage and compute** together with S3-backed cold storage:
 
 ```yaml
 apiVersion: cluster.alauda.io/v1alpha1
@@ -372,10 +421,34 @@ spec:
   version: v4.1.0
   config:
     components:
-      storageClassConfig:
-        type: LocalVolume
-        name: ""
       clickhouse:
+        storagePolicy:
+          type: SSC
+          sscSpec:
+            metaStorage:
+              type: LocalVolume
+              size: 20
+              localVolumeSpec:
+                nodes:
+                  - xxx.xxx.xxx.xx
+                path: /cpaas/data/clickhouse
+            dataStorage:
+              type: S3
+              s3Spec:
+                credentials: clickhouse-s3-config
+        tieredPolicy:
+          enabled: true
+          coldStorage:
+            type: S3
+            s3Spec:
+              credentials: clickhouse-cold-s3-config
+          coldTTL:
+            audit: 30
+            event: 30
+            logKubernetes: 30
+            logPlatform: 30
+            logSystem: 30
+            logWorkload: 30
         resources:
           limits:
             cpu: "2"
@@ -383,12 +456,14 @@ spec:
           requests:
             cpu: 200m
             memory: 256Mi
-        k8sNodes:
-          - xxx.xxx.xxx.xx
-        hostpath: /cpaas/data/clickhouse
-        nodeReplicas: 1
-        nodeStorageSize: 200
-        type: single
+        ttl:
+          audit: 180
+          event: 180
+          logKubernetes: 7
+          logPlatform: 7
+          logSystem: 7
+          logWorkload: 7
+        type: normal
       razor:
         resources:
           limits:
@@ -405,13 +480,6 @@ spec:
           requests:
             cpu: 10m
             memory: 256Mi
-    ttl:
-      audit: 180
-      event: 180
-      logKubernetes: 7
-      logPlatform: 7
-      logSystem: 7
-      logWorkload: 7
   valuesOverride:
     ait/chart-alauda-log-clickhouse:
       global:
@@ -433,25 +501,51 @@ YAML field reference (ClickHouse):
 | `metadata.labels.cpaas.io/module-name` | Must be `logclickhouse`. |
 | `metadata.labels.cpaas.io/module-type` | Must be `plugin`. |
 | `spec.version` | Plugin version to install. |
-| `spec.config.components.storageClassConfig.type` | Storage type for ClickHouse data: `LocalVolume` or `StorageClass`. |
-| `spec.config.components.storageClassConfig.name` | StorageClass name when type is `StorageClass`; keep empty for `LocalVolume`. |
+| `spec.config.components.clickhouse.storagePolicy.type` | Storage policy type. Use `Default` for standard local or StorageClass-backed data storage, or `SSC` for separation of storage and compute. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec` | Configuration block for the `Default` storage policy. Use either `defaultSpec` or `sscSpec`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.type` | Data storage type for the default policy: `LocalVolume` or `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.localVolumeSpec.nodes` | Node IP list used by ClickHouse data when the default policy uses `LocalVolume`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.localVolumeSpec.path` | Local path used by ClickHouse data when the default policy uses `LocalVolume`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.storageClassSpec.name` | StorageClass name used by ClickHouse data when the default policy uses `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.storageClassSpec.replicas` | Replica count used by ClickHouse data when the default policy uses `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec` | Configuration block for the `SSC` storage policy. Use either `defaultSpec` or `sscSpec`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.type` | Metadata storage type for `SSC`: `LocalVolume` or `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.localVolumeSpec.nodes` | Node IP list used by ClickHouse metadata when `SSC` uses `LocalVolume`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.localVolumeSpec.path` | Local path used by ClickHouse metadata when `SSC` uses `LocalVolume`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.storageClassSpec.name` | StorageClass name used by ClickHouse metadata when `SSC` uses `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.storageClassSpec.replicas` | Replica count used by ClickHouse metadata when `SSC` uses `StorageClass`. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.metaStorage.size` | Metadata capacity reserved for ClickHouse in Gi. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.dataStorage.type` | Storage type for ClickHouse log data in `SSC`. Currently only `S3` is supported. |
+| `spec.config.components.clickhouse.storagePolicy.sscSpec.dataStorage.s3Spec.credentials` | Secret name in `cpaas-system` that contains S3 credentials and endpoint information for log data storage. |
+| `spec.config.components.clickhouse.tieredPolicy.enabled` | Enables or disables cold and hot separation. |
+| `spec.config.components.clickhouse.tieredPolicy.coldStorage.type` | Storage type for cold data. Currently only `S3` is supported. |
+| `spec.config.components.clickhouse.tieredPolicy.coldStorage.s3Spec.credentials` | Secret name in `cpaas-system` for cold data S3 storage. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.audit` | Retention days before audit data is transferred to cold storage. Set `0` to disable transfer for this type. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.event` | Retention days before event data is transferred to cold storage. Set `0` to disable transfer for this type. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.logKubernetes` | Retention days before Kubernetes logs are transferred to cold storage. Set `0` to disable transfer for this type. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.logPlatform` | Retention days before platform logs are transferred to cold storage. Set `0` to disable transfer for this type. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.logSystem` | Retention days before system logs are transferred to cold storage. Set `0` to disable transfer for this type. |
+| `spec.config.components.clickhouse.tieredPolicy.coldTTL.logWorkload` | Retention days before workload logs are transferred to cold storage. Set `0` to disable transfer for this type. |
 | `spec.config.components.clickhouse.resources` | Resource requests/limits for ClickHouse. |
-| `spec.config.components.clickhouse.k8sNodes` | Node IP list for ClickHouse when using `LocalVolume`. |
-| `spec.config.components.clickhouse.hostpath` | Local path for ClickHouse data when using `LocalVolume`. |
-| `spec.config.components.clickhouse.nodeReplicas` | Replica count when using `StorageClass`. |
-| `spec.config.components.clickhouse.nodeStorageSize` | Storage size for ClickHouse data (Gi). |
+| `spec.config.components.clickhouse.ttl.audit` | Retention days for audit data in active ClickHouse storage. |
+| `spec.config.components.clickhouse.ttl.event` | Retention days for event data in active ClickHouse storage. |
+| `spec.config.components.clickhouse.ttl.logKubernetes` | Retention days for Kubernetes logs in active ClickHouse storage. |
+| `spec.config.components.clickhouse.ttl.logPlatform` | Retention days for platform logs in active ClickHouse storage. |
+| `spec.config.components.clickhouse.ttl.logSystem` | Retention days for system logs in active ClickHouse storage. |
+| `spec.config.components.clickhouse.ttl.logWorkload` | Retention days for workload logs in active ClickHouse storage. |
 | `spec.config.components.clickhouse.type` | Cluster size: `single`, `normal`, or `big`. |
 | `spec.config.components.razor.resources` | Resource requests/limits for Razor. |
 | `spec.config.components.vector.resources` | Resource requests/limits for Vector. |
-| `spec.config.ttl.audit` | Retention days for audit data. |
-| `spec.config.ttl.event` | Retention days for event data. |
-| `spec.config.ttl.logKubernetes` | Retention days for Kubernetes logs. |
-| `spec.config.ttl.logPlatform` | Retention days for platform logs. |
-| `spec.config.ttl.logSystem` | Retention days for system logs. |
-| `spec.config.ttl.logWorkload` | Retention days for workload logs. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
 | `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
+
+Upgrade notes:
+
+- Upgrading the ClickHouse storage plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separation** on or off.
+- After deployment, only the effective retention settings, such as hot or cold retention days, should be adjusted.
+- To use this capability, upgrade **Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Storage with Clickhouse** to compatible versions together.
+- In disaster recovery scenarios, use different S3 buckets for the primary and standby ClickHouse deployments.
 
 
 ### 3. Verify installation

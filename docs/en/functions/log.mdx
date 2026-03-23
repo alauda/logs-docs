@@ -73,6 +73,10 @@ You can differentiate the retention time for **Application Logs** on the platfor
 Project policies only apply to **Application Logs** under a specific project. After setting a project policy, the retention time of all application logs under that project will follow the project policy.
 :::
 
+:::info
+If the storage cluster uses ClickHouse and **Cold and Hot Separation** is enabled, project-level retention can use separate hot-data and cold-data retention settings. For the current label set and examples, see [How to Set the Retention Time of Cold Data for a Project](../how_to/project-cold-data-retention.mdx).
+:::
+
 ### Platform Administrator Sets Retention Policies
 
 1. In the left navigation bar, click **Operations Center** > **Logs** > **Policy Management**.
@@ -125,14 +129,17 @@ Project policies only apply to **Application Logs** under a specific project. Af
    generation: 1
    labels:
      cpaas.io/project: bookinfo
-     cpaas.io/project.esIndicesKeepDays: '7' # Retention duration of application logs under the project
-     cpaas.io/project.esPolicyEnabled: 'true' # Enable project policy
+     cpaas.io/project.hotDataRetentionDays: '7' # Hot data retention under the project
+     cpaas.io/project.coldDataRetentionDays: '30' # Cold data retention after transfer to S3 cold storage
+     cpaas.io/project.logPolicyEnabled: 'true' # Enable project policy
      cpaas.io/project.id: '95447321'
      cpaas.io/project.level: '1'
      cpaas.io/project.parent: ''
    name: bookinfo
    ### More yaml information that is not involved in modification is omitted.
    ```
+
+   In some ACP 4.2 environments, legacy labels such as `cpaas.io/project.esIndicesKeepDays` and `cpaas.io/project.esPolicyEnabled` may still coexist for compatibility. Use the new labels above for new configurations.
 
 ## Configure Partial Application Log Exclusion from Collection
 
