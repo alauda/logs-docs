@@ -16,7 +16,7 @@ The logging system consists of the following core functional modules:
    - Log collection: Supports the collection of standard output logs, file logs, Kubernetes events, and audits.
 
 2. Log Storage
-   - Two different log storage solutions are provided based on the open-source components Clickhouse and ElasticSearch.
+   - Two different log storage solutions are provided based on the open-source components ClickHouse and Elasticsearch.
    - Log Storage: Supports long-term storage of log files.
    - Log Storage Time Management: Supports management of log storage duration at the project level.
 
@@ -38,7 +38,7 @@ nevermore is installed as a daemonset in the cpaas-system namespace of each clus
 
 ### Data Collection Process
 
-After nevermore collects audit/event/log information, it sends the data to the log storage cluster, undergoing authentication by Razor before being ultimately stored in ElasticSearch or ClickHouse.
+After nevermore collects audit/event/log information, it sends the data to the log storage cluster, undergoing authentication by Razor before being ultimately stored in Elasticsearch or ClickHouse.
 
 ## Log Consumption and Storage
 
@@ -47,20 +47,20 @@ After nevermore collects audit/event/log information, it sends the data to the l
 Razor is responsible for authentication and receiving and forwarding log messages.
 
 - After Razor receives requests sent by nevermore from various workload clusters, it first authenticates using the Token in the request. If authentication fails, the request is denied.
-- If the installed log storage component is ElasticSearch, it writes the corresponding logs into the Kafka cluster.
-- If the installed log storage component is Clickhouse, it passes the corresponding logs to Vector, which are ultimately written into Clickhouse.
+- If the installed log storage component is Elasticsearch, it writes the corresponding logs into the Kafka cluster.
+- If the installed log storage component is ClickHouse, it passes the corresponding logs to Vector, which are ultimately written into ClickHouse.
 
 ### Lanaya
 
-Lanaya is responsible for consuming and forwarding log data in the ElasticSearch log storage link.
+Lanaya is responsible for consuming and forwarding log data in the Elasticsearch log storage link.
 
 - Lanaya subscribes to topics in Kafka. After receiving the messages from the subscription, it decompresses the messages.
 - After decompression, it preprocesses the messages by adding necessary fields, transforming fields, and splitting data.
-- Finally, it stores the messages in the corresponding index of ElasticSearch based on the message's time and type.
+- Finally, it stores the messages in the corresponding index of Elasticsearch based on the message's time and type.
 
 ### Vector
 
-Vector is responsible for processing and forwarding log data in the Clickhouse log storage link, ultimately storing the logs in the corresponding table in Clickhouse.
+Vector is responsible for processing and forwarding log data in the ClickHouse log storage link, ultimately storing the logs in the corresponding table in ClickHouse.
 
 ## Log Visualization
 
@@ -70,4 +70,4 @@ Vector is responsible for processing and forwarding log data in the Clickhouse l
 - Event Query /platform/events.alauda.io/v1
 - Audit Query /platform/audits.alauda.io/v1
 
-2. The requests are processed by the advanced API component Courier, which queries the log data from the log storage clusters ElasticSearch or Clickhouse and returns it to the page.
+2. The requests are processed by the advanced API component Courier, which queries the log data from the log storage clusters Elasticsearch or ClickHouse and returns it to the page.

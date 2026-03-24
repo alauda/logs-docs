@@ -391,7 +391,7 @@ Field notes:
    | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure hot-data retention days by log type in the **Log Retention Settings** section. |
    | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after deployment. |
    | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3` for cold data storage. This setting cannot be changed after deployment. |
-   | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the **Cold and Hot Separation Settings** section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
+| **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the cold-storage settings section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
 
 4. Click **Install**.
 

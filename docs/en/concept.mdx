@@ -62,7 +62,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 - **Default**: Store ClickHouse data in local host paths or a StorageClass.
 - **Separation of storage and compute**: Store ClickHouse metadata locally or in a StorageClass, while storing log table data in remote S3 storage.
 
-### Cold and Hot Separation
+### Cold and Hot Separate
 
 **Description**: A tiered storage model for ClickHouse. Active data remains in the current ClickHouse storage, while cold data is transferred to S3 after the configured retention threshold is reached. This model is used when long-term retention is needed without keeping all data in active storage.
 
