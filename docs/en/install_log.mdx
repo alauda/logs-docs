@@ -367,6 +367,30 @@ Field notes:
 | `REGION` | Region of the S3 service. Leave empty only if the backend does not require it. |
 | `BUCKET` | Bucket used by ClickHouse. |
 
+If the S3 endpoint uses `https`, also create the following CA certificate Secret in the same cluster before installing the plugin:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickhouse-ca-certificates
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  ca-certificates.crt: |
+    -----BEGIN CERTIFICATE-----
+    <ca-certificate-content>
+    -----END CERTIFICATE-----
+```
+
+HTTPS S3 CA Secret requirements:
+
+| Field | Requirement |
+| --- | --- |
+| `metadata.name` | Must be `clickhouse-ca-certificates`. |
+| `metadata.namespace` | Must be `cpaas-system`. |
+| `stringData.ca-certificates.crt` | Replace only this field with the CA certificate chain required by the HTTPS S3 endpoint. |
+
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
 2. Click the action button to the right of **Alauda Container Platform Log Storage for ClickHouse** and select **Install**.
