@@ -18,7 +18,7 @@ This chapter introduces how to install the following logging plugins: **Alauda C
 ## Installation Planning
 
 :::info
-Some components of the Logging are resource-intensive. We recommend running them on infra nodes and setting nodeSelector and tolerations to ensure they run only on those nodes. If you are evaluating the product and have not provisioned infra nodes, you can remove these settings so the components run on all nodes.
+Some components of the Logging are resource-intensive. We recommend running them on infra nodes through plugin configuration. The exact scheduling fields differ by plugin. If you are evaluating the product and have not provisioned infra nodes, you can remove these settings so the components run on all nodes.
 
 For guidance on planning infra nodes, see <ExternalSiteLink name="acp" href="/configure/clusters/acp-node-planning.html" children="Cluster Node Planning" />.
 :::
@@ -38,7 +38,9 @@ So , before installing the log storage plugin , you need to plan the cluster and
   - Mount dedicated SSD disks for log storage to significantly enhance performance.
 
 
-## Install Alauda Container Platform Log Essentials via console
+## Install Alauda Container Platform Log Essentials
+
+### Console
 
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the `global` cluster.
 
@@ -46,9 +48,9 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
 3. Click **Install**.
 
-## Install Alauda Container Platform Log Essentials via YAML
+### YAML
 
-### 1. Check available versions
+1. Check available versions
 
 Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
 
@@ -63,7 +65,7 @@ log-api-v4.2.0                30h
 
 This indicates that the ModulePlugin `log-api` exists in the cluster and version `v4.2.0` is published.
 
-### 2. Create a ModuleInfo
+2. Create a ModuleInfo
 
 Create a ModuleInfo resource to install the plugin without any configuration parameters:
 
@@ -105,7 +107,7 @@ YAML field reference:
 | `spec.valuesOverride.ait/chart-alauda-log-api.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-api.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
-### 3. Verify installation
+3. Verify installation
 
 Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
 
@@ -126,7 +128,9 @@ Field explanations:
 * `CURRENT_VERSION`: Version before installation
 * `NEW_VERSION`: Latest available version for installation
 
-## Install Alauda Container Platform Log Storage for Elasticsearch via console
+## Install Alauda Container Platform Log Storage for Elasticsearch
+
+### Console
 
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
@@ -148,9 +152,9 @@ Field explanations:
 
 4. Click **Install**.
 
-## Install Alauda Container Platform Log Storage for Elasticsearch via YAML
+### YAML
 
-### 1. Check available versions
+1. Check available versions
 
 Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
 
@@ -165,7 +169,7 @@ logcenter-v4.1.0                30h
 
 This indicates that the ModulePlugin `logcenter` exists in the cluster and version `v4.1.0` is published.
 
-### 2. Create a ModuleInfo
+2. Create a ModuleInfo
 
 Create a ModuleInfo resource to install the plugin without any configuration parameters:
 
@@ -308,7 +312,7 @@ YAML field reference:
 | `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
-### 3. Verify installation
+3. Verify installation
 
 Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
 
@@ -329,67 +333,32 @@ Field explanations:
 * `CURRENT_VERSION`: Version before installation
 * `NEW_VERSION`: Latest available version for installation
 
+### Placement on Infra Nodes
 
-## Install Alauda Container Platform Log Storage for ClickHouse via console
+If you want the Elasticsearch storage plugin workloads to run on dedicated infra nodes, use the plugin YAML configuration instead of patching the generated workloads after installation.
 
-### Prepare an S3 Secret
-
-If you want to use S3 as the ClickHouse log data storage or cold data storage, first create an S3 Secret in the `cpaas-system` namespace of the target storage cluster.
-
-The Secret must include the label `cpaas.io/credentials: S3`. The plugin installation page filters available Secrets by this label.
-
-Example:
+Configure the following fields in `spec.valuesOverride.ait/chart-alauda-log-center.global`:
 
 ```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: clickhouse-s3-config
-  namespace: cpaas-system
-  labels:
-    cpaas.io/credentials: S3
-type: Opaque
-stringData:
-  ACCESS_KEY_ID: <access-key-id>
-  SECRET_ACCESS_KEY: <secret-access-key>
-  ENDPOINT: https://<s3-endpoint>
-  REGION: <region>
-  BUCKET: <bucket-name>
+valuesOverride:
+  ait/chart-alauda-log-center:
+    global:
+      nodeSelector:
+        node-role.kubernetes.io/infra: "true"
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          value: reserved
+          operator: Equal
 ```
 
-Field notes:
+Before applying these scheduling rules, make sure your infra node planning and local storage placement are compatible. For the node planning considerations, see [Planning Infra Nodes for Logging Storage](./how_to/infra_nodes.mdx).
 
-| Field | Description |
-| --- | --- |
-| `ACCESS_KEY_ID` | Access key for the S3 service. |
-| `SECRET_ACCESS_KEY` | Secret key for the S3 service. |
-| `ENDPOINT` | S3 service endpoint. |
-| `REGION` | Region of the S3 service. Leave empty only if the backend does not require it. |
-| `BUCKET` | Bucket used by ClickHouse. |
+## Install Alauda Container Platform Log Storage for ClickHouse
 
-If the S3 endpoint uses `https`, also create the following CA certificate Secret in the same cluster before installing the plugin:
+### Console
 
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: clickhouse-ca-certificates
-  namespace: cpaas-system
-type: Opaque
-stringData:
-  ca-certificates.crt: |
-    -----BEGIN CERTIFICATE-----
-    <ca-certificate-content>
-    -----END CERTIFICATE-----
-```
-
-HTTPS S3 CA Secret requirements:
-
-| Field | Requirement |
-| --- | --- |
-| `metadata.name` | Must be `clickhouse-ca-certificates`. |
-| `metadata.namespace` | Must be `cpaas-system`. |
-| `stringData.ca-certificates.crt` | Replace only this field with the CA certificate chain required by the HTTPS S3 endpoint. |
+If you plan to use S3 for ClickHouse log data storage or cold data storage, prepare the required S3 Secret before installation. For the complete procedure, including the Secret format, HTTPS CA certificate Secret, and usage modes, see [How to Use S3 Storage with ClickHouse](./how_to/clickhouse-s3-storage.mdx).
 
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
@@ -411,17 +380,20 @@ HTTPS S3 CA Secret requirements:
    | **Metadata StorageClass** | Displayed when **Metadata Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse metadata. |
    | **Capacity** | Displayed when **Storage Policy** is **Default**. Reserve capacity in Gi for ClickHouse log data. |
    | **Metadata Capacity** | Reserve capacity in Gi for ClickHouse metadata. The page recommends `20 Gi`. |
-   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3`. This setting cannot be changed after deployment. |
+   | **Advanced Configuration** | Collapsible section for plugin-level scheduling parameters. |
+   | **Node Selectors** | Displayed in **Advanced Configuration**. Configure plugin-level node selector rules for the ClickHouse storage plugin workloads. |
+   | **Node Tolerations** | Displayed in **Advanced Configuration**. Configure plugin-level toleration rules for the ClickHouse storage plugin workloads. |
+   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select the prepared S3 Secret for log data storage. This setting cannot be changed after deployment. |
    | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure hot-data retention days by log type in the **Log Retention Settings** section. |
    | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after deployment. |
-   | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select a Secret in `cpaas-system` with label `cpaas.io/credentials: S3` for cold data storage. This setting cannot be changed after deployment. |
-| **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the cold-storage settings section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
+   | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select the prepared S3 Secret for cold data storage. This setting cannot be changed after deployment. |
+   | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the cold-storage settings section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
 
 4. Click **Install**.
 
-## Install Alauda Container Platform Log Storage for ClickHouse via YAML
+### YAML
 
-### 1. Check available versions
+1. Check available versions
 
 Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
 
@@ -436,7 +408,7 @@ logclickhouse-v4.1.0                30h
 
 This indicates that the ModulePlugin `logclickhouse` exists in the cluster and version `v4.1.0` is published.
 
-### 2. Create a ModuleInfo
+2. Create a ModuleInfo
 
 Create a ModuleInfo resource to install the plugin. The following example uses **Separation of storage and compute** together with S3-backed cold storage:
 
@@ -453,6 +425,13 @@ spec:
   version: v4.1.0
   config:
     components:
+      nodeSelector:
+        - key: kubernetes.io/os
+          value: linux
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          operator: Exists
       clickhouse:
         storagePolicy:
           type: SSC
@@ -512,16 +491,6 @@ spec:
           requests:
             cpu: 10m
             memory: 256Mi
-  valuesOverride:
-    ait/chart-alauda-log-clickhouse:
-      global:
-        nodeSelector:
-          node-role.kubernetes.io/infra: "true"
-        tolerations:
-        - effect: NoSchedule
-          key: node-role.kubernetes.io/infra
-          value: reserved
-          operator: Equal
 ```
 
 YAML field reference (ClickHouse):
@@ -533,6 +502,8 @@ YAML field reference (ClickHouse):
 | `metadata.labels.cpaas.io/module-name` | Must be `logclickhouse`. |
 | `metadata.labels.cpaas.io/module-type` | Must be `plugin`. |
 | `spec.version` | Plugin version to install. |
+| `spec.config.components.nodeSelector` | Optional. Plugin-level node selector rules for the ClickHouse storage plugin workloads. This field uses the structured list format defined by the plugin API. |
+| `spec.config.components.tolerations` | Optional. Plugin-level toleration rules for the ClickHouse storage plugin workloads. |
 | `spec.config.components.clickhouse.storagePolicy.type` | Storage policy type. Use `Default` for standard local or StorageClass-backed data storage, or `SSC` for separation of storage and compute. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec` | Configuration block for the `Default` storage policy. Use either `defaultSpec` or `sscSpec`. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.type` | Data storage type for the default policy: `LocalVolume` or `StorageClass`. |
@@ -572,8 +543,6 @@ YAML field reference (ClickHouse):
 | `spec.config.components.vector.storage.path` | Local path used by Vector for temporary storage. |
 | `spec.config.components.vector.storage.size` | Storage size reserved for Vector in Gi. |
 | `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
-| `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
-| `spec.valuesOverride.ait/chart-alauda-log-clickhouse.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 Upgrade notes:
 
@@ -583,7 +552,7 @@ Upgrade notes:
 - In disaster recovery scenarios, use different S3 buckets for the primary and standby ClickHouse deployments.
 
 
-### 3. Verify installation
+3. Verify installation
 
 Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
 
@@ -604,8 +573,32 @@ Field explanations:
 * `CURRENT_VERSION`: Version before installation
 * `NEW_VERSION`: Latest available version for installation
 
+### Placement on Infra Nodes
+
+If you want the ClickHouse storage plugin workloads to run on dedicated infra nodes, configure plugin-level scheduling rules during installation or upgrade.
+
+- In the console, use **Advanced Configuration** to set **Node Selectors** and **Node Tolerations**.
+- In YAML, set `spec.config.components.nodeSelector` and `spec.config.components.tolerations`.
+
+Example:
+
+```yaml
+config:
+  components:
+    nodeSelector:
+      - key: kubernetes.io/os
+        value: linux
+    tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/infra
+        operator: Exists
+```
+
+Before applying these scheduling rules, make sure your infra node planning and local storage placement are compatible. For the node planning considerations, see [Planning Infra Nodes for Logging Storage](./how_to/infra_nodes.mdx).
 
 ## Install Alauda Container Platform Log Collector Plugin
+
+### Console
 
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
 
@@ -615,9 +608,9 @@ Field explanations:
 
 4. Click **Install**.
 
-## Install Alauda Container Platform Log Collector Plugin via YAML
+### YAML
 
-### 1. Check available versions
+1. Check available versions
 
 Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
 
@@ -632,7 +625,7 @@ logagent-v4.1.0                30h
 
 This indicates that the ModulePlugin `logagent` exists in the cluster and version `v4.1.0` is published.
 
-### 2. Create a ModuleInfo
+2. Create a ModuleInfo
 
 Create a ModuleInfo resource to install the plugin without any configuration parameters:
 
@@ -704,7 +697,7 @@ YAML field reference (Log Collector):
 | `spec.valuesOverride.ait/chart-alauda-log-agent.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 
-### 3. Verify installation
+3. Verify installation
 
 Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
 
