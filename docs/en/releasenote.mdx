@@ -1,0 +1,71 @@
+---
+weight: 11
+---
+
+# Release Notes
+
+## 4.3.0
+
+### Features and Enhancements
+
+#### S3-Backed Storage for ClickHouse
+
+**Alauda Container Platform Log Storage for ClickHouse** now supports S3 as the log data backend in separation-of-storage-and-compute deployments.
+
+For more information, see [How to Use S3 Storage with ClickHouse](./how_to/clickhouse-s3-storage.mdx).
+
+#### Cold and Hot Separation for ClickHouse
+
+**Alauda Container Platform Log Storage for ClickHouse** now supports cold and hot separation for long-term retention scenarios.
+
+Hot data remains in ClickHouse storage, while cold data is transferred to S3 according to the configured retention rules. This release also supports cold-data retention by log type.
+
+For more information, see [How to Use S3 Storage with ClickHouse](./how_to/clickhouse-s3-storage.mdx) and [How to Set the Retention Time of Cold Data for a Project](./how_to/project-cold-data-retention.mdx).
+
+#### ClickHouse Placement Controls on Infra Nodes
+
+**Alauda Container Platform Log Storage for ClickHouse** now supports plugin-level scheduling controls through **Node Selectors** and **Node Tolerations**.
+
+This makes it easier to place ClickHouse storage workloads on dedicated infra nodes through standard plugin configuration.
+
+:::warning
+If you previously used patch resources or `valuesOverride`-based customizations to define node selectors or tolerations separately, update the plugin configuration after upgrading to ACP 4.3. After the updated configuration takes effect, remove the related patch resources or override settings.
+:::
+
+For more information, see [Installation](./install_log.mdx) and [Planning Infra Nodes for Logging Storage](./how_to/infra_nodes.mdx).
+
+#### ClickHouse Table Schema Optimization
+
+The ClickHouse table schema has been optimized by removing the duplicated `logdata` field.
+
+This change reduces redundant data in ClickHouse tables.
+
+#### Configurable Data Directory for Log Collector
+
+**Alauda Container Platform Log Collector** now supports configuring its local working-data directory.
+
+:::warning
+If you previously used `valuesOverride`-based customizations to define the Log Collector data directory separately, update the plugin configuration after upgrading to ACP 4.3. After the updated configuration takes effect, remove the related override settings.
+:::
+
+For more information, see [Installation](./install_log.mdx).
+
+#### MicroOS Log and Audit Collection
+
+**Alauda Container Platform Log Collector** now supports collecting system logs and audit data from MicroOS nodes.
+
+:::warning
+If you previously used `valuesOverride`-based customizations to enable or adjust MicroOS operating system log or audit collection separately, remove the related override settings after upgrading to ACP 4.3.
+:::
+
+#### Compatibility with ACP 4.3.0
+
+The Logging plugins in this release are compatible with ACP 4.3.0.
+
+### Fixed Issues
+
+This section will be updated when the information becomes available. Content is currently under review and will be published in a later revision of the documentation.
+
+### Known Issues
+
+This section will be updated when the information becomes available. Content is currently under review and will be published in a later revision of the documentation.

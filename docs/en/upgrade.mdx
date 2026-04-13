@@ -1,0 +1,35 @@
+---
+weight: 13
+---
+
+# Upgrade
+
+:::info
+
+This document describes the supported version compatibility and upgrade paths for Alauda Container Platform Logging Service.
+
+:::
+
+## Compatibility Matrix
+
+The table below lists supported versions of the Alauda Container Platform Logging Service:
+
+| Logging Service Version | Supported Alauda Container Platform Version |
+| --- | --- |
+| 4.3.0 | 4.3.0 |
+| 4.2.x | 4.2.x |
+
+:::info
+Logging 4.3.0 is compatible only with ACP 4.3.0. Planned support for ACP 4.2.5 starts in Logging 4.3.1.
+:::
+
+## Upgrade Path Guidelines
+
+### Direct Upgrade to 4.3.0 for ACP
+
+- **Description**: Direct upgrade to Logging 4.3.0 is supported from selected earlier releases when ACP is also upgraded to ACP 4.3.0.
+- **Supported paths**: `4.0.x -> 4.3.0`, `4.1.x -> 4.3.0`
+
+### Patch-Level Upgrade
+- **Description**: Upgrades between patch versions within the same minor version are fully compatible and can be performed directly.
+- **Example**: `4.3.0 -> 4.3.x`
