@@ -28,9 +28,9 @@ Important source constraints:
 - S3 connection info must be provided by a Secret in `cpaas-system`.
 - The Secret must include label `cpaas.io/credentials: S3`.
 - The install flow currently supports one S3 target for log data and one S3 target for cold data.
-- `Storage Policy` cannot be changed after deployment.
-- `Cold and Hot Separate` cannot be toggled after deployment.
-- Cold-data retention settings can be adjusted after deployment.
+- `Storage Policy` cannot be changed after installation.
+- `Cold and Hot Separate` cannot be toggled after installation.
+- Cold-data retention settings can be adjusted after installation.
 - This capability requires compatible versions of `Alauda Container Platform Log Essentials` and `Alauda Container Platform Log Storage for ClickHouse`.
 - In disaster recovery scenarios, primary and standby ClickHouse deployments must not use the same S3 bucket.
 - S3 secrets and access keys must not be exposed in plaintext documentation records.

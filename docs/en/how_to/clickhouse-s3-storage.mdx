@@ -127,8 +127,8 @@ Behavior notes:
 - The current plugin installation workflow supports configuring one S3 target for log data storage and one S3 target for cold storage.
 - S3 credentials must be stored in Kubernetes Secrets. Do not expose access keys in plain text in installation records or screenshots.
 - If the S3 endpoint uses `https`, you must also create the `clickhouse-ca-certificates` Secret in `cpaas-system`. Only the certificate content in `ca-certificates.crt` should be customized.
-- The storage policy type and the **Cold and Hot Separate** switch cannot be changed after deployment.
-- Cold data retention settings can be adjusted after deployment.
+- The storage policy type and the **Cold and Hot Separate** switch cannot be changed after installation.
+- Cold data retention settings can be adjusted after installation.
 - This capability is different from the log export or archive solution described in [How to Archive Logs to Third-Party Storage](./log_archive.mdx). The archive guide describes exporting logs out of the platform, while this guide describes ClickHouse native storage behavior.
 - In disaster recovery scenarios, do not configure the primary and standby ClickHouse deployments to use the same S3 bucket.
 

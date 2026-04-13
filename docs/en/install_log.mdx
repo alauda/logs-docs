@@ -33,7 +33,7 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
   - Deploy at least one log storage instance per network zone to aggregate logs locally, minimizing cross-data-center public network traffic (which incurs high costs and latency).
 
-  - Dedicate exclusive nodes for log storage, avoiding co-deployment with other applications or platform components. Log storage requires high I/O throughput and may be affected by interference.
+  - Dedicate exclusive nodes for log storage, avoiding colocating log storage with other applications or platform components. Log storage requires high I/O throughput and may be affected by interference.
 
   - Mount dedicated SSD disks for log storage to significantly enhance performance.
 
@@ -369,7 +369,7 @@ If you plan to use S3 for ClickHouse log data storage or cold data storage, prep
    | Parameter | Description |
    | --- | --- |
    | **Size** | Choose `Single Node`, `Small Cluster`, or `Big Cluster` based on the target scale. |
-   | **Storage Policy** | Controls how ClickHouse stores metadata and log data. Available values are **Default** and **Separation of storage and compute**. This setting cannot be changed after deployment. |
+   | **Storage Policy** | Controls how ClickHouse stores metadata and log data. Available values are **Default** and **Separation of storage and compute**. This setting cannot be changed after installation. |
    | **Storage Method** | Displayed when **Storage Policy** is **Default**. Available values are `LocalVolume` and `StorageClass`. |
    | **Metadata Storage Type** | Displayed when **Storage Policy** is **Separation of storage and compute**. Available values are `LocalVolume` and `StorageClass`. |
    | **Log Node** | Displayed when local storage is used. Under **Default**, select the nodes that store ClickHouse log data locally. Under **Separation of storage and compute**, select the nodes that store ClickHouse metadata locally. |
@@ -383,10 +383,10 @@ If you plan to use S3 for ClickHouse log data storage or cold data storage, prep
    | **Advanced Configuration** | Collapsible section for plugin-level scheduling parameters. |
    | **Node Selectors** | Displayed in **Advanced Configuration**. Configure plugin-level node selector rules for the ClickHouse storage plugin workloads. |
    | **Node Tolerations** | Displayed in **Advanced Configuration**. Configure plugin-level toleration rules for the ClickHouse storage plugin workloads. |
-   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select the prepared S3 Secret for log data storage. This setting cannot be changed after deployment. |
+   | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select the prepared S3 Secret for log data storage. This setting cannot be changed after installation. |
    | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure hot-data retention days by log type in the **Log Retention Settings** section. |
-   | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after deployment. |
-   | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select the prepared S3 Secret for cold data storage. This setting cannot be changed after deployment. |
+   | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after installation. |
+   | **S3 for Log Cold Data** | Displayed when **Cold and Hot Separate** is enabled. Select the prepared S3 Secret for cold data storage. This setting cannot be changed after installation. |
    | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | When **Cold and Hot Separate** is enabled, the cold-storage settings section uses these same field names for cold-data retention. A value of `0` means that the log type is not transferred to cold storage. |
 
 4. Click **Install**.
@@ -547,7 +547,7 @@ YAML field reference (ClickHouse):
 Upgrade notes:
 
 - Upgrading the ClickHouse storage plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separate** on or off.
-- After deployment, only the effective retention settings, such as hot or cold retention days, should be adjusted.
+- After installation, only the effective retention settings, such as hot or cold retention days, should be adjusted.
 - To use this capability, upgrade **Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Storage for ClickHouse** to compatible versions together.
 - In disaster recovery scenarios, use different S3 buckets for the primary and standby ClickHouse deployments.
 
@@ -604,7 +604,13 @@ Before applying these scheduling rules, make sure your infra node planning and l
 
 2. Click the action button to the right of **Alauda Container Platform Log Collector** and select **Install**.
 
-3. Select the **Storage Cluster** (where Alauda Container Platform Log Storage has been installed) and click ***Select/Deselect*** log types to set the scope of log collection in the cluster.
+3. Refer to the following instructions to configure relevant parameters.
+
+   | Parameter | Description |
+   | --- | --- |
+   | **Storage Cluster** | Select the cluster where Alauda Container Platform Log Storage has been installed. |
+   | **Log types** | Click ***Select/Deselect*** to set the scope of log collection in the cluster. |
+   | **Storage Path** | Configure the local working-data path for Log Collector. Use an absolute path. Default value: `/cpaas/data/nevermore`. This setting cannot be changed after installation. |
 
 4. Click **Install**.
 
@@ -655,6 +661,10 @@ spec:
       platform: false
       system: false
       workload: true
+    components:
+      nevermore:
+        storageSpec:
+          dataDir: /cpaas/data/nevermore
     storage:
       type: ElasticSearch
   version: v4.1.0
@@ -691,6 +701,7 @@ YAML field reference (Log Collector):
 | `spec.config.dataSource.platform` | Collect platform logs. |
 | `spec.config.dataSource.system` | Collect system logs. |
 | `spec.config.dataSource.workload` | Collect workload logs. |
+| `spec.config.components.nevermore.storageSpec.dataDir` | Storage path for the Log Collector local working data. Use an absolute path. This field cannot be changed after installation. |
 | `spec.config.storage.type` | `ElasticSearch` or `ClickHouse`. |
 | `spec.version` | Plugin version to install. |
 | `spec.valuesOverride.ait/chart-alauda-log-agent.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
