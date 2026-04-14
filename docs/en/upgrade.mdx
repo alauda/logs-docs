@@ -20,9 +20,13 @@ The table below lists supported versions of the Alauda Container Platform Loggin
 
 ## Upgrade Path Guidelines
 
-### Consecutive Upgrade (Recommended)
-- **Description**: Upgrade step-by-step through consecutive minor versions.
-- **Example**: 4.1.x → 4.2.x
+### Upgrade Alongside ACP
+- **Description**: For the following ACP upgrade paths, Logging Service plugins support being upgraded to version 4.2.x during the ACP upgrade process.
+- **Supported ACP Upgrade Paths**:
+  - 3.18.x → 4.2.x
+  - 4.0.x → 4.2.x
+  - 4.1.x → 4.2.x
+- **Result**: After the upgrade is completed, all Logging Service plugins can run on version 4.2.x.
 
 ### Patch-Level Upgrade
 - **Description**: Upgrades between any patch versions within the same minor version are fully compatible and can be performed directly.
