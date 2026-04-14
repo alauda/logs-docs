@@ -25,10 +25,19 @@ Logging 4.3.0 is compatible only with ACP 4.3.0. Planned support for ACP 4.2.5 s
 
 ## Upgrade Path Guidelines
 
-### Direct Upgrade to 4.3.0 for ACP
+### Upgrade Alongside ACP
 
-- **Description**: Direct upgrade to Logging 4.3.0 is supported from selected earlier releases when ACP is also upgraded to ACP 4.3.0.
-- **Supported paths**: `4.0.x -> 4.3.0`, `4.1.x -> 4.3.0`
+- **Description**: In ACP 4.1.x and earlier releases, Logging Service plugins were lifecycle-aligned with ACP and were upgraded as part of the ACP release. For the following upgrade paths, the plugins are upgraded alongside ACP to version 4.3.0 during the ACP upgrade process.
+- **Supported ACP Upgrade Paths**:
+  - 4.0.x -> 4.3.0
+  - 4.1.x -> 4.3.0
+- **Result**: After the upgrade is completed, all Logging Service plugins are upgraded to version 4.3.0.
+
+### Major Version Upgrade
+
+- **Description**: Logging Service plugins support upgrades across minor versions after ACP is upgraded to a compatible version.
+- **Prerequisite**: ACP must already be running on version 4.3.x.
+- **Example**: `4.2.x -> 4.3.x`
 
 ### Patch-Level Upgrade
 - **Description**: Upgrades between patch versions within the same minor version are fully compatible and can be performed directly.
