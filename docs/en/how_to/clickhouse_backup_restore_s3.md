@@ -33,7 +33,6 @@ Before you start, make sure the following conditions are met.
 | --- | --- |
 | ClickHouse | Version 25.3 or later |
 | Table engine | ReplicatedMergeTree |
-| Storage | S3-backed disk configured through a storage policy |
 
 ### Access Requirements
 
@@ -187,7 +186,8 @@ SETTINGS
 
 Notes:
 
-- The incremental backup depends on the specified full backup.
+- The incremental backup depends on the backup specified by `base_backup`.
+- This document recommends that each daily incremental backup uses the latest full backup as its `base_backup`, instead of using the previous incremental backup as the base. This keeps the restore dependency simple: restoring a daily incremental backup only requires the incremental backup and its corresponding full backup.
 - Keep the dependent full backup when you restore the incremental backup.
 - Create a new full backup periodically to avoid relying on the same baseline for too long.
 
@@ -201,62 +201,48 @@ Before you start the restore procedure, make sure the following conditions are m
 
 - You have a valid full backup or incremental backup.
 - If you restore from an incremental backup, the corresponding full backup is still accessible.
-- You know which ClickHouse instances need the table definition to be recreated.
+- You have confirmed the S3 endpoint, bucket, backup path, access key, and secret key.
+- You have access to the Kubernetes cluster and the host nodes where ClickHouse instances are scheduled.
 
 ### Restore Procedure
 
-#### Save the CREATE TABLE Statement
+This procedure uses a unified recovery method: stop related components, clean the local ClickHouse data directory on each ClickHouse host node, start ClickHouse only, restore data from S3, and then start the related components.
 
-Before the restore, export the table definition from any healthy ClickHouse instance.
-
-Single-table example:
-
-```sql
-SELECT create_table_query
-FROM system.tables
-WHERE database = 'observability' AND name = 'audit'
-FORMAT TSVRaw;
-```
-
-Example for all business tables in the `observability` database:
-
-```sql
-SELECT arrayStringConcat(groupArray(toString(create_table_query)), ';')
-FROM system.tables
-WHERE database = 'observability'
-  AND name NOT LIKE '%migration%'
-FORMAT TSVRaw;
-```
+In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning `/cpaas/data/clickhouse/*` also removes the local ClickHouse Keeper data.
 
 #### Stop Related Components and Clean the Data Directory
 
 > Warning:
 > Cleaning the data directory deletes local ClickHouse data on the target nodes. Confirm that the backup is available before you continue.
+>
+> Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Run the following commands in the Kubernetes cluster where ClickHouse is deployed:
+Stop the `clickhouse-operator`, `sentry`, `razor`, and ClickHouse components:
 
 ```bash
+kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=0
+kubectl scale deploy -n cpaas-system sentry --replicas=0
 kubectl scale sts -n cpaas-system razor --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=0
 ```
 
-Then confirm that the related Pods have stopped:
+Confirm that all related Pods have stopped:
 
 ```bash
-kubectl get pod -A | grep -E "razor-0|razor-1|chi-cpaas-clickhouse-replicated"
+kubectl get pod -A | grep -E "razor-0|razor-1|clickhouse|sentry" | grep -v sentry-service
 ```
 
-Clean the data directory on each ClickHouse node:
+On each host node where a ClickHouse instance is deployed, clean the local ClickHouse data directory:
 
 ```bash
 rm -rf /cpaas/data/clickhouse/*
 ```
 
-#### Start ClickHouse
+#### Start ClickHouse Only
 
-Start only ClickHouse first:
+Start only the ClickHouse components. Do not start `clickhouse-operator`, `sentry`, or `razor` yet.
 
 ```bash
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=1
@@ -264,34 +250,23 @@ kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=1
 ```
 
-Then confirm that the ClickHouse Pods are running:
+Confirm that all ClickHouse Pods are running:
 
 ```bash
 kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
 ```
 
-#### Recreate the Table
-
-Run the saved `CREATE TABLE` statement on all ClickHouse instances.
-
-Then verify that the table exists:
-
-```sql
-EXISTS TABLE observability.audit;
-```
-
-Expected result:
-
-The query returns `1`.
-
 #### Run the Restore Command
 
-Run the following command on any healthy ClickHouse instance:
+Run the following command on any healthy ClickHouse instance.
+
+For a `ReplicatedMergeTree` table in this 3-replica deployment, use `ON CLUSTER 'replicated'` so that the restore operation is distributed to all ClickHouse replicas in the cluster.
 
 ```sql
 RESTORE TABLE observability.audit
+ON CLUSTER 'replicated'
 FROM S3(
-  'http://<s3_endpoint>/<bucket>/clickhouse-backup/audit/incr_20260424',
+  'http://<S3_ENDPOINT>/<bucket>/clickhouse-backup/audit/incr_20260424',
   '<access_key_id>',
   '<secret_access_key>'
 );
@@ -301,12 +276,16 @@ Notes:
 
 - If you restore from an incremental backup, ClickHouse reads the dependent base backup automatically.
 - Keep the corresponding full backup path accessible during the restore.
+- Replace `observability.audit` and the S3 path with the actual table and backup path that you want to restore.
+- The table list is determined by the customer. This document uses `observability.audit` only as an example.
 
-#### Start the Business Component
+#### Start the Related Components
 
-After the restore is complete, start the business component again:
+After the restore is complete, start the `clickhouse-operator`, `sentry`, and `razor` components again:
 
 ```bash
+kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=1
+kubectl scale deploy -n cpaas-system sentry --replicas=2
 kubectl scale sts -n cpaas-system razor --replicas=2
 ```
 
