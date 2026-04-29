@@ -258,9 +258,9 @@ kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
 
 #### Copy Backup Files to the Restore Path
 
-Copy the latest incremental backup and the corresponding full backup from the archive directory to the ClickHouse backup directory on any ClickHouse host node.
+Copy the latest incremental backup and the corresponding full backup from the archive directory to the ClickHouse backup directory on each ClickHouse host node.
 
-Run the following commands on the selected ClickHouse host node:
+Run the following commands on each ClickHouse host node:
 
 ```bash
 mkdir -p /cpaas/data/clickhouse/backups
@@ -271,8 +271,29 @@ cp -r /my_dir/audit_incr_20260424 /cpaas/data/clickhouse/backups/audit_incr_2026
 Notes:
 
 - If you restore from an incremental backup, prepare the dependent full backup at the same time.
-- The backup files must be placed under the ClickHouse backup directory so that `RESTORE ... FROM File(...)` can access them.
+- The backup files must be placed under the ClickHouse backup directory on each ClickHouse host node so that `RESTORE ... ON CLUSTER ... FROM File(...)` can access them on every ClickHouse instance.
 - Replace `/my_dir`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path and backup directory names.
+
+#### Check Cluster Readiness
+
+Before you run the restore command, make sure the ClickHouse cluster configuration and macros are available.
+
+Check the `replicated` cluster configuration:
+
+```sql
+SELECT *
+FROM system.clusters
+WHERE cluster = 'replicated';
+```
+
+Check the local ClickHouse macros:
+
+```sql
+SELECT *
+FROM system.macros;
+```
+
+Make sure the cluster contains the expected ClickHouse replicas and the macros such as `shard` and `replica` are available.
 
 #### Run the Restore Command
 
