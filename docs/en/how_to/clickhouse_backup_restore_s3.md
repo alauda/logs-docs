@@ -256,6 +256,27 @@ Confirm that all ClickHouse Pods are running:
 kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
 ```
 
+#### Check Cluster Readiness
+
+Before you run the restore command, make sure the ClickHouse cluster configuration and macros are available.
+
+Check the `replicated` cluster configuration:
+
+```sql
+SELECT *
+FROM system.clusters
+WHERE cluster = 'replicated';
+```
+
+Check the local ClickHouse macros:
+
+```sql
+SELECT *
+FROM system.macros;
+```
+
+Make sure the cluster contains the expected ClickHouse replicas and the macros such as `shard` and `replica` are available.
+
 #### Run the Restore Command
 
 Run the following command on any healthy ClickHouse instance.
