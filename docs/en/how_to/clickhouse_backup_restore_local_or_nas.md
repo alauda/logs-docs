@@ -1,4 +1,4 @@
-# How to Back Up and Restore ClickHouse with Local Storage or NAS
+# ClickHouse Backup and Restore on Local Storage or NAS
 
 ## Overview
 
@@ -42,8 +42,7 @@ Before you start, make sure the following conditions are met.
 | --- | --- |
 | ClickHouse | Version 25.3 or later |
 | Table engine | ReplicatedMergeTree |
-| Storage | S3-backed disk configured through a storage policy |
-| Backup target | Local directory or NAS directory mounted to the host or Pod |
+| Backup target | Local directory or NAS directory mounted to the host |
 
 ### Access Requirements
 
@@ -170,7 +169,8 @@ SETTINGS
 
 Notes:
 
-- The incremental backup depends on the specified full backup.
+- The incremental backup depends on the backup specified by `base_backup`.
+- This document recommends that each daily incremental backup uses the latest full backup as its `base_backup`, instead of using the previous incremental backup as the base. This keeps the restore dependency simple: restoring a daily incremental backup only requires the incremental backup and its corresponding full backup.
 - Keep the dependent full backup when you restore the incremental backup.
 - Create a new full backup periodically to avoid relying on the same baseline for too long.
 
@@ -201,62 +201,48 @@ Before you start the restore procedure, make sure the following conditions are m
 
 - You have a valid full backup or incremental backup.
 - If you restore from an incremental backup, the corresponding full backup is available in the restore path.
-- You know which ClickHouse node or path will be used for the restore.
+- You know the archive directory that stores the latest incremental backup and the corresponding full backup.
+- You have access to the Kubernetes cluster and the host nodes where ClickHouse instances are scheduled.
 
 ### Restore Procedure
 
-#### Save the CREATE TABLE Statement
+This procedure uses a unified recovery method: stop related components, clean the local ClickHouse data directory on each ClickHouse host node, start ClickHouse only, copy the backup files to the ClickHouse backup directory, restore data from the local files, and then start the related components.
 
-Before the restore, export the table definition from any healthy ClickHouse instance.
-
-Single-table example:
-
-```sql
-SELECT create_table_query
-FROM system.tables
-WHERE database = 'observability' AND name = 'audit'
-FORMAT TSVRaw;
-```
-
-Example for all business tables in the `observability` database:
-
-```sql
-SELECT arrayStringConcat(groupArray(toString(create_table_query)), ';')
-FROM system.tables
-WHERE database = 'observability'
-  AND name NOT LIKE '%migration%'
-FORMAT TSVRaw;
-```
+In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning `/cpaas/data/clickhouse/*` also removes the local ClickHouse Keeper data.
 
 #### Stop Related Components and Clean the Data Directory
 
 > Warning:
 > Cleaning the data directory deletes local ClickHouse data on the target nodes. Confirm that the backup is available before you continue.
+>
+> Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Run the following commands in the Kubernetes cluster where ClickHouse is deployed:
+Stop the `clickhouse-operator`, `sentry`, `razor`, and ClickHouse components:
 
 ```bash
+kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=0
+kubectl scale deploy -n cpaas-system sentry --replicas=0
 kubectl scale sts -n cpaas-system razor --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas=0
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=0
 ```
 
-Then confirm that the related Pods have stopped:
+Confirm that all related Pods have stopped:
 
 ```bash
-kubectl get pod -A | grep -E "razor-0|razor-1|chi-cpaas-clickhouse-replicated"
+kubectl get pod -A | grep -E "razor-0|razor-1|clickhouse|sentry" | grep -v sentry-service
 ```
 
-Clean the data directory on each ClickHouse node:
+On each host node where a ClickHouse instance is deployed, clean the local ClickHouse data directory:
 
 ```bash
 rm -rf /cpaas/data/clickhouse/*
 ```
 
-#### Start ClickHouse
+#### Start ClickHouse Only
 
-Start only ClickHouse first:
+Start only the ClickHouse components. Do not start `clickhouse-operator`, `sentry`, or `razor` yet.
 
 ```bash
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=1
@@ -264,7 +250,7 @@ kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas
 kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=1
 ```
 
-Then confirm that the ClickHouse Pods are running:
+Confirm that all ClickHouse Pods are running:
 
 ```bash
 kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
@@ -272,9 +258,9 @@ kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
 
 #### Copy Backup Files to the Restore Path
 
-Copy the latest full backup and the required incremental backup to the ClickHouse backup directory on the restore node.
+Copy the latest incremental backup and the corresponding full backup from the archive directory to the ClickHouse backup directory on any ClickHouse host node.
 
-Run the following commands on the restore node:
+Run the following commands on the selected ClickHouse host node:
 
 ```bash
 mkdir -p /cpaas/data/clickhouse/backups
@@ -285,28 +271,18 @@ cp -r /my_dir/audit_incr_20260424 /cpaas/data/clickhouse/backups/audit_incr_2026
 Notes:
 
 - If you restore from an incremental backup, prepare the dependent full backup at the same time.
-- After the files are copied to the local restore path, run `RESTORE ... FROM File(...)`.
-
-#### Recreate the Table
-
-Run the saved `CREATE TABLE` statement on all ClickHouse instances.
-
-Then verify that the table exists:
-
-```sql
-EXISTS TABLE observability.audit;
-```
-
-Expected result:
-
-The query returns `1`.
+- The backup files must be placed under the ClickHouse backup directory so that `RESTORE ... FROM File(...)` can access them.
+- Replace `/my_dir`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path and backup directory names.
 
 #### Run the Restore Command
 
-Run the following command on the ClickHouse instance that can access the copied backup files:
+Run the following command on any healthy ClickHouse instance.
+
+For a `ReplicatedMergeTree` table in this 3-replica deployment, use `ON CLUSTER 'replicated'` so that the restore operation is distributed to all ClickHouse replicas in the cluster.
 
 ```sql
 RESTORE TABLE observability.audit
+ON CLUSTER 'replicated'
 FROM File('audit_incr_20260424');
 ```
 
@@ -314,12 +290,16 @@ Notes:
 
 - If you restore from an incremental backup, ClickHouse reads the dependent base backup automatically.
 - Keep the corresponding full backup directory accessible during the restore.
+- Replace `observability.audit` and the backup directory name with the actual table and backup that you want to restore.
+- The table list is determined by the customer. This document uses `observability.audit` only as an example.
 
-#### Start the Business Component
+#### Start the Related Components
 
-After the restore is complete, start the business component again:
+After the restore is complete, start the `clickhouse-operator`, `sentry`, and `razor` components again:
 
 ```bash
+kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=1
+kubectl scale deploy -n cpaas-system sentry --replicas=2
 kubectl scale sts -n cpaas-system razor --replicas=2
 ```
 
