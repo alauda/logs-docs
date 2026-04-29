@@ -314,15 +314,33 @@ Notes:
 - Replace `observability.audit` and the backup directory name with the actual table and backup that you want to restore.
 - The table list is determined by the customer. This document uses `observability.audit` only as an example.
 
-#### Start the Related Components
+#### Check Restore Task Status
 
-After the restore is complete, start the `clickhouse-operator`, `sentry`, and `razor` components again:
+After the restore command is executed, check the restore task status before you start any related components:
 
-```bash
-kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=1
-kubectl scale deploy -n cpaas-system sentry --replicas=2
-kubectl scale sts -n cpaas-system razor --replicas=2
+```sql
+SELECT
+    id,
+    name,
+    status,
+    error,
+    start_time,
+    end_time,
+    num_files,
+    total_size
+FROM system.backups
+ORDER BY start_time DESC
+LIMIT 10
+FORMAT Vertical;
 ```
+
+Expected result:
+
+The restore is successful if the following conditions are met:
+
+- `status` indicates that the restore operation has completed successfully.
+- `error` is empty.
+- `end_time` has a value.
 
 ## Validate Restore Success
 
@@ -390,6 +408,18 @@ For a 3-replica cluster, the restore is successful if the following conditions a
 - `active_replicas = 3`
 - `queue_size = 0`
 - `absolute_delay` is close to `0`
+
+## Start the Related Components
+
+After the restore has been validated successfully, start the `clickhouse-operator`, `sentry`, and `razor` components again.
+
+The following replica counts are examples only. Adjust them according to the actual replica counts in your environment:
+
+```bash
+kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=<clickhouse_operator_replicas>
+kubectl scale deploy -n cpaas-system sentry --replicas=<sentry_replicas>
+kubectl scale sts -n cpaas-system razor --replicas=<razor_replicas>
+```
 
 ## Recommendations
 
