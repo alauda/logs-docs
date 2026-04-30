@@ -231,10 +231,31 @@ Choose one of the following restore methods according to the failure scope.
 
 Use this method when a single table is corrupted, accidentally deleted, or has abnormal data, while the ClickHouse data directory and Keeper state are still healthy.
 
-Stop `razor` first to prevent new data from being written during the restore:
+Stop `razor` first to prevent new data from being written during the restore.
+
+Log in to the cluster master node and create a ResourcePatch to stop `razor`:
 
 ```bash
-kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+cat <<EOF > /tmp/rp-stop-razor.yaml
+apiVersion: operator.alauda.io/v1alpha1
+kind: ResourcePatch
+metadata:
+  generateName: rp-
+  name: rp-stop-razor
+spec:
+  jsonPatch:
+  - op: replace
+    path: /spec/replicas
+    value: 0
+  release: cpaas-system/logclickhouse
+  target:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: razor
+    namespace: cpaas-system
+EOF
+
+kubectl apply -f /tmp/rp-stop-razor.yaml
 ```
 
 Make sure the backup files are available in the ClickHouse backup directory on each ClickHouse host node.
@@ -271,12 +292,10 @@ ON CLUSTER 'replicated'
 FROM File('audit_incr_20260424');
 ```
 
-After the restore is complete, validate the table data and replica status, and then start `razor` again.
-
-The following command uses `2` replicas as an example. Adjust the replica count according to the actual environment. A normal-scale environment usually uses 2 replicas. A special single-node Kubernetes cluster may use 1 replica.
+After the restore is complete, validate the table data and replica status, and then start `razor` again by deleting the ResourcePatch:
 
 ```bash
-kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":2}}'
+kubectl delete -f /tmp/rp-stop-razor.yaml
 ```
 
 #### Full Data-Directory Disaster Recovery
@@ -294,20 +313,52 @@ In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data
 >
 > Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Stop `razor` and the ClickHouse components:
+Stop `razor` and the ClickHouse components.
+
+Log in to the cluster master node and create ResourcePatch resources to stop `razor` and ClickHouse:
 
 ```bash
-# Stop razor
-kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+cat <<EOF > /tmp/rp-stop-razor.yaml
+apiVersion: operator.alauda.io/v1alpha1
+kind: ResourcePatch
+metadata:
+  generateName: rp-
+  name: rp-stop-razor
+spec:
+  jsonPatch:
+  - op: replace
+    path: /spec/replicas
+    value: 0
+  release: cpaas-system/logclickhouse
+  target:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: razor
+    namespace: cpaas-system
+EOF
 
-# Stop replica 0
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-0 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+kubectl apply -f /tmp/rp-stop-razor.yaml
 
-# Stop replica 1
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-1 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+cat <<EOF > /tmp/rp-stop-ck.yaml
+apiVersion: operator.alauda.io/v1alpha1
+kind: ResourcePatch
+metadata:
+  generateName: rp-
+  name: rp-stop-ck
+spec:
+  jsonPatch:
+  - op: add
+    path: /spec/stop
+    value: "true"
+  release: cpaas-system/logclickhouse
+  target:
+    apiVersion: clickhouse.altinity.com/v1
+    kind: ClickHouseInstallation
+    name: cpaas-clickhouse
+    namespace: cpaas-system
+EOF
 
-# Stop replica 2
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-2 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+kubectl apply -f /tmp/rp-stop-ck.yaml
 ```
 
 Confirm that all related Pods have stopped:
@@ -324,17 +375,10 @@ rm -rf /cpaas/data/clickhouse/*
 
 #### Start ClickHouse Only
 
-Start only the ClickHouse components. Do not start `razor` yet.
+Start only the ClickHouse components by deleting the ClickHouse ResourcePatch. Do not start `razor` yet.
 
 ```bash
-# Start replica 0
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-0 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
-
-# Start replica 1
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-1 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
-
-# Start replica 2
-kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-2 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
+kubectl delete -f /tmp/rp-stop-ck.yaml
 ```
 
 Confirm that all ClickHouse Pods are running:
@@ -500,12 +544,10 @@ For a 3-replica cluster, the restore is successful if the following conditions a
 
 ## Start the Related Components
 
-After the restore has been validated successfully, start `razor` again.
-
-The following command uses `2` replicas as an example. Adjust the replica count according to the actual environment. A normal-scale environment usually uses 2 replicas. A special single-node Kubernetes cluster may use 1 replica.
+After the restore has been validated successfully, start `razor` again by deleting the ResourcePatch:
 
 ```bash
-kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":2}}'
+kubectl delete -f /tmp/rp-stop-razor.yaml
 ```
 
 ## Recommendations
