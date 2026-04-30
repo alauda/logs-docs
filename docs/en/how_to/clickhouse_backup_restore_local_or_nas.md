@@ -27,10 +27,11 @@ The following tables are common examples:
 
 The storage types differ as follows:
 
-- Local storage: backups are written to a node-local directory, such as `/var/lib/clickhouse/backup/` or `/data/clickhouse-backup/`.
-- NAS: backups are written to a mounted shared storage path, such as `/mnt/nas/clickhouse-backup/` or `/backup/clickhouse/`.
+- LocalVolume: ClickHouse data is stored in a node-local directory, such as `/cpaas/data/clickhouse/`. `BACKUP ... TO File(...)` writes backup files to the ClickHouse backup directory under this local data directory, such as `/cpaas/data/clickhouse/backups`.
+- StorageClass, such as TopoLVM, NFS, or Ceph: ClickHouse data is stored on the corresponding StorageClass volume. `BACKUP ... TO File(...)` writes backup files to the ClickHouse backup directory on that volume.
+- NAS archive path: backup files can be copied from the ClickHouse backup directory to a mounted NAS path or another custom backup directory for long-term retention.
 
-NAS is more suitable for centralized management and cross-node recovery. Local storage is usually simpler to configure and often provides better performance.
+For both LocalVolume and StorageClass deployments, use the actual ClickHouse backup directory as the source path when archiving backup files and as the destination path when copying backup files back for restore.
 
 ## Prerequisites
 
@@ -101,9 +102,11 @@ SETTINGS compression_method = 'zstd';
 
 Notes:
 
-- `File(...)` writes the backup to a local path under the ClickHouse backup directory.
+- `File(...)` writes the backup to the ClickHouse backup directory on the ClickHouse data volume.
+- For LocalVolume deployments, the backup directory is typically `/cpaas/data/clickhouse/backups` on the host node.
+- For StorageClass deployments, such as TopoLVM, NFS, or Ceph, the backup directory is on the corresponding StorageClass volume.
 - `compression_method = 'zstd'` compresses the backup content with zstd to reduce storage usage.
-- If you need to archive the backup to NAS or another directory, copy the backup after the backup task is complete.
+- If you need to archive the backup to NAS or another custom backup directory, copy the backup after the backup task is complete.
 
 ### Validate Backup Success
 
@@ -141,11 +144,15 @@ Locate the backup record for `observability.audit` through the `name` field. The
 
 #### Check the Backup Directory
 
-Run the following command on the node or in the container where the backup directory is available:
+Run the following command on the node or in the container where the ClickHouse backup directory is available.
+
+For LocalVolume deployments, the backup directory is typically `/cpaas/data/clickhouse/backups`:
 
 ```bash
 ls -lah /cpaas/data/clickhouse/backups
 ```
+
+For StorageClass deployments, check the backup directory on the corresponding StorageClass volume.
 
 Expected result:
 
@@ -176,20 +183,32 @@ Notes:
 
 ### Archive the Backup Files
 
-If you need to archive the backup files to a designated local directory or a NAS mount path, copy the files after the backup succeeds.
+`BACKUP ... TO File(...)` writes the backup files to the ClickHouse backup directory on the ClickHouse data volume where the backup command is executed.
 
-Run the following commands on the node where the ClickHouse backup directory is available:
+The backup directory depends on the storage type:
+
+- For LocalVolume deployments, the ClickHouse data directory is on the host node, typically `/cpaas/data/clickhouse/`, and the backup files are generated under `/cpaas/data/clickhouse/backups`.
+- For StorageClass deployments, such as TopoLVM, NFS, or Ceph, the ClickHouse data directory is on the corresponding StorageClass volume, and the backup files are generated under the ClickHouse backup directory on that volume.
+
+After the backup succeeds, copy the backup files from the actual ClickHouse backup directory to a custom backup directory or NAS mount path for retention.
+
+For LocalVolume deployments, the source path is typically `/cpaas/data/clickhouse/backups`:
 
 ```bash
 cp -r /cpaas/data/clickhouse/backups/audit_full_20260423 /my_dir/audit_full_20260423
 cp -r /cpaas/data/clickhouse/backups/audit_incr_20260424 /my_dir/audit_incr_20260424
 ```
 
+For StorageClass deployments, replace `/cpaas/data/clickhouse/backups` with the actual ClickHouse backup directory on the StorageClass volume.
+
 Notes:
 
+- `/my_dir` can be a designated local archive directory or a NAS mount path.
+- Use an archive path outside the ClickHouse data directory. Otherwise, the backup files might be deleted when the ClickHouse data directory is cleaned during disaster recovery.
 - After each full or incremental backup, copy the corresponding backup directory to the archive location.
-- After the incremental backup is copied successfully, you can delete the local incremental backup if it is no longer needed.
-- Delete the local full backup only after the next full backup succeeds and the retention policy allows cleanup.
+- After the incremental backup is copied successfully, you can delete the local incremental backup under the ClickHouse backup directory if it is no longer needed.
+- Delete the local full backup under the ClickHouse backup directory only after the next full backup succeeds and the retention policy allows cleanup.
+- If you later restore with `RESTORE ... ON CLUSTER ... FROM File(...)`, make sure the required full and incremental backup directories are copied back to the ClickHouse backup directory on each ClickHouse host node before running the restore command.
 
 ## Restore
 
@@ -220,9 +239,9 @@ kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"rep
 
 Make sure the backup files are available in the ClickHouse backup directory on each ClickHouse host node.
 
-If the backup files were archived to a designated local directory or NAS mount path and the local files under `/cpaas/data/clickhouse/backups` have been deleted, copy the latest incremental backup and the corresponding full backup back to the ClickHouse backup directory on each ClickHouse host node before you restore the table.
+If the backup files were archived to a custom backup directory or NAS mount path and the local files under the ClickHouse backup directory have been deleted, copy the latest incremental backup and the corresponding full backup back to the ClickHouse backup directory on each ClickHouse host node before you restore the table.
 
-Run the following commands on each ClickHouse host node:
+For LocalVolume deployments, the destination path is typically `/cpaas/data/clickhouse/backups`:
 
 ```bash
 mkdir -p /cpaas/data/clickhouse/backups
@@ -230,11 +249,13 @@ cp -r /my_dir/audit_full_20260423 /cpaas/data/clickhouse/backups/audit_full_2026
 cp -r /my_dir/audit_incr_20260424 /cpaas/data/clickhouse/backups/audit_incr_20260424
 ```
 
+For StorageClass deployments, copy the backup files back to the actual ClickHouse backup directory on the StorageClass volume.
+
 Notes:
 
 - If you restore from an incremental backup, prepare the dependent full backup at the same time.
 - The backup files must be placed under the ClickHouse backup directory on each ClickHouse host node so that `RESTORE ... ON CLUSTER ... FROM File(...)` can access them on every ClickHouse instance.
-- Replace `/my_dir`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path and backup directory names.
+- Replace `/my_dir`, `/cpaas/data/clickhouse/backups`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path, ClickHouse backup directory, and backup directory names.
 
 Drop the target table on the ClickHouse cluster:
 
@@ -326,7 +347,7 @@ kubectl get pod -n cpaas-system | grep -i "chi-cpaas-clickhouse-replicated"
 
 Copy the latest incremental backup and the corresponding full backup from the archive directory to the ClickHouse backup directory on each ClickHouse host node.
 
-Run the following commands on each ClickHouse host node:
+For LocalVolume deployments, the destination path is typically `/cpaas/data/clickhouse/backups`:
 
 ```bash
 mkdir -p /cpaas/data/clickhouse/backups
@@ -334,11 +355,13 @@ cp -r /my_dir/audit_full_20260423 /cpaas/data/clickhouse/backups/audit_full_2026
 cp -r /my_dir/audit_incr_20260424 /cpaas/data/clickhouse/backups/audit_incr_20260424
 ```
 
+For StorageClass deployments, copy the backup files back to the actual ClickHouse backup directory on the StorageClass volume.
+
 Notes:
 
 - If you restore from an incremental backup, prepare the dependent full backup at the same time.
 - The backup files must be placed under the ClickHouse backup directory on each ClickHouse host node so that `RESTORE ... ON CLUSTER ... FROM File(...)` can access them on every ClickHouse instance.
-- Replace `/my_dir`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path and backup directory names.
+- Replace `/my_dir`, `/cpaas/data/clickhouse/backups`, `audit_full_20260423`, and `audit_incr_20260424` with the actual archive path, ClickHouse backup directory, and backup directory names.
 
 #### Check Cluster Readiness
 
