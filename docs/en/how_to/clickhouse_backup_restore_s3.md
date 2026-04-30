@@ -206,7 +206,49 @@ Before you start the restore procedure, make sure the following conditions are m
 
 ### Restore Procedure
 
-This procedure uses a unified recovery method: stop related components, clean the local ClickHouse data directory on each ClickHouse host node, start ClickHouse only, restore data from S3, and then start the related components.
+Choose one of the following restore methods according to the failure scope.
+
+#### Table-Level Restore
+
+Use this method when a single table is corrupted, accidentally deleted, or has abnormal data, while the ClickHouse data directory and Keeper state are still healthy.
+
+Stop `razor` first to prevent new data from being written during the restore:
+
+```bash
+kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+```
+
+Drop the target table on the ClickHouse cluster:
+
+```sql
+DROP TABLE observability.audit ON CLUSTER 'replicated' SYNC;
+```
+
+Restore the table from S3:
+
+```sql
+RESTORE TABLE observability.audit
+ON CLUSTER 'replicated'
+FROM S3(
+  'http://<S3_ENDPOINT>/<bucket>/clickhouse-backup/audit/incr_20260424',
+  '<access_key_id>',
+  '<secret_access_key>'
+);
+```
+
+After the restore is complete, validate the table data and replica status, and then start `razor` again.
+
+The following command uses `2` replicas as an example. Adjust the replica count according to the actual environment. A normal-scale environment usually uses 2 replicas. A special single-node Kubernetes cluster may use 1 replica.
+
+```bash
+kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":2}}'
+```
+
+#### Full Data-Directory Disaster Recovery
+
+Use this method only when the ClickHouse data directory is damaged, the node is rebuilt, or the Keeper metadata is unavailable.
+
+This method stops `razor` and ClickHouse, cleans the local ClickHouse data directory on each ClickHouse host node, starts ClickHouse only, restores data from S3, and then starts `razor`.
 
 In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning `/cpaas/data/clickhouse/*` also removes the local ClickHouse Keeper data.
 
@@ -217,21 +259,26 @@ In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data
 >
 > Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Stop the `clickhouse-operator`, `sentry`, `razor`, and ClickHouse components:
+Stop `razor` and the ClickHouse components:
 
 ```bash
-kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=0
-kubectl scale deploy -n cpaas-system sentry --replicas=0
-kubectl scale sts -n cpaas-system razor --replicas=0
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=0
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas=0
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=0
+# Stop razor
+kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+
+# Stop replica 0
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-0 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+
+# Stop replica 1
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-1 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
+
+# Stop replica 2
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-2 -n cpaas-system --type='merge' -p '{"spec":{"replicas":0}}'
 ```
 
 Confirm that all related Pods have stopped:
 
 ```bash
-kubectl get pod -A | grep -E "razor-0|razor-1|clickhouse|sentry" | grep -v sentry-service
+kubectl get pod -n cpaas-system | grep -E "razor|chi-cpaas-clickhouse-replicated"
 ```
 
 On each host node where a ClickHouse instance is deployed, clean the local ClickHouse data directory:
@@ -242,18 +289,23 @@ rm -rf /cpaas/data/clickhouse/*
 
 #### Start ClickHouse Only
 
-Start only the ClickHouse components. Do not start `clickhouse-operator`, `sentry`, or `razor` yet.
+Start only the ClickHouse components. Do not start `razor` yet.
 
 ```bash
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-0 --replicas=1
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-1 --replicas=1
-kubectl scale sts -n cpaas-system chi-cpaas-clickhouse-replicated-0-2 --replicas=1
+# Start replica 0
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-0 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
+
+# Start replica 1
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-1 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
+
+# Start replica 2
+kubectl patch statefulset chi-cpaas-clickhouse-replicated-0-2 -n cpaas-system --type='merge' -p '{"spec":{"replicas":1}}'
 ```
 
 Confirm that all ClickHouse Pods are running:
 
 ```bash
-kubectl get pod -A | grep -i "chi-cpaas-clickhouse-replicated"
+kubectl get pod -n cpaas-system | grep -i "chi-cpaas-clickhouse-replicated"
 ```
 
 #### Check Cluster Readiness
@@ -397,14 +449,12 @@ For a 3-replica cluster, the restore is successful if the following conditions a
 
 ## Start the Related Components
 
-After the restore has been validated successfully, start the `clickhouse-operator`, `sentry`, and `razor` components again.
+After the restore has been validated successfully, start `razor` again.
 
-The following replica counts are examples only. Adjust them according to the actual replica counts in your environment:
+The following command uses `2` replicas as an example. Adjust the replica count according to the actual environment. A normal-scale environment usually uses 2 replicas. A special single-node Kubernetes cluster may use 1 replica.
 
 ```bash
-kubectl scale deploy -n cpaas-logging clickhouse-operator --replicas=<clickhouse_operator_replicas>
-kubectl scale deploy -n cpaas-system sentry --replicas=<sentry_replicas>
-kubectl scale sts -n cpaas-system razor --replicas=<razor_replicas>
+kubectl patch statefulset razor -n cpaas-system --type='merge' -p '{"spec":{"replicas":2}}'
 ```
 
 ## Recommendations
