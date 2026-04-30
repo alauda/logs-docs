@@ -206,11 +206,9 @@ Before you start the restore procedure, make sure the following conditions are m
 
 ### Restore Procedure
 
-Choose one of the following restore methods according to the failure scope.
+This procedure restores ClickHouse data table by table. Choose the preparation steps according to the failure scope, and then run the same table restore procedure for each required table.
 
-#### Table-Level Restore
-
-Use this method when a single table is corrupted, accidentally deleted, or has abnormal data, while the ClickHouse data directory and Keeper state are still healthy.
+#### Stop Writes
 
 Stop `razor` first to prevent new data from being written during the restore.
 
@@ -239,71 +237,30 @@ EOF
 kubectl apply -f /tmp/rp-stop-razor.yaml
 ```
 
-Drop the target table on the ClickHouse cluster:
+#### Prepare ClickHouse According to the Failure Scope
 
-```sql
-DROP TABLE observability.audit ON CLUSTER 'replicated' SYNC;
-```
+Choose one of the following preparation paths according to the failure scope. After the preparation is complete, continue with the same table-by-table restore procedure.
 
-Restore the table from S3:
+##### Case A: Table Data Is Corrupted but the Data Directory Is Healthy
 
-```sql
-RESTORE TABLE observability.audit
-ON CLUSTER 'replicated'
-FROM S3(
-  'http://<S3_ENDPOINT>/<bucket>/clickhouse-backup/audit/incr_20260424',
-  '<access_key_id>',
-  '<secret_access_key>'
-);
-```
+Use this case when one or more tables are corrupted, accidentally deleted, or have abnormal data, while the ClickHouse data directory and Keeper state are still healthy.
 
-After the restore is complete, validate the table data and replica status, and then start `razor` again by deleting the ResourcePatch:
+In this case, do not stop ClickHouse and do not clean `/cpaas/data/clickhouse/*`. Continue with the table restore procedure directly.
 
-```bash
-kubectl delete -f /tmp/rp-stop-razor.yaml
-```
+##### Case B: Data Directory or Keeper Metadata Is Damaged
 
-#### Full Data-Directory Disaster Recovery
-
-Use this method only when the ClickHouse data directory is damaged, the node is rebuilt, or the Keeper metadata is unavailable.
-
-This method stops `razor` and ClickHouse, cleans the local ClickHouse data directory on each ClickHouse host node, starts ClickHouse only, restores data from S3, and then starts `razor`.
+Use this case only when the ClickHouse data directory is damaged, the node is rebuilt, or the Keeper metadata is unavailable.
 
 In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning `/cpaas/data/clickhouse/*` also removes the local ClickHouse Keeper data.
-
-#### Stop Related Components and Clean the Data Directory
 
 > Warning:
 > Cleaning the data directory deletes local ClickHouse data on the target nodes. Confirm that the backup is available before you continue.
 >
 > Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Stop `razor` and the ClickHouse components.
-
-Log in to the cluster master node and create ResourcePatch resources to stop `razor` and ClickHouse:
+Log in to the cluster master node and create a ResourcePatch to stop ClickHouse:
 
 ```bash
-cat <<EOF > /tmp/rp-stop-razor.yaml
-apiVersion: operator.alauda.io/v1alpha1
-kind: ResourcePatch
-metadata:
-  generateName: rp-
-  name: rp-stop-razor
-spec:
-  jsonPatch:
-  - op: replace
-    path: /spec/replicas
-    value: 0
-  release: cpaas-system/logclickhouse
-  target:
-    apiVersion: apps/v1
-    kind: StatefulSet
-    name: razor
-    namespace: cpaas-system
-EOF
-
-kubectl apply -f /tmp/rp-stop-razor.yaml
-
 cat <<EOF > /tmp/rp-stop-ck.yaml
 apiVersion: operator.alauda.io/v1alpha1
 kind: ResourcePatch
@@ -326,10 +283,10 @@ EOF
 kubectl apply -f /tmp/rp-stop-ck.yaml
 ```
 
-Confirm that all related Pods have stopped:
+Confirm that all ClickHouse Pods have stopped:
 
 ```bash
-kubectl get pod -n cpaas-system | grep -E "razor|chi-cpaas-clickhouse-replicated"
+kubectl get pod -n cpaas-system | grep -i "chi-cpaas-clickhouse-replicated"
 ```
 
 On each host node where a ClickHouse instance is deployed, clean the local ClickHouse data directory:
@@ -337,8 +294,6 @@ On each host node where a ClickHouse instance is deployed, clean the local Click
 ```bash
 rm -rf /cpaas/data/clickhouse/*
 ```
-
-#### Start ClickHouse Only
 
 Start only the ClickHouse components by deleting the ClickHouse ResourcePatch. Do not start `razor` yet.
 
@@ -373,11 +328,17 @@ FROM system.macros;
 
 Make sure the cluster contains the expected ClickHouse replicas and the macros such as `shard` and `replica` are available.
 
-#### Run the Restore Command
+#### Restore Tables One by One
 
-Run the following command on any healthy ClickHouse instance.
+Run the following restore procedure for each table that needs to be restored.
 
-For a `ReplicatedMergeTree` table in this 3-replica deployment, use `ON CLUSTER 'replicated'` so that the restore operation is distributed to all ClickHouse replicas in the cluster.
+Drop the target table on the ClickHouse cluster:
+
+```sql
+DROP TABLE observability.audit ON CLUSTER 'replicated' SYNC;
+```
+
+Restore the table from S3:
 
 ```sql
 RESTORE TABLE observability.audit
@@ -391,14 +352,15 @@ FROM S3(
 
 Notes:
 
+- For a `ReplicatedMergeTree` table in this 3-replica deployment, use `ON CLUSTER 'replicated'` so that the restore operation is distributed to all ClickHouse replicas in the cluster.
 - If you restore from an incremental backup, ClickHouse reads the dependent base backup automatically.
 - Keep the corresponding full backup path accessible during the restore.
 - Replace `observability.audit` and the S3 path with the actual table and backup path that you want to restore.
-- The table list is determined by the customer. This document uses `observability.audit` only as an example.
+- Repeat the same procedure for every table that needs to be restored. The table list is determined by the customer.
 
 #### Check Restore Task Status
 
-After the restore command is executed, check the restore task status before you start any related components:
+After each restore command is executed, check the restore task status before you start any related components:
 
 ```sql
 SELECT
