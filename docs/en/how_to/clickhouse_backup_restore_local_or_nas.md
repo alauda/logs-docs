@@ -264,18 +264,18 @@ Choose one of the following preparation paths according to the failure scope. Af
 
 Use this case when one or more tables are corrupted, accidentally deleted, or have abnormal data, while the ClickHouse data directory and Keeper state are still healthy.
 
-In this case, do not stop ClickHouse and do not clean `/cpaas/data/clickhouse/*`. Continue with the table restore procedure directly.
+In this case, do not stop ClickHouse and do not clean the ClickHouse data directory. Continue with the table restore procedure directly.
 
 ##### Case B: Data Directory or Keeper Metadata Is Damaged
 
 Use this case only when the ClickHouse data directory is damaged, the node is rebuilt, or the Keeper metadata is unavailable.
 
-In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning `/cpaas/data/clickhouse/*` also removes the local ClickHouse Keeper data.
+In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data is also stored under the ClickHouse data directory. Therefore, cleaning the ClickHouse data directory also removes the local ClickHouse Keeper data.
 
 > Warning:
 > Cleaning the data directory deletes local ClickHouse data on the target nodes. Confirm that the backup is available before you continue.
 >
-> Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
+> Clean the actual ClickHouse data directory for each ClickHouse instance according to the storage type. For LocalVolume deployments, the directory is typically `/cpaas/data/clickhouse/` on the host node. For StorageClass deployments, clean the ClickHouse data directory on the corresponding StorageClass volume or PV. Do not use `/cpaas/data/clickhouse/` for StorageClass deployments unless it is confirmed to be the actual mounted data path.
 
 Log in to the cluster master node and create a ResourcePatch to stop ClickHouse:
 
@@ -308,11 +308,15 @@ Confirm that all ClickHouse Pods have stopped:
 kubectl get pod -n cpaas-system | grep -i "chi-cpaas-clickhouse-replicated"
 ```
 
-On each host node where a ClickHouse instance is deployed, clean the local ClickHouse data directory:
+Clean the ClickHouse data directory for each ClickHouse instance according to the storage type.
+
+For LocalVolume deployments, run the following command on each host node where a ClickHouse instance is deployed:
 
 ```bash
 rm -rf /cpaas/data/clickhouse/*
 ```
+
+For StorageClass deployments, clean the ClickHouse data directory on the corresponding StorageClass volume or PV. The exact path depends on the StorageClass and CSI implementation. Use the actual mounted ClickHouse data path instead of the LocalVolume example path.
 
 Start only the ClickHouse components by deleting the ClickHouse ResourcePatch. Do not start `razor` yet.
 
