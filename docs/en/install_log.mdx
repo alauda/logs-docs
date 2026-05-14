@@ -610,7 +610,8 @@ Before applying these scheduling rules, make sure your infra node planning and l
    | --- | --- |
    | **Storage Cluster** | Select the cluster where Alauda Container Platform Log Storage has been installed. |
    | **Log types** | Click ***Select/Deselect*** to set the scope of log collection in the cluster. |
-   | **Storage Path** | Configure the local working-data path for Log Collector. Use an absolute path. Default value: `/cpaas/data/nevermore`. This setting cannot be changed after installation. |
+   | **Storage Path** | Configure the local working-data path for Log Collector. Use an absolute path. Default value: `/cpaas`. This setting cannot be changed after installation. |
+   | **Log Collector Resources** | Configure CPU and memory requests and limits for the Log Collector component. |
 
 4. Click **Install**.
 
@@ -625,11 +626,11 @@ Ensure the plugin has been published by checking for ModulePlugin and ModuleConf
 # kubectl get moduleplugin | grep logagent
 logagent                       30h
 # kubectl get moduleconfig | grep logagent
-logagent-v4.1.0                30h
+logagent-v4.3.1                30h
 
 ```
 
-This indicates that the ModulePlugin `logagent` exists in the cluster and version `v4.1.0` is published.
+This indicates that the ModulePlugin `logagent` exists in the cluster and version `v4.3.1` is published.
 
 2. Create a ModuleInfo
 
@@ -657,27 +658,34 @@ spec:
     dataSource:
       audit: true
       event: true
-      kubernetes: true
+      kubernetes: false
       platform: false
-      system: false
+      system: true
       workload: true
     components:
+      nodeSelector:
+      - key: node-role.kubernetes.io/infra
+        value: "true"
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/infra
+        operator: Equal
+        value: reserved
       nevermore:
         storageSpec:
-          dataDir: /cpaas/data/nevermore
+          dataDir: /cpaas
+        log:
+          resources:
+            limits:
+              cpu: "2"
+              ephemeral-storage: 1Gi
+              memory: 4Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
     storage:
       type: ElasticSearch
-  version: v4.1.0
-  valuesOverride:
-    ait/chart-alauda-log-agent:
-      global:
-        nodeSelector:
-          node-role.kubernetes.io/infra: "true"
-        tolerations:
-        - effect: NoSchedule
-          key: node-role.kubernetes.io/infra
-          value: reserved
-          operator: Equal
+  version: v4.3.1
 ```
 
 YAML field reference (Log Collector):
@@ -701,11 +709,12 @@ YAML field reference (Log Collector):
 | `spec.config.dataSource.platform` | Collect platform logs. |
 | `spec.config.dataSource.system` | Collect system logs. |
 | `spec.config.dataSource.workload` | Collect workload logs. |
-| `spec.config.components.nevermore.storageSpec.dataDir` | Storage path for the Log Collector local working data. Use an absolute path. This field cannot be changed after installation. |
+| `spec.config.components.nodeSelector` | Optional. Plugin-level node selector rules for Log Collector workloads. This field uses the structured list format defined by the plugin API. |
+| `spec.config.components.tolerations` | Optional. Plugin-level toleration rules for Log Collector workloads. |
+| `spec.config.components.nevermore.storageSpec.dataDir` | Storage path for the Log Collector local working data. Use an absolute path. Default value: `/cpaas`. This field cannot be changed after installation. |
+| `spec.config.components.nevermore.log.resources` | Optional. CPU and memory requests / limits for the Log Collector component. |
 | `spec.config.storage.type` | `ElasticSearch` or `ClickHouse`. |
 | `spec.version` | Plugin version to install. |
-| `spec.valuesOverride.ait/chart-alauda-log-agent.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
-| `spec.valuesOverride.ait/chart-alauda-log-agent.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 
 3. Verify installation
@@ -715,5 +724,5 @@ Since the ModuleInfo name changes upon creation, locate the resource via label t
 ```shell
 kubectl get moduleinfo -l cpaas.io/module-name=logagent
 NAME                                             CLUSTER         MODULE      DISPLAY_NAME   STATUS    TARGET_VERSION   CURRENT_VERSION   NEW_VERSION
-global-e671599464a5b1717732c5ba36079795          global          logagent   logagent      Running   v4.0.12          v4.0.12           v4.0.12
+global-e671599464a5b1717732c5ba36079795          global          logagent   logagent      Running   v4.3.1           v4.3.1            v4.3.1
 ```
