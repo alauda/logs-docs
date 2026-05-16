@@ -1,0 +1,32 @@
+# llms.txt generator configuration for alauda/logs-docs
+# Repo kind: pure-docs
+
+project_name: "Alauda Container Platform Logging Docs"
+summary: "Documentation for the Alauda Container Platform (ACP) logging, event, and audit subsystem — covering concepts, architecture, installation, day-2 operations, and APIs."
+
+include_patterns:
+  - "**/*.md"
+  - "**/*.mdx"
+
+exclude_patterns:
+  - "**/node_modules/**"
+  - "**/.git/**"
+  - "**/.llmstxt-cache/**"
+  - "**/.yarn/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/public/**"
+  - "**/llms.txt"
+  - "**/llmstxt-state.json"
+  - "**/CHANGELOG.md"
+  - "**/CONTRIBUTING.md"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+  - "**/AGENTS.md"
+  - "**/CLAUDE.md"
+
+batch_size: 15
+
+grouping_base_path: "."
+
+description_max_words: 150
