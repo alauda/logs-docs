@@ -1,0 +1,301 @@
+{
+  "version": 1,
+  "generator_version": 3,
+  "project_name": "Alauda Container Platform Logging Docs",
+  "summary": "Documentation for the Alauda Container Platform (ACP) logging, event, and audit subsystem — covering concepts, architecture, installation, day-2 operations, and APIs.",
+  "generated_at": "2026-05-16T09:37:46Z",
+  "include_patterns": [
+    "**/*.md",
+    "**/*.mdx"
+  ],
+  "exclude_patterns": [
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/.llmstxt-cache/**",
+    "**/.yarn/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/public/**",
+    "**/llms.txt",
+    "**/llmstxt-state.json",
+    "**/CHANGELOG.md",
+    "**/CONTRIBUTING.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    ".llmstxt-cache/**",
+    "llms.txt",
+    "llmstxt-state.json"
+  ],
+  "grouping_base_path": ".",
+  "description_max_words": 150,
+  "files": {
+    "README.md": {
+      "sha256": "f0c8d80339ee2a735d64288297156ad36ace501ae73f23d9f501e08b024195e5",
+      "size": 809,
+      "description": "Contributor setup notes for the logs-docs site: requires Node.js, npm, and yarn for dependencies; recommends Visual Studio Code with the MDX extension; lists the `yarn dev`, `yarn build`, and `yarn serve` scripts for local dev server, production build into `dist`, and static preview.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/event/index.mdx": {
+      "sha256": "38e6896acaf8e7548869c4de1cbdce39a10fc2e663d4f2d9810ffe5a445fd427",
+      "size": 90,
+      "description": "Landing page for the Event APIs section under the Advanced APIs reference; renders an `<Overview />` table of contents that links readers into the individual event endpoint pages (such as search) exposed under the `events.alauda.io/v1` API group.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/event/search.mdx": {
+      "sha256": "bb415ba6b5d3bf2ea5c859b3854cd8d93e131ee4d4be4f61a6a70666aca2f201",
+      "size": 240,
+      "description": "OpenAPI reference for the event search endpoints in the `events.alauda.io/v1` group, covering both the cluster-wide `/platform/events.alauda.io/v1/events` path and the project/cluster/namespace scoped `/platform/events.alauda.io/v1/projects/{project}/clusters/{cluster}/namespaces/{namespace}/events` path used to query Kubernetes-style events collected by the platform.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/index.mdx": {
+      "sha256": "6267f358ba9cbc4cab972287c887f223879fe355ea37529dce5267ec9d59089d",
+      "size": 70,
+      "description": "Top-level index for the Advanced APIs (the higher-level Log, Event, and Audit query APIs served by the Courier component), with an `<Overview />` that links into the per-domain subsections such as Log APIs and Event APIs.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/log/aggregation.mdx": {
+      "sha256": "68885d22ad3b1feab1dcb05ee7bd5ecc7bacf4db4717e2ea9f502fa87852dd1e",
+      "size": 346,
+      "description": "OpenAPI reference for the log aggregation endpoints under `logging.alauda.io/v2`, exposing `/logs/aggregation`, the cluster-scoped `/clusters/{cluster}/logs/aggregation`, and the project/namespace-scoped variant for grouped statistical queries over collected logs.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/log/archive.mdx": {
+      "sha256": "9bf88ca9b7b7d3138abd43ad362849cdf3c47239b54fc95fa4899fbd92bb0207",
+      "size": 326,
+      "description": "OpenAPI reference for the log archive (export/download) endpoints under `logging.alauda.io/v2`, documenting the platform-wide `/logs/archive`, the `/clusters/{cluster}/logs/archive` cluster scope, and the project/cluster/namespace scoped path for retrieving archived log batches.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/log/context.mdx": {
+      "sha256": "839d479947e74712febf195523d92a147e64d591efff7bcd0358bcb718d856b6",
+      "size": 326,
+      "description": "OpenAPI reference for the log context endpoints under `logging.alauda.io/v2`, used to retrieve surrounding log lines around a target entry; covers the platform `/logs/context`, cluster-scoped, and project/cluster/namespace-scoped variants.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/log/index.mdx": {
+      "sha256": "8cd3c9d7548dbf403c144952a0f732506c62d3ecd7e4e553a2bcae22247d312e",
+      "size": 86,
+      "description": "Landing page for the Log APIs section of the Advanced APIs reference; renders an `<Overview />` linking into the search, aggregation, context, and archive endpoints served from the `logging.alauda.io/v2` API group.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/advanced_apis/log/search.mdx": {
+      "sha256": "18e16ade3622677d3f32e1adc569a7f62d4be1ad1c79544489abc7ae8d2f31fa",
+      "size": 321,
+      "description": "OpenAPI reference for the log search endpoints under `logging.alauda.io/v2`, documenting the platform-wide `/logs/search`, the cluster-scoped `/clusters/{cluster}/logs/search`, and the project/cluster/namespace-scoped path used by the UI and clients to query logs stored in Elasticsearch or ClickHouse.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/index.mdx": {
+      "sha256": "4bcd357fc96a51b3b593ac85ee840ea9f73c2ff4db23fd71b29ddf9a0b9a6f9b",
+      "size": 70,
+      "description": "Top-level entry point for the API Reference section of the logs documentation; renders an `<Overview />` that surfaces both the Introduction and the Advanced APIs (Log, Event, Audit) subsections.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/apis/intro.mdx": {
+      "sha256": "ba573e272a43d002cda4be47046ab94646c34a62222106375a4e866a83493722",
+      "size": 55,
+      "description": "Introduction page for the API reference that embeds the shared `<AcpApisOverview />` component, presenting the ACP-wide API conventions and discovery surface that the Log and Event API pages build upon.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/architecture/architecture.mdx": {
+      "sha256": "a615d12fa71d5bf632b0e5789ac32e9533bf8cf32402d24228c22bbd7b354f77",
+      "size": 3325,
+      "description": "Walkthrough of the ACP logging system's three core modules: collection by the `nevermore` daemonset (with `audit`, `event`, `log`, and `node-problem-detector` containers running via filebeat), storage via either Elasticsearch (Razor -> Kafka -> Lanaya -> Elasticsearch) or ClickHouse (Razor -> Vector -> ClickHouse) authenticated by Razor, and visualization through the Courier advanced-API component serving `/platform/logging.alauda.io/v1`, `/platform/events.alauda.io/v1`, and `/platform/audits.alauda.io/v1`.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/architecture/capacity_planning.mdx": {
+      "sha256": "b5bfc9d0ae1d05fb65e7f0074d59164663853995e4671f016cb4af2ea9d93ec1",
+      "size": 4980,
+      "description": "Sizing guide for the log storage components with reference resource tables for Elasticsearch deployments (Small 3-node at 6300 logs/s up to Large 3+7 at 30000 logs/s, including Kafka, Zookeeper, Lanaya, Razor) and ClickHouse deployments (Single node at 18000 logs/s up to 9-node 3-replica/3-shard at 69000 logs/s with Razor and Vector), assuming 6000 IOPS SSDs at 250 MB/s.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/architecture/component_suggestion.mdx": {
+      "sha256": "009a89bdb667d7f736789e93d5e892c0da8f8d5f7dd0794503c24a2aaba1a227",
+      "size": 5400,
+      "description": "Decision guide for choosing between Elasticsearch (Lucene-based, strong query DSL, required for DevOps Jenkins pipeline archiving and ServiceMesh integration) and ClickHouse (columnar OLAP, lower resource footprint, SQL-only, supports S3-backed hot/cold storage but not IPv6-only workload clusters) as the platform's log storage backend, with a feature comparison matrix and selection recommendations.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/architecture/index.mdx": {
+      "sha256": "4a14d5d85bf0e1843f4ca82e9888cee361e6f1f4ac7dbd37b0a79c028f0a8c62",
+      "size": 125,
+      "description": "Section landing page for the Architecture chapter of the logging documentation, rendering an `<Overview />` that surfaces the architecture overview, component selection guide, and capacity planning pages.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/concept.mdx": {
+      "sha256": "92deb699ca52026ae3e0f0a934e5a36c5261746894f403294565eb2b52ecb50b",
+      "size": 5104,
+      "description": "Defines the open-source building blocks of the ACP logging stack (Filebeat collector, Elasticsearch search engine, ClickHouse columnar OLAP store, Kafka buffer) and the core concepts that tie them together: the two pipeline modes (Direct Write vs Buffer Mode), Elasticsearch indices, shards and replicas, ClickHouse columnar storage and storage policies (Default vs Separation of storage and compute), Cold and Hot Separate tiering to S3, plus terms like Ingest Pipeline, Kafka Consumer Group, TTL, and Replication Factor. Includes a mermaid data-flow diagram showing how container log files travel through Filebeat to either storage component.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/functions/audit.mdx": {
+      "sha256": "9782fbe9ac3126f84e25ec856706a66205d3e65c2ab0702872659b17115e6250",
+      "size": 2831,
+      "description": "Walks platform or platform-audit administrators through the Operations Center auditing view that records time-ordered Kubernetes change events. Covers selecting the User Operations or System Operations tab (system actors prefixed with `system:`), filtering by Operator, Actions, Clusters, Resource Type and Resource Name, adjusting the Time Range, refreshing, exporting results to CSV, and interpreting the Client IP, Operation Result (2xx vs other) and per-row JSON Audit Details dialog.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/functions/event.mdx": {
+      "sha256": "c1c78d1fe806852cf56aba78ec853b47b068fba336e9258c5178ffb5e9e6a8e3",
+      "size": 2378,
+      "description": "Describes the Operations Center Events page that aggregates significant Kubernetes events within a selectable time window (default 30 minutes). Explains the significant-event overview card (unique resource counts, not occurrence counts), the resource event records list, and filters by Resource Type, Namespace, Event Reason, Event Level (Normal green vs Warning orange), and Resource Name, plus the Event Details pop-up for full payload inspection.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/functions/index.mdx": {
+      "sha256": "3cfad3d1ce902e3ea12207a887926a9409387abc524e4ef3810b23f298be85c5",
+      "size": 43,
+      "description": "Stub landing page for the Functions section. Renders only the `<Overview />` component, which auto-generates the menu of sibling pages (logs, audit, events) used as the entry point to log query, audit, and event tooling.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/functions/log.mdx": {
+      "sha256": "254c3acc4f699421334bdd493dd4aabe5d5a0636eac969d6db80dab8f7a40a0c",
+      "size": 12069,
+      "description": "End-user reference for the Operations Center Log Query Analysis panel: searching System, Product, Kubernetes, and Application logs with fuzzy filters and AND/OR keyword expressions (10,000-row display cap, 1-million-row export to gzip txt/csv), viewing log context (5 lines before/after), and managing application-log retention via project policies. Covers both UI flows (Platform/Project Administrator setting 1-30 day retention) and CLI editing of `Project` resources with labels such as `cpaas.io/project.hotDataRetentionDays`, `cpaas.io/project.coldDataRetentionDays`, and `cpaas.io/project.logPolicyEnabled`, plus excluding namespaces or Pods from collection via the `cpaas.io/log.mute=true` label.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/clickhouse-s3-storage.mdx": {
+      "sha256": "355db4243d22ed94829e09133ba4d406f301fdf672cee7b4acaf0743c5fde6fe",
+      "size": 5913,
+      "description": "Configuration guide for pointing the Alauda Container Platform Log Storage for ClickHouse plugin at S3, either as the sole log-table backend (Separation of storage and compute) or with Cold and Hot Separate enabled so cold data is offloaded to S3 after a configurable retention window. Details the required S3-credential Secret in `cpaas-system` (labeled `cpaas.io/credentials: S3` with ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT, REGION, BUCKET), the fixed-name `clickhouse-ca-certificates` Secret for HTTPS endpoints, recommended LocalVolume metadata throughput (>200 MiB/s), per-log-type cold retention fields (Log Platform / Workload / System / Kubernetes / Kubernetes Event / Audit), and post-install immutability of the storage-policy and Cold-and-Hot-Separate toggles.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/clickhouse_backup_restore_local_or_nas.md": {
+      "sha256": "0cdf55d81257215cdec5551ffbe2e62c74cb77eeab428642cec146d52289e7c1",
+      "size": 19105,
+      "description": "Runbook for backing up and restoring ClickHouse tables in the `observability` database (audit, event, log_kubernetes, log_platform, log_system, log_workload) to a local directory or NAS mount on ReplicatedMergeTree clusters running ClickHouse 25.3+. Shows `BACKUP TABLE ... TO File(...)` with zstd compression, weekly-full + daily-incremental strategy using `base_backup`, and archiving from the ClickHouse backup directory (typically `/cpaas/data/clickhouse/backups` for LocalVolume) to NAS. The restore section covers stopping the `razor` consumer via a ResourcePatch, handling Case A (data directory healthy) vs Case B (data directory or Keeper damaged, requiring stopping the ClickHouseInstallation `cpaas-clickhouse` and wiping `/cpaas/data/clickhouse/*`), then per-table `DROP TABLE ... ON CLUSTER 'replicated' SYNC` and `RESTORE TABLE ... FROM File(...)`, with validation via `system.backups`, `system.parts`, and `system.replicas`.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/clickhouse_backup_restore_s3.md": {
+      "sha256": "4b321eab68d6d2482e8e341417d33076d15fabb95111f0dc864d2e4467264eec",
+      "size": 13483,
+      "description": "Runbook for backing up and restoring ClickHouse `observability` tables directly to S3 on ReplicatedMergeTree clusters (ClickHouse 25.3+). Provides `BACKUP TABLE ... TO S3(...)` and incremental-backup syntax with `base_backup`, the required S3 permissions (PutObject, GetObject, ListBucket, optional DeleteObject), and a validation workflow using `mc ls`. The restore procedure mirrors the local/NAS guide: stop the `razor` StatefulSet through a ResourcePatch, decide between Case A (data directory healthy) and Case B (wipe `/cpaas/data/clickhouse/*` and restart the `cpaas-clickhouse` ClickHouseInstallation), then `DROP TABLE ... ON CLUSTER 'replicated' SYNC` followed by `RESTORE TABLE ... FROM S3(...)` per table, with row-count, partition, and `system.replicas` checks (`total_replicas=3`, `queue_size=0`).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/index.mdx": {
+      "sha256": "6ec39d9cde11b3b60ae9607c0686e5b00ee90eae953d605af598bcf89687adbc",
+      "size": 43,
+      "description": "Stub landing page for the How-To section that renders the auto-generated `<Overview />` listing of sibling guides (cold/hot separation, ClickHouse S3 storage, backup/restore for local/NAS and S3, infra-node planning, log archive, log integration, project cold-data retention, ZooKeeper metrics).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/infra_nodes.mdx": {
+      "sha256": "f474c72e1a921bd4c54f12cd68c2946f48af73ed63457b32efc4061b9ed66e46",
+      "size": 3932,
+      "description": "Planning guide for pinning Logging storage plugins to dedicated Kubernetes infra nodes. Documents the correct placement entry points (`spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector`/`tolerations` for Elasticsearch, and Advanced Configuration or `spec.config.components.nodeSelector`/`tolerations` for ClickHouse), warns against patching generated StatefulSets directly, and explains how to reconcile `pv.spec.nodeAffinity` from LocalVolume/TopoLVM PVs with infra-node membership. Includes legacy guidance to label `kafka=true` and `zk=true` nodes as infra and a troubleshooting table for Pending pods, taint/toleration mismatches, and resource starvation (`node-role.kubernetes.io/infra` taint).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/log_archive.mdx": {
+      "sha256": "4a6a80ca6a7934f7ea6d068a86e2ad3917d34c653a699e0167f2294ddb077844",
+      "size": 22926,
+      "description": "Step-by-step instructions for shipping platform logs out to long-term storage to satisfy compliance retention, distinct from ClickHouse's native S3 cold storage. Two deployment recipes are given: a `log-exporter` Deployment plus `log-exporter-config` ConfigMap that consumes from Kafka (via the `razor consumer` command) and writes either to a hostPath-mounted NFS directory (`/cpaas/data/logarchive`) or to an S3 bucket (`log-export-s3-secret` Secret with base64 credentials, `s3forcepathstyle`, configurable bucket/endpoint/region). Includes scope toggles for system/workload/kubernetes/platform logs, output knobs (`max_size`, `compression` none/zlib/gzip, `file_type` txt/csv/json, `TimePrefixed` layout), and how to fetch alpine and razor image addresses with `kubectl get daemonset nevermore` and `kubectl get deployment razor`.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/log_integration.mdx": {
+      "sha256": "1d9d27bc708080b511641db0143cc3b51edc72e7cde6ac492f617545a8d32e85",
+      "size": 4702,
+      "description": "Procedure for installing the Alauda Container Platform Log Storage for Elasticsearch plugin against an external Elasticsearch cluster (6.6-6.8 or 7.0-7.10.2, recommending 7.10.2), optionally also using an external Kafka. Walks through creating `elasticsearch-basic-auth` and `kafka-basic-auth` Opaque Secrets in `cpaas-system` with base64 credentials, enabling the External Elasticsearch switch during installation, and supplying YAML overrides such as `elasticsearch.install: false`, `elasticsearch.address`, `kafka.install: false`, comma-separated Kafka `address`, and `storageClassConfig.type` (LocalVolume or StorageClass).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/project-cold-data-retention.mdx": {
+      "sha256": "4caa5632bad4beead306cd1eaf80af8c805a5febe3f9f0011c56a3a8c11205d1",
+      "size": 2808,
+      "description": "Concise guide for setting per-project hot/cold log retention once Cold and Hot Separate is enabled on the ClickHouse storage plugin. Lists the three Project labels that take effect (`cpaas.io/project.hotDataRetentionDays`, `cpaas.io/project.coldDataRetentionDays`, `cpaas.io/project.logPolicyEnabled`), shows the `kubectl edit project <project-name>` workflow from the `global` cluster with a sample manifest, and notes that legacy labels like `cpaas.io/project.esIndicesKeepDays` may still coexist in ACP 4.2 but should be replaced with the new labels in ACP 4.3+.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/how_to/zk_metrics.mdx": {
+      "sha256": "c03af8981d8f35f91273e9902f7f528d8a8f65e90195a6c2d32fca2ae8ee99d9",
+      "size": 772,
+      "description": "Short operations guide for enabling the ZooKeeper Prometheus exporter inside the Log Center, which is disabled by default because the metrics port is unauthenticated. Shows how to locate the `minfo` for the logcenter on the target cluster (`kubectl get minfo | grep logcenter`), edit it, and add `spec.valuesOverride.ait/chart-alauda-log-center.zookeeper.exporterEnabled: true` to turn the exporter on.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/index.mdx": {
+      "sha256": "ea8d719fb06b69c8f8fa90c79d3ec2a67457c854f2c664fb78f523febe3f6960",
+      "size": 48,
+      "description": "Top-level index page for the ACP logging documentation set. Contains only the `<Overview overviewHeaders={[]} />` component, which generates the navigation menu listing the major sections (Introduction, Install, Concepts, Functions, How To, etc.).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/install_log.mdx": {
+      "sha256": "9a4e09d422d11790428892530ae0fcff936c1b8b5d65c8aa61ef778824f08abd",
+      "size": 37774,
+      "description": "End-to-end installation guide for the four logging plugins (Alauda Container Platform Log Essentials, Log Collector, Log Storage for ClickHouse, and Log Storage for Elasticsearch), including infra-node and storage planning guidance. Each section provides both Console steps (under Marketplace > Cluster Plugins) and YAML procedures using ModulePlugin/ModuleConfig/ModuleInfo resources, with exhaustive field-reference tables for the plugin-specific spec.config sub-trees such as elasticsearch/kafka/zookeeper sizing, ClickHouse storagePolicy (Default vs SSC), tieredPolicy for cold/hot S3 separation, TTL retention by log type, Razor/Vector resources, and the Log Collector's crossClusterDependency and dataSource flags. It also covers verifying installs via kubectl get moduleinfo and pinning scheduling onto infra nodes through valuesOverride.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "docs/en/intro.mdx": {
+      "sha256": "0d4706b3209cf79a0e5c39109a14cea19fb0e5dffe8a393718251e1fddb30213",
+      "size": 945,
+      "description": "Short module overview positioning ACP Logging as the observability stack's log subsystem, summarizing its four capabilities: log collection from applications/containers/infrastructure, scalable storage on Elasticsearch and ClickHouse backends, and fast querying across large datasets. Names the underlying open-source building blocks (Filebeat, Elasticsearch, ClickHouse) and frames the value proposition as troubleshooting acceleration, compliance, and real-time operational insight.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "notes/acp-console-field-alignment-context-2026-03-23.md": {
+      "sha256": "a66c07163b5739bd60c6230cb18b7b351a8d4bd406fa4dc2bce9a5ea8b75abd8",
+      "size": 7451,
+      "description": "Dated author-context note (2026-03-23) capturing the working record of an alignment pass that reconciled ACP console UI labels with the YAML field names in the install docs. It documents the Safari WebDriver workflow against the live English console, the same-origin ACP endpoints used to verify ModuleConfig/ModuleInfo paths (moduleconfigs, modulepluginviews, moduleinfoes, S3 Secrets, StorageClasses, nodes), confirmed console labels for the ClickHouse and Elasticsearch install pages, and concrete field-name corrections such as replacing spec.config.clusterView.isPrivate with spec.config.self.storage.disabled. Includes a suggested resume checklist for future sessions.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "notes/clickhouse-s3-doc-update-context-2026-03-23.md": {
+      "sha256": "a4d66f0e58899595d95a3f23ed16fdb4bf305cb6947e818ae59c98a973e06dd8",
+      "size": 7396,
+      "description": "Dated author-context note (2026-03-23) recording the reasoning and source material behind the ClickHouse S3 storage documentation update, sourced from internal Confluence PRD/design pages. Lists the product constraints (S3 Secret in cpaas-system with label cpaas.io/credentials: S3, immutable Storage Policy and Cold-Hot Separate at install time, disaster-recovery bucket isolation), the new how-to pages added for clickhouse-s3-storage and project-cold-data-retention, and the editorial decisions made about where to place metadata-storage guidance and how to phrase the >200 MiB/s engineering recommendation. Also lists the new project labels (cpaas.io/project.hotDataRetentionDays, coldDataRetentionDays, logPolicyEnabled) and their legacy ACP 4.2 counterparts.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "notes/doc-cleanup-context-2026-03-24.md": {
+      "sha256": "3d36a29e2ab2c305857ee813895ec888e7169974cfcabca8e0846256a73daf9b",
+      "size": 3376,
+      "description": "Dated author-context note (2026-03-24) summarizing a follow-up cleanup pass that reviewed the prior day's edits, fixed product-name drift (e.g., replacing short names like \"ACP Log Collector\"), normalized prose spellings to Elasticsearch and ClickHouse while preserving literal YAML enum values such as ElasticSearch, removed a circular prerequisite in the project cold-data retention guide, and updated console-navigation wording to \"Marketplace > Cluster Plugins\". Records the files touched across docs/en (intro, architecture, concept, functions/log, how_to/log_integration, project-cold-data-retention, install_log) and lint/build validation outcomes including a local sass-embedded build crash noted as environmental.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "skills/acp-logging-docs/SKILL.md": {
+      "sha256": "98aace187d9001857d928ecf389eba80f8620e81df11fc9bf98da5544b2e3763",
+      "size": 7557,
+      "description": "Agent-side skill instructions for working in this @alauda/doom documentation repository, covering the content layout (docs/en/**, docs/shared/openapis, docs/shared/roletemplates), the recommended workflow for choosing the right edit layer (MDX prose vs. OpenAPI JSON), and editing rules around frontmatter (weight, sourceSHA, i18n), kebab-case filenames, asset placement, and stable product terminology (ACP, Elasticsearch, ClickHouse, Kafka, Razor, Lanaya, nevermore, Courier). Encodes the ACP console verification workflow using Safari WebDriver and same-origin fetches against ModuleConfig/ModuleInfo endpoints, plus ask-first boundaries for doom.config.yml, sites.yaml, docs/shared/, and theme/. Pointers to repo-map.md and edit-patterns.md sub-references and validation via yarn lint/build/dev.",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "skills/acp-logging-docs/references/edit-patterns.md": {
+      "sha256": "2c8fa52ff19f9569365dd6139adbb10e8693f10681b210cce350e298bb974e03",
+      "size": 3380,
+      "description": "Agent-side reference describing concrete editing templates used in this repo: the default new-narrative-page shape with weight frontmatter and single H1, the lightweight Overview-based section index pattern (including the overviewHeaders={[]} variant), sibling assets/ directory rules for page-local images with relative paths, and the thin API-wrapper pattern that uses <OpenAPIPath path=\"...\"/> over schemas in docs/shared/openapis. Also gives a heuristic for when shared OpenAPI JSON should be edited versus only the MDX wrapper, writing-style conventions (bold UI labels, ordered steps, fenced yaml/bash blocks, preserving scope words like cluster/project/retention/audit), and a done-checklist (weight, sourceSHA preservation, yarn lint and yarn build/dev expectations).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    },
+    "skills/acp-logging-docs/references/repo-map.md": {
+      "sha256": "8ccda83579d79cc41f89b6f7b1b1f9074ebb41f1b1325aefe1080893b451e20a",
+      "size": 3490,
+      "description": "Agent-side reference giving a topological map of the repo's toolchain and content for editing decisions: yarn 4.9.2 with @alauda/doom, scripts (dev/lint/build/serve/translate), doom.config.yml settings (docs/ root, en default lang, docs/shared/openapis/** asset loading), and the docs/en layout (intro.mdx, install_log.mdx, concept.mdx, architecture/, functions/, how_to/, apis/, assets/). Catalogs shared assets such as docs/shared/openapis/logging.alauda.io.v2.json (log search/aggregation/context/archive endpoints), events.alauda.io.v1.json, and roletemplates.yaml, and codifies conventions inferred from the repo including frontmatter usage, sourceSHA handling, Overview index patterns, and stable terminology (ACP Logging, Elasticsearch/ClickHouse, Filebeat, Kafka, Razor, Lanaya, Vector, nevermore, Courier).",
+      "generation_method": "ai_agent_reading",
+      "updated_at": "2026-05-16T09:37:46Z"
+    }
+  }
+}
