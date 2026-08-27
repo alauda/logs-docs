@@ -18,6 +18,10 @@ This guide explains how to isolate logging-related infrastructure components on 
 2. Infra components are not bound to nodes via local-PV nodeAffinity, or you have accounted for those nodes (see below).
 3. Planning the infra nodes by referring to the <ExternalSiteLink name="acp" href="/configure/clusters/acp-node-planning.html" children="Cluster Node Planning" />
 
+:::info
+On Alauda OS nodes, local storage paths are under `/var/cpaas`, for example `/var/cpaas/data/clickhouse` or `/var/cpaas/data/elasticsearch`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Plan the infra nodes so that the `/var/cpaas` path is backed by a persistent disk that survives node re-provisioning, and expect `pv.spec.local.path` on those nodes to reference the `/var/cpaas` path instead of the `/cpaas` path shown in the example below. For the per-plugin fields, see [Installation](../install_log.mdx).
+:::
+
 ## Check the Local PVs and nodeAffinity
 
 If your components use local storage (for example TopoLVM, local PV), confirm whether PVs have `spec.nodeAffinity`. If so, either:
