@@ -15,6 +15,10 @@ This document describes the log export or archive solution that transfers logs o
 If you want ClickHouse to use S3 as its native log data storage or cold data storage, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx) and [Installation](../install_log.mdx).
 :::
 
+:::info
+On Alauda OS nodes, the host directory that the log export Deployment mounts must be under `/var/cpaas`, for example `/var/cpaas/data/logarchive`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Change only `spec.template.spec.volumes[].hostPath.path` in the examples below; the `mountPath` values and the `output.path` value in the `log-exporter-config` ConfigMap are paths inside the container and stay unchanged.
+:::
+
 ## Transfer to External NFS
 
 ### Prerequisites

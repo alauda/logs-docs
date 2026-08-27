@@ -25,6 +25,10 @@ Do not patch the generated StatefulSets, Deployments, or ClickHouseInstallation 
 2. Confirm whether your storage uses LocalVolume or other PVs with `spec.nodeAffinity`.
 3. Make sure the selected infra nodes can satisfy both the scheduling rules and the storage placement constraints.
 
+:::info
+On Alauda OS nodes, local storage paths are under `/var/cpaas`, for example `/var/cpaas/data/clickhouse` or `/var/cpaas/data/elasticsearch`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Plan the infra nodes so that the `/var/cpaas` path is backed by a persistent disk that survives node re-provisioning, and expect `pv.spec.local.path` on those nodes to reference the `/var/cpaas` path instead of the `/cpaas` paths shown in the examples below. For the per-plugin parameters, see [Installation](../install_log.mdx).
+:::
+
 ## Check Local PVs and nodeAffinity
 
 If your components use local storage (for example TopoLVM, local PV), confirm whether PVs have `spec.nodeAffinity`. If so, either:
