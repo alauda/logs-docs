@@ -37,6 +37,19 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
   - Mount dedicated SSD disks for log storage to significantly enhance performance.
 
+### Host Paths on Alauda OS Nodes
+
+The default host paths in this chapter use the `/cpaas` prefix, which is the layout of the traditional operating system. Alauda OS nodes are immutable: only `/var/cpaas` is writable, so a path under `/cpaas` is not valid on those nodes.
+
+When you install a log storage plugin on Alauda OS nodes, replace the `/cpaas` prefix with `/var/cpaas` in the host path field. The host path is set in the plugin `ModuleInfo`; the console install form does not expose it.
+
+| Plugin | Field | Path on Alauda OS |
+| --- | --- | --- |
+| **Alauda Container Platform Log Storage with Clickhouse** | `spec.config.components.clickhouse.hostpath` | `/var/cpaas/data/clickhouse` |
+| **Alauda Container Platform Log Storage with ElasticSearch** | `spec.config.components.elasticsearch.hostpath` | `/var/cpaas/data/elasticsearch` |
+
+Back the selected path with a persistent disk that survives node re-provisioning, and size that disk for the retention period you plan to use. Set the path before you install, because the host path cannot be changed afterwards.
+
 
 ## Install Alauda Container Platform Log Essentials via console
 
@@ -184,7 +197,7 @@ spec:
       elasticsearch:
         address: ""
         basicAuthSecretName: ""
-        hostpath: /cpaas/data/elasticsearch
+        hostpath: /cpaas/data/elasticsearch # On Alauda OS nodes: /var/cpaas/data/elasticsearch
         httpPort: 9200
         install: true
         k8sNodes:
@@ -261,7 +274,7 @@ YAML field reference:
 | `spec.config.clusterView.isPrivate` | Visibility setting for cluster view. |
 | `spec.config.components.elasticsearch.address` | External Elasticsearch address; leave empty to use platform-installed Elasticsearch. |
 | `spec.config.components.elasticsearch.basicAuthSecretName` | Secret name for external Elasticsearch basic auth; leave empty for platform Elasticsearch. |
-| `spec.config.components.elasticsearch.hostpath` | Data path for Elasticsearch. |
+| `spec.config.components.elasticsearch.hostpath` | Data path for Elasticsearch. On Alauda OS nodes, use a path under `/var/cpaas`, for example `/var/cpaas/data/elasticsearch`. |
 | `spec.config.components.elasticsearch.httpPort` | Elasticsearch HTTP port, default 9200. |
 | `spec.config.components.elasticsearch.install` | Whether to install Elasticsearch via platform; set to false when using external Elasticsearch. |
 | `spec.config.components.elasticsearch.k8sNodes` | Node IP list for Elasticsearch Data when using LocalVolume. |
@@ -385,7 +398,7 @@ spec:
             memory: 256Mi
         k8sNodes:
           - xxx.xxx.xxx.xx
-        hostpath: /cpaas/data/clickhouse
+        hostpath: /cpaas/data/clickhouse # On Alauda OS nodes: /var/cpaas/data/clickhouse
         nodeReplicas: 1
         nodeStorageSize: 200
         type: single
@@ -437,7 +450,7 @@ YAML field reference (ClickHouse):
 | `spec.config.components.storageClassConfig.name` | StorageClass name when type is `StorageClass`; keep empty for `LocalVolume`. |
 | `spec.config.components.clickhouse.resources` | Resource requests/limits for ClickHouse. |
 | `spec.config.components.clickhouse.k8sNodes` | Node IP list for ClickHouse when using `LocalVolume`. |
-| `spec.config.components.clickhouse.hostpath` | Local path for ClickHouse data when using `LocalVolume`. |
+| `spec.config.components.clickhouse.hostpath` | Local path for ClickHouse data when using `LocalVolume`. On Alauda OS nodes, use a path under `/var/cpaas`, for example `/var/cpaas/data/clickhouse`. |
 | `spec.config.components.clickhouse.nodeReplicas` | Replica count when using `StorageClass`. |
 | `spec.config.components.clickhouse.nodeStorageSize` | Storage size for ClickHouse data (Gi). |
 | `spec.config.components.clickhouse.type` | Cluster size: `single`, `normal`, or `big`. |
