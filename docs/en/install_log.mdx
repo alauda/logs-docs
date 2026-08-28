@@ -37,6 +37,20 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
   - Mount dedicated SSD disks for log storage to significantly enhance performance.
 
+### Host Paths on Alauda OS Nodes
+
+The default host paths in this chapter use the `/cpaas` prefix, which is the layout of the traditional operating system. Alauda OS nodes are immutable: only `/var/cpaas` is writable, so a path under `/cpaas` is not valid on those nodes.
+
+When you install a logging plugin on Alauda OS nodes, replace the `/cpaas` prefix with `/var/cpaas` in every host path parameter:
+
+| Plugin | Parameter | Path on Alauda OS |
+| --- | --- | --- |
+| **Alauda Container Platform Log Storage for ClickHouse** | **Storage Path on Host** and **Metadata Storage Path**, or `spec.config.components.clickhouse.storagePolicy.*.localVolumeSpec.path` | `/var/cpaas/data/clickhouse` |
+| **Alauda Container Platform Log Storage for Elasticsearch** | **Storage path on host**, or `spec.config.components.elasticsearch.hostpath` | `/var/cpaas/data/elasticsearch` |
+| **Alauda Container Platform Log Collector** | **Storage Path**, or `spec.config.components.nevermore.storageSpec.dataDir` | `/var/cpaas/data/nevermore` |
+
+Back the selected path with a persistent disk that survives node re-provisioning, and size that disk for the retention settings you plan to use. Set the path before you install, because several storage settings cannot be changed afterwards.
+
 
 ## Install Alauda Container Platform Log Essentials
 
@@ -144,7 +158,7 @@ Field explanations:
    | **size** | Choose `Single Node`, `Small Cluster`, or `Big Cluster` based on the target scale. |
    | **Storage Method** | Choose `LocalVolume` or `StorageClass` for the storage backend. |
    | **Log Node** | Displayed when `LocalVolume` is used. Select the Elasticsearch data nodes. |
-   | **Storage path on host** | Displayed when `LocalVolume` is used. Enter the absolute host path for Elasticsearch data. |
+   | **Storage path on host** | Displayed when `LocalVolume` is used. Enter the absolute host path for Elasticsearch data. On Alauda OS nodes, use a path under `/var/cpaas`, for example `/var/cpaas/data/elasticsearch`. |
    | **Capacity** | Reserve storage capacity in Gi for the current data section. The page uses this label for both Elasticsearch data and Kafka data sections. |
    | **Log data nodes resources** | Configure CPU and memory requests and limits for Elasticsearch data nodes. |
    | **Kafka Nodes** | Select the Kafka nodes used by the plugin. |
@@ -195,7 +209,7 @@ spec:
       elasticsearch:
         address: ""
         basicAuthSecretName: ""
-        hostpath: /cpaas/data/elasticsearch
+        hostpath: /cpaas/data/elasticsearch # On Alauda OS nodes: /var/cpaas/data/elasticsearch
         httpPort: 9200
         install: true
         k8sNodes:
@@ -373,8 +387,8 @@ If you plan to use S3 for ClickHouse log data storage or cold data storage, prep
    | **Storage Method** | Displayed when **Storage Policy** is **Default**. Available values are `LocalVolume` and `StorageClass`. |
    | **Metadata Storage Type** | Displayed when **Storage Policy** is **Separation of storage and compute**. Available values are `LocalVolume` and `StorageClass`. |
    | **Log Node** | Displayed when local storage is used. Under **Default**, select the nodes that store ClickHouse log data locally. Under **Separation of storage and compute**, select the nodes that store ClickHouse metadata locally. |
-   | **Storage Path on Host** | Displayed when **Storage Policy** is **Default** and **Storage Method** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. |
-   | **Metadata Storage Path** | Displayed when **Metadata Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. |
+   | **Storage Path on Host** | Displayed when **Storage Policy** is **Default** and **Storage Method** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. On Alauda OS nodes, change it to `/var/cpaas/data/clickhouse`. |
+   | **Metadata Storage Path** | Displayed when **Metadata Storage Type** is `LocalVolume`. Default value: `/cpaas/data/clickhouse`. On Alauda OS nodes, change it to `/var/cpaas/data/clickhouse`. |
    | **Log Replicas** | Displayed when the selected storage mode uses `StorageClass`. Configure the number of ClickHouse replicas created for the active storage section. |
    | **StorageClass** | Displayed when **Storage Policy** is **Default** and **Storage Method** is `StorageClass`. Select the StorageClass used for ClickHouse log data. |
    | **Metadata StorageClass** | Displayed when **Metadata Storage Type** is `StorageClass`. Select the StorageClass used for ClickHouse metadata. |
@@ -442,7 +456,7 @@ spec:
               localVolumeSpec:
                 nodes:
                   - xxx.xxx.xxx.xx
-                path: /cpaas/data/clickhouse
+                path: /cpaas/data/clickhouse # On Alauda OS nodes: /var/cpaas/data/clickhouse
             dataStorage:
               type: S3
               s3Spec:
@@ -610,7 +624,7 @@ Before applying these scheduling rules, make sure your infra node planning and l
    | --- | --- |
    | **Storage Cluster** | Select the cluster where Alauda Container Platform Log Storage has been installed. |
    | **Log types** | Click ***Select/Deselect*** to set the scope of log collection in the cluster. |
-   | **Storage Path** | Configure the local working-data path for Log Collector. Use an absolute path. Default value: `/cpaas/data/nevermore`. This setting cannot be changed after installation. |
+   | **Storage Path** | Configure the local working-data path for Log Collector. Use an absolute path. Default value: `/cpaas/data/nevermore`. On Alauda OS nodes, change it to `/var/cpaas/data/nevermore`. This setting cannot be changed after installation. |
 
 4. Click **Install**.
 
@@ -664,7 +678,7 @@ spec:
     components:
       nevermore:
         storageSpec:
-          dataDir: /cpaas/data/nevermore
+          dataDir: /cpaas/data/nevermore # On Alauda OS nodes: /var/cpaas/data/nevermore
     storage:
       type: ElasticSearch
   version: v4.1.0
