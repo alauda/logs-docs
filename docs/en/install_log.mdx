@@ -27,7 +27,9 @@ Alauda Container Platform Log Storage plugins can be installed in any cluster, a
 
 So , before installing the log storage plugin , you need to plan the cluster and node where the log storage component will be installed.
 
-  - Avoid deploying log storage plugins in the global cluster. Instead, deploy them in workload clusters to ensure management cluster failures do not disrupt log-based issue resolution.
+  - Separate log storage by scope. Deploy log storage in the `global` cluster for the `global` cluster's own logs, so that the `global` cluster collects, stores, and queries its own logs independently. Centralize application logs from workload clusters into a dedicated log storage workload cluster rather than into the `global` cluster, so that a `global` cluster failure does not disrupt log-based issue resolution for applications, and application log load does not affect the management cluster.
+
+  - If the `global` cluster is deployed with disaster recovery, do not send workload cluster logs to either the primary or the standby `global` cluster. Disaster recovery synchronizes only the `global` cluster's etcd data and excludes namespaces such as `cpaas-system`, so log data is not replicated to the standby cluster. Each `global` cluster stores and queries only its own logs and never uses the other cluster's log storage; otherwise application logs become unavailable after a failover. For the synchronization scope, see <ExternalSiteLink name="acp" href="/install/global_dr.html" children="Global Cluster Disaster Recovery" />.
 
   - Prioritize centralizing logs to a single log storage cluster. If log volume exceeds maximum capacity thresholds, distribute logs across multiple storage clusters.
 
