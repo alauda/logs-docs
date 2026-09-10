@@ -1,0 +1,19 @@
+---
+weight: 15
+---
+
+# Upgrade
+
+This section explains how to upgrade the Logging components of an existing ACP deployment.
+
+Find your current deployment in the table below, then follow the matching guide.
+
+| Current deployment | Upgrade to | Guide |
+| --- | --- | --- |
+| Logs are stored with **Alauda Container Platform Log Storage for Elasticsearch** | ACP 4.4 with ClickHouse or an OpenSearch 3.7.0 cluster | [Elasticsearch Upgrade Guide](./elasticsearch-upgrade.mdx) |
+
+<Overview />
+
+:::info
+If the cluster already stores logs in ClickHouse or OpenSearch, no upgrade guide is needed. Follow [Installation](../install_log.mdx) to install or update the plugins.
+:::
