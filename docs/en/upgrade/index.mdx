@@ -99,7 +99,7 @@ metadata:
   namespace: cpaas-system
 type: Opaque
 stringData:
-  endpoints: "https://<opensearch-host>:9200"     # OpenSearch addresses, separated by commas if there are several; put the highly available coordinator or load balancer address first
+  endpoints: "https://<opensearch-lb>:9200"       # Comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
   username: "<opensearch-username>"               # Can be omitted when the target allows anonymous access
   password: "<opensearch-password>"               # Can be omitted when the target allows anonymous access
   tls.ca: |-                                      # Required when you migrate historical data and the target uses HTTPS with a private CA, so the worker can verify the target before writing
@@ -128,7 +128,7 @@ stringData:
     -----END CERTIFICATE-----
 ```
 
-`endpoints` accepts several addresses. The write side uses all of them in turn, while the query side uses only the first, so put the highly available coordinator or load balancer address first.
+`endpoints` is a comma-separated string and accepts multiple HTTP(S) URLs. aggregate-vector and OpenSearch index initialization use the full list; the Razor query path and the historical migration worker use only the first address. Put the highly available coordinator, Service, or load balancer first, not a single data node.
 
 #### Target ClickHouse
 
