@@ -343,6 +343,10 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
 
 The migration does not mount a source volume or copy data while the legacy ES StatefulSet is still running. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` when observing an existing completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
 
+:::warning
+New log, event, and audit data continues to be written to the target after cutover. This is expected. Do not delete or recreate target indices, and do not stop the new data path just to make source and target counts equal. The migration compares against the captured source baseline and requires the target to contain at least the migrated history plus any new data.
+:::
+
 Use the migration worker image supplied with the same ACP 4.4 Logging package. Do not reuse an older migration worker tag: an older worker can finish writing and verifying the target data but fail to terminate, leaving the migration resource in `Running`. If the target data is complete but the resource stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
 
 Do not delete the migration resource or its source volumes.
@@ -507,6 +511,7 @@ Record the result of every item in the change record:
 
 - `moduleinfo is depended by ...`: stop. Do not modify or delete logagent. Confirm that both `ModulePlugin` and `ModuleConfig` had `labelCluster` cleared before the `ModuleInfo` deletion; if the error remains, contact support.
 - Migration phase `Blocked`: read the condition and task status. Do not delete or recreate the migration resource.
+- Target document count mismatch: keep the new data path running and do not delete target indices. The target can contain more documents than the source baseline because new data is written after cutover. If the migration still fails, contact support with the source baseline and target count evidence.
 - `ModuleInfo` or `ClusterPluginInstance` reappears: delete `ClusterPluginInstance` first, then delete the new `ModuleInfo`, then repeat the 60-second stability check.
 - `AppRelease/logcenter` does not disappear: do not remove finalizers. Check the platform conditions and contact support.
 - New Razor remains unready with `UNKNOWN_DATABASE`: create the target ClickHouse database and wait for reconcile. Do not delete the PLF or the target Secrets.
