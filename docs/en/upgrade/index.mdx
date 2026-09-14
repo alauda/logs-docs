@@ -57,7 +57,7 @@ Before you start, ensure that:
 2. You have downloaded the ACP 4.4 Logging plugin package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
 3. You have separately prepared the target storage and message queue used by this upgrade. The upgrade does not reuse the storage or Kafka that ship with the Elasticsearch plugin, so you provide:
    - For OpenSearch 3.7.0, every OpenSearch node must have the `analysis-ik` plugin in the matching 3.7.0 version. Without it, log queries fail even when writes succeed. Confirm it through the OpenSearch plugin list and an `ik_smart` analyze check before cutover. The target connection user must be able to manage index templates and ISM policies and read/write the log data.
-   - For ClickHouse, use a supported cluster with `ReplicatedMergeTree` and Keeper/ZooKeeper. The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target user must be able to create/update the target database schema, read/write data, and run `SYSTEM DROP DNS CACHE` for the Razor cleaner.
+   - For ClickHouse, use a supported cluster with `ReplicatedMergeTree` and Keeper/ZooKeeper. The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target user must be able to create/update the target database schema, read/write data, and run `SYSTEM DROP DNS CACHE` for the Razor cleaner. Ensure the target database exists before you apply the PlatformLogForward; if the new Razor remains unready with `UNKNOWN_DATABASE`, create the database and wait for the next reconciliation.
    - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
    - The target storage and Kafka connection details prepared according to their product documentation.
 4. If you migrate historical data, you have the approved migration worker image. The image is not part of the Operator package; specify the complete version, tag, or digest.
@@ -343,6 +343,8 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
 
 The migration does not mount a source volume or copy data while the legacy ES StatefulSet is still running. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` when observing an existing completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
 
+Use the migration worker image supplied with the same ACP 4.4 Logging package. Do not reuse an older migration worker tag: an older worker can finish writing and verifying the target data but fail to terminate, leaving the migration resource in `Running`. If the target data is complete but the resource stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
+
 Do not delete the migration resource or its source volumes.
 
 ### Step 4: Uninstall the legacy Elasticsearch storage plugin
@@ -507,4 +509,6 @@ Record the result of every item in the change record:
 - Migration phase `Blocked`: read the condition and task status. Do not delete or recreate the migration resource.
 - `ModuleInfo` or `ClusterPluginInstance` reappears: delete `ClusterPluginInstance` first, then delete the new `ModuleInfo`, then repeat the 60-second stability check.
 - `AppRelease/logcenter` does not disappear: do not remove finalizers. Check the platform conditions and contact support.
+- New Razor remains unready with `UNKNOWN_DATABASE`: create the target ClickHouse database and wait for reconcile. Do not delete the PLF or the target Secrets.
+- Migration data is verified but the resource remains `Running`: do not delete the migration resource or source volumes. Use the approved worker image for the current Logging package and contact support if the resource still does not complete.
 - New log queries fail after uninstall: stop the migration and contact support. Do not delete the retained volumes.
