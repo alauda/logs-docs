@@ -56,7 +56,8 @@ Before you start, ensure that:
 1. The ACP 4.4 platform upgrade is complete and the Logging components can be upgraded. Upgrade the Logging control components as part of this procedure, and keep **Alauda Container Platform Log Storage for Elasticsearch** installed.
 2. You have downloaded the ACP 4.4 Logging plugin package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
 3. You have separately prepared the target storage and message queue used by this upgrade. The upgrade does not reuse the storage or Kafka that ship with the Elasticsearch plugin, so you provide:
-   - An OpenSearch 3.7.0 cluster, or a ClickHouse cluster, sized for both the new traffic and the data that you migrate.
+   - For OpenSearch 3.7.0, every OpenSearch node must have the `analysis-ik` plugin in the matching 3.7.0 version. Without it, log queries fail even when writes succeed. Confirm it through the OpenSearch plugin list and an `ik_smart` analyze check before cutover. The target connection user must be able to manage index templates and ISM policies and read/write the log data.
+   - For ClickHouse, use a supported cluster with `ReplicatedMergeTree` and Keeper/ZooKeeper. The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target user must be able to create/update the target database schema, read/write data, and run `SYSTEM DROP DNS CACHE` for the Razor cleaner.
    - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
    - The target storage and Kafka connection details prepared according to their product documentation.
 4. If you migrate historical data, you have the approved migration worker image. The image is not part of the Operator package; specify the complete version, tag, or digest.
@@ -99,7 +100,7 @@ metadata:
   namespace: cpaas-system
 type: Opaque
 stringData:
-  endpoints: "https://<opensearch-lb>:9200"       # Comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
+  endpoints: "https://<opensearch-lb>:9200"       # Required; comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
   username: "<opensearch-username>"               # Can be omitted when the target allows anonymous access
   password: "<opensearch-password>"               # Can be omitted when the target allows anonymous access
   tls.ca: |-                                      # Required when you migrate historical data and the target uses HTTPS with a private CA, so the worker can verify the target before writing
@@ -114,10 +115,10 @@ metadata:
   namespace: cpaas-system
 type: Opaque
 stringData:
-  bootstrap: "<kafka-bootstrap-addresses>"        # Kafka addresses in host:port form, separated by commas
-  kafkaClusterName: "<kafka-cluster-name>"        # Kafka broker resource name; must match the actual name
-  username: "<kafka-username>"                    # Kafka user name
-  password: "<kafka-password-with-at-least-32-characters>"   # At least 32 characters on Alauda OS nodes or other FIPS-enabled hosts
+  bootstrap: "<kafka-bootstrap-addresses>"        # Required; Kafka addresses in host:port form, separated by commas
+  kafkaClusterName: "<kafka-cluster-name>"        # Required; Kafka broker resource name; must match the actual name
+  username: "<kafka-username>"                    # Required; Kafka user name
+  password: "<kafka-password-with-at-least-32-characters>"   # Required; at least 32 characters on Alauda OS nodes or other FIPS-enabled hosts
   sasl_mechanism: "SCRAM-SHA-512"                 # Optional, defaults to SCRAM-SHA-512
   topics.log: "ALAUDA_LOG_TOPIC"                  # Optional, log topic name, defaults to ALAUDA_LOG_TOPIC
   topics.event: "ALAUDA_EVENT_TOPIC"              # Optional, event topic name, defaults to ALAUDA_EVENT_TOPIC
@@ -128,7 +129,7 @@ stringData:
     -----END CERTIFICATE-----
 ```
 
-`endpoints` is a comma-separated string and accepts multiple HTTP(S) URLs. aggregate-vector and OpenSearch index initialization use the full list; the Razor query path and the historical migration worker use only the first address. Put the highly available coordinator, Service, or load balancer first, not a single data node.
+`endpoints` is a comma-separated string and accepts multiple HTTP(S) URLs. aggregate-vector and OpenSearch index initialization use the full list; the Razor query path and the historical migration worker use only the first address. Put the highly available coordinator, Service, or load balancer first, not a single data node, and do not add leading whitespace before the first URL.
 
 #### Target ClickHouse
 
@@ -140,8 +141,8 @@ metadata:
   namespace: cpaas-system
 type: Opaque
 stringData:
-  endpoint: "https://<clickhouse-host>:8443"      # ClickHouse address, including protocol and port
-  cluster: "<clickhouse-cluster>"                 # ClickHouse cluster name
+  endpoint: "https://<clickhouse-host>:8443"      # Required; ClickHouse address, including protocol and port
+  cluster: "replicated"                           # Must match the ClickHouse cluster name; ACP baseline default is replicated
   database: "observability"                       # Target database name, defaults to observability
   username: "<clickhouse-username>"               # ClickHouse user name
   password: "<clickhouse-password>"               # ClickHouse password
@@ -242,7 +243,7 @@ Watch the `LegacyESUpgrade` line: when the reason becomes `LegacyESUpgradeComple
 
 Once this step is complete, produce or locate new log, event, and audit records, and confirm that you can query them from the new target before you continue. Do not uninstall the old plugin while `LegacyESUpgrade` is incomplete.
 
-If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The platform consumes the queued messages through the old path and records `LegacyKafkaDrained` when the old consumer lag reaches zero. `LegacyESUpgradeCompleted` is the gate for this procedure.
+If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The legacy lanaya path continues consuming the queued messages and writes them to legacy Elasticsearch; the platform observes the old consumer lag and records `LegacyKafkaDrained` when it reaches zero. `LegacyESUpgradeCompleted` is the gate for this procedure.
 
 ### Step 3: Prepare the historical data migration (optional)
 
@@ -351,12 +352,12 @@ Run this step only when all of these conditions are true:
 
 - `PlatformLogForward/platform-default` is `Ready` and its `LegacyESUpgrade` condition has reason `LegacyESUpgradeCompleted`.
 - If historical migration is required, `LegacyESMigration/platform-es-history` is `PrecaptureReady` or `Succeeded`.
-- The upgrade program has confirmed that the legacy Elasticsearch PVC and PV protection is in place. If the PV reclaim policy is not `Retain`, or if the PVC and PV lack `helm.sh/resource-policy=keep`, `skip-sync=true`, or the protection label, stop and contact support. Do not add or modify this protection manually.
+- The upgrade program has confirmed that the legacy Elasticsearch volume-protection gate is complete, including the PVC/PV protection fields and the protection webhooks. If the PV reclaim policy is not `Retain`, if the PVC and PV lack `helm.sh/resource-policy=keep`, `skip-sync=true`, or the protection label, or if the platform reports a protection gate failure, stop and contact support. Do not add or modify this protection manually.
 - If the source uses legacy Kafka, the platform has recorded that the old consumer lag is drained. Do not stop or scale Kafka, ZooKeeper, lanaya, or Elasticsearch to force this state.
 :::
 
 :::warning
-The controlled sequence clears `spec.labelCluster` on `ModulePlugin/logcenter` and its `ModuleConfig` before deleting the target `ModuleInfo`. Clearing the field is required because the existing logagent still records a cross-cluster dependency on `logcenter`; it bypasses that dependency check so the target `ModuleInfo` can be removed. Do not modify or delete logagent or its `crossClusterDependency`. The temporary window affects logcenter cluster-label discovery, so run this in the approved change window.
+The controlled sequence clears `spec.labelCluster` on `ModulePlugin/logcenter` and its `ModuleConfig` before deleting the target `ModuleInfo`. Clearing the field is required when the existing logagent still records a cross-cluster dependency on `logcenter`; it bypasses that dependency check so the target `ModuleInfo` can be removed. Do not modify or delete logagent or its `crossClusterDependency`. The temporary window affects logcenter cluster-label discovery, so run this in the approved change window.
 :::
 
 If the platform provides a supported plugin-uninstall action for this upgrade, follow the platform or support instructions first. If the action is rejected with `moduleinfo is depended by ...`, or the platform team asks you to run the controlled procedure, use the sequence below. The controlled sequence clears the discovery fields and the per-cluster install record in the order required for this upgrade.
@@ -447,6 +448,7 @@ kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=
 ```bash
 kubectl get clusterplugininstance logcenter --ignore-not-found
 kubectl -n cpaas-system get apprelease logcenter --ignore-not-found
+kubectl -n cpaas-system get statefulset cpaas-elasticsearch --ignore-not-found
 ```
 
 If `ClusterPluginInstance/logcenter` remains or reappears, delete it again and repeat the checks; until it is gone, the platform can recreate `ModuleInfo`. If `ModuleInfo` also reappears, remove `ClusterPluginInstance/logcenter` first, then delete the new `ModuleInfo` again. The `labelCluster` fields may be rewritten to `true`; do not manually restore them, and verify only that `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` do not reappear. If the global-cluster block fails before `ModuleInfo` is deleted, the platform normally restores `labelCluster` automatically. Do not run the workload-cluster block for that failed attempt; fix the cause and run the global sequence again.
@@ -495,8 +497,8 @@ Record the result of every item in the change record:
 - New log, event, and audit records written after cutover can be queried from the new target.
 - `ModuleInfo`, `ClusterPluginInstance/logcenter`, and `AppRelease/logcenter` stay absent for 60 seconds after the controlled uninstall.
 - If history migration was required, the same `LegacyESMigration` reaches `Succeeded` and the migrated history passes target queries.
-- The protected legacy ES PVCs and PVs are still present and bound.
-- No legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workload was manually stopped, scaled, or deleted.
+- The legacy ES StatefulSet and old logcenter workloads are gone, while the protected legacy ES PVCs and PVs are still present and bound.
+- No legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workload was manually stopped, scaled, or deleted outside the controlled uninstall.
 - If any gate failed, the change is stopped and escalated to Alauda support with the command output and resource names.
 
 ## If a Step Is Blocked
