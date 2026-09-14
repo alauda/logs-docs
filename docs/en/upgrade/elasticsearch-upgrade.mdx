@@ -34,6 +34,15 @@ Use this guide when the cluster matches the source and target below.
 
 Do not use this guide for a fresh installation, or when the cluster already stores logs in ClickHouse or OpenSearch. See [Installation](../install_log.mdx) instead.
 
+## Who Runs This Procedure
+
+This is an implementation runbook for Alauda implementation engineers or platform administrators. It is not an end-user self-service procedure.
+
+- Use a platform account that can access both the global management cluster and the target workload cluster.
+- Use a separate terminal or kubectl context for each cluster where possible. Each command block in this guide states which cluster it runs on.
+- Before each block, confirm the current context with `kubectl config current-context`.
+- In a managed environment, confirm the change window and escalation path with Alauda support before you start.
+
 ## Prerequisites
 
 Before you start, ensure that:
@@ -49,7 +58,11 @@ Before you start, ensure that:
 6. The legacy Elasticsearch, Kafka, ZooKeeper, lanaya, and Razor workloads are still running. Do not stop, scale, or delete them before this guide tells you to.
 
 
-## Recommended Sequence
+:::warning
+During the upgrade, do not stop, scale, or delete the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads. Do not delete PVCs, PVs, or protection finalizers. Do not delete or recreate a `LegacyESMigration` resource. These actions can make historical data unavailable or invalidate the migration boundary.
+:::
+
+## Upgrade Flow at a Glance
 
 Use this order. Each gate must pass before the next step starts.
 
@@ -58,13 +71,15 @@ Use this order. Each gate must pass before the next step starts.
 | 1 | Workload cluster | Prepare the target storage, Kafka, and connection Secrets | The target storage and topics are reachable |
 | 2 | Workload cluster | Create `PlatformLogForward` | `Phase=Ready` and `LegacyESUpgradeCompleted` |
 | 3 | Workload cluster | If history is needed, create `LegacyESMigration` | `PrecaptureReady` (or `Succeeded` on an existing run) |
-| 4 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | Those three objects stay absent for 60 seconds and new log queries still pass |
+| 4 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` stay absent for 60 seconds and new log queries still pass |
 | 5 | Workload cluster | Observe the same `LegacyESMigration` | `Phase=Succeeded` and target queries pass |
 | 6 | Workload cluster | Keep the protected source volumes | Explicit approval before any cleanup |
 
 ## Upgrade Procedure
 
 ### Step 1: Prepare the target storage, Kafka, and connection Secrets
+
+**Run on the workload cluster.**
 
 Create two Secrets in `cpaas-system` on the workload cluster: one for the target storage, and one for the new Kafka service. Do not overwrite or reuse the Secrets of the legacy Elasticsearch and Kafka.
 
@@ -135,6 +150,8 @@ The new Kafka service uses the same `platform-default-mq-conn` as in the OpenSea
 When you migrate historical data, do not set `tls.insecure_skip_verify: "true"` in the target storage connection Secret: the migration tool refuses to start and requires a verifiable `tls.ca` instead.
 
 ### Step 2: Create the new data path
+
+**Run on the workload cluster.**
 
 Create one `PlatformLogForward` for your target. It must use `installMode: Fresh` and the `log.alauda.io/legacy-es-upgrade: "true"` annotation. Do not use `installMode: Adopt`.
 
@@ -222,6 +239,8 @@ Once this step is complete, produce or locate new log, event, and audit records,
 If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The platform consumes the queued messages through the old path and records `LegacyKafkaDrained` when the old consumer lag reaches zero. `LegacyESUpgradeCompleted` is the gate for this procedure.
 
 ### Step 3: Prepare the historical data migration (optional)
+
+**Run on the workload cluster.**
 
 Skip this step only when the approved upgrade plan confirms that the historical Elasticsearch data is not required. Record that decision. Do not delete the source PVCs or PVs just to skip migration.
 
@@ -336,7 +355,7 @@ The controlled sequence clears `spec.labelCluster` on `ModulePlugin/logcenter` a
 
 If the platform provides a supported plugin-uninstall action for this upgrade, follow the platform or support instructions first. If the action is rejected with `moduleinfo is depended by ...`, or the platform team asks you to run the controlled procedure, use the sequence below. The controlled sequence clears the discovery fields and the per-cluster install record in the order required for this upgrade.
 
-The critical part is a short sequence. The durable problem is not the `labelCluster` rewrite itself; base-operator may restore that field, but it does not recreate `ModuleInfo`. The real risk is a surviving `ClusterPluginInstance/logcenter`, because cluster-transformer can use it to recreate `ModuleInfo` on a later reconciliation. The `ModuleInfo` delete and `ClusterPluginInstance/logcenter` delete must therefore run back-to-back. Do not wait for `ModuleInfo` to disappear, check `AppRelease`, or do anything else between them.
+The critical part is a short sequence. The platform may restore the `labelCluster` field after it is cleared; that is not the durable problem. The real risk is a surviving `ClusterPluginInstance/logcenter`, which the platform can use to recreate `ModuleInfo` later. The `ModuleInfo` delete and `ClusterPluginInstance/logcenter` delete must therefore run back-to-back. Do not wait for `ModuleInfo` to disappear, check `AppRelease`, or do anything else between them.
 
 **On the global cluster: start the critical sequence**
 
@@ -430,6 +449,8 @@ After the stability check passes, produce a new log, event, and audit record and
 
 ### Step 5: Complete and verify the historical migration (optional)
 
+**Run on the workload cluster.**
+
 If you created `LegacyESMigration`, continue observing the same resource. Do not delete or recreate it. The phase should move from `PrecaptureReady` to `Validating`, `Running` (or `Retrying`), and finally `Succeeded`.
 
 ```bash
@@ -457,6 +478,20 @@ If no migration was created, record the explicit decision that historical data i
 The protected legacy Elasticsearch PVCs and PVs are retained. Keep them until migration and target validation are complete. Do not remove protection annotations, delete PVCs or PVs, or remove finalizers. To release the volumes after validation, contact Alauda support or follow the separate approved cleanup procedure.
 
 Only the ES PVCs and PVs are retained by this upgrade. Legacy Kafka and ZooKeeper volumes are not part of the retention scope.
+
+Export or record the final PLF conditions, migration status, target query results, and retained PVC/PV names for the implementation handover. Do not remove protection annotations or delete these volumes as part of this upgrade.
+
+## Completion Checklist
+
+Record the result of every item in the change record:
+
+- `PlatformLogForward/platform-default` is `Ready` and reports `LegacyESUpgradeCompleted`.
+- New log, event, and audit records written after cutover can be queried from the new target.
+- `ModuleInfo`, `ClusterPluginInstance/logcenter`, and `AppRelease/logcenter` stay absent for 60 seconds after the controlled uninstall.
+- If history migration was required, the same `LegacyESMigration` reaches `Succeeded` and the migrated history passes target queries.
+- The protected legacy ES PVCs and PVs are still present and bound.
+- No legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workload was manually stopped, scaled, or deleted.
+- If any gate failed, the change is stopped and escalated to Alauda support with the command output and resource names.
 
 ## If a Step Is Blocked
 
