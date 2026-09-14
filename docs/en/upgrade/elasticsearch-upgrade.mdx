@@ -13,7 +13,7 @@ Elasticsearch and its volumes stay as they are during the upgrade, and new logs 
 1. The platform first creates a new log receiving and storage path that runs alongside the existing one, so collectors keep running.
 2. Once the new one is ready, new log, event, and audit data are received and written by it.
 3. Data that has already queued up is consumed completely. The Elasticsearch cluster keeps running during this time.
-4. After you confirm that new data can be queried, uninstall the **Alauda Container Platform Log Storage for Elasticsearch** plugin. Its volumes are retained.
+4. After you confirm that new data can be queried, confirm that the upgrade program has protected the legacy Elasticsearch PVCs and PVs, then uninstall the **Alauda Container Platform Log Storage for Elasticsearch** plugin. Its protected volumes are retained.
 5. If you need the historical data, migrate the retained data to the new storage, and decide whether to delete it after validation.
 
 :::warning
@@ -208,42 +208,88 @@ Once this step is complete, produce or locate new log, event, and audit records,
 Uninstall the plugin only when the new data path is `Ready` and the `LegacyESUpgrade` condition is complete. Use the controlled uninstall below: do not delete the plugin from the console, do not force-delete resources, and do not remove finalizers.
 :::
 
-The script below performs the uninstall serially. Run it in `bash` as a single copy-paste block instead of entering the commands one by one: the platform rewrites the plugin discovery flag automatically, so typing them one at a time may not leave enough time to delete the plugin instance before it is restored. Set `CLUSTER` to the workload cluster name as registered in the `global` cluster.
+:::warning
+Before you continue, confirm that the upgrade program has protected the legacy Elasticsearch PVCs and their bound PVs. If the PV reclaim policy is not `Retain`, or if the PVC and PV lack `helm.sh/resource-policy=keep`, `skip-sync=true`, or the protection label, stop and contact support. Uninstalling the plugin can delete an unprotected volume. Do not add or modify this protection manually.
+:::
+
+The controlled uninstall is a short sequence: clear the plugin discovery flags, delete the target `ModuleInfo`, then delete `ClusterPluginInstance/logcenter`. The console uninstall also deletes `ModuleInfo`, but this upgrade needs the controlled sequence below so that the discovery flags and the per-cluster install record are handled in the correct order.
+
+There is one timing requirement. The risk is not the `labelCluster` rewrite itself: base-operator may restore that field, but it does not recreate `ModuleInfo`. The real risk is `ClusterPluginInstance/logcenter`; cluster-transformer can use it to recreate `ModuleInfo` on a later reconciliation. The window starts when `ModuleInfo` is gone while the install record still exists, so the `ModuleInfo` delete and the `ClusterPluginInstance/logcenter` delete must run back-to-back. Do not wait for `ModuleInfo` to disappear, check `AppRelease`, or do anything else between them. Once the install record is gone, a `labelCluster` rewrite is harmless.
+
+**On the global cluster: start the critical sequence**
+
+Set `CLUSTER` to the workload cluster name as registered in the global cluster, then run these commands:
 
 ```bash
 set -euo pipefail
 
-export GLOBAL_KUBECONFIG=<global-cluster-kubeconfig>
-export WORKLOAD_KUBECONFIG=<workload-cluster-kubeconfig>
 CLUSTER=<workload-cluster-name>
 
-g() { kubectl --kubeconfig "$GLOBAL_KUBECONFIG" "$@"; }
-w() { kubectl --kubeconfig "$WORKLOAD_KUBECONFIG" "$@"; }
-
-# Resolve the plugin instance name and the plugin config name for this cluster
-MODULE_INFO="$(g get moduleplugin logcenter \
+# 1. Resolve the plugin instance name and the plugin config name for this cluster
+MODULE_INFO="$(kubectl get moduleplugin logcenter \
   -o jsonpath="{.status.installed[?(@.cluster==\"$CLUSTER\")].name}")"
-MODULE_CONFIG="$(g get moduleplugin logcenter \
+MODULE_CONFIG="$(kubectl get moduleplugin logcenter \
   -o jsonpath='{.status.moduleConfigs[0].name}')"
 
 if [ -n "$MODULE_INFO" ]; then
-  # Turn off the discovery flags
-  g patch moduleplugin logcenter --type=merge -p '{"spec":{"labelCluster":""}}'
-  g patch moduleconfig "$MODULE_CONFIG" --type=merge -p '{"spec":{"labelCluster":""}}'
+  # 2. Turn off the discovery flags
+  kubectl patch moduleplugin logcenter --type=merge -p '{"spec":{"labelCluster":""}}'
+  kubectl patch moduleconfig "$MODULE_CONFIG" --type=merge -p '{"spec":{"labelCluster":""}}'
 
-  # Delete the plugin instance and wait until it is gone
-  g delete moduleinfo "$MODULE_INFO" --ignore-not-found
-  g wait --for=delete "moduleinfo/$MODULE_INFO" --timeout=10m
+  # 3. Return as soon as the delete request is accepted; do not wait here
+  kubectl delete moduleinfo "$MODULE_INFO" --ignore-not-found --wait=false
 else
   echo "No plugin instance found for cluster $CLUSTER; it may already be uninstalled. Continuing to verify that the plugin instance is gone."
 fi
-
-# Delete the per-cluster plugin install record, then wait for the plugin instance on the workload cluster to disappear
-w delete clusterplugininstance logcenter --ignore-not-found
-w -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
 ```
 
-`ClusterPluginInstance/logcenter` must be deleted. If it remains, the platform recreates `ModuleInfo`. If the script fails halfway, the platform writes `labelCluster` back to `true` automatically, so no half-finished state is left behind; fix the cause and run it again.
+**On the workload cluster: finish the critical sequence**
+
+Switch the current kubectl context to the workload cluster immediately. Do not run any wait or verification first. Run:
+
+```bash
+# 4. Delete the per-cluster install record before it can recreate ModuleInfo
+kubectl delete clusterplugininstance logcenter --ignore-not-found
+```
+
+**Wait for the old data path to be removed**
+
+Switch back to the global cluster and wait for `ModuleInfo` to disappear:
+
+```bash
+CLUSTER=<workload-cluster-name>
+MODULE_INFO="$(kubectl get moduleplugin logcenter \
+  -o jsonpath="{.status.installed[?(@.cluster==\"$CLUSTER\")].name}")"
+
+if [ -n "$MODULE_INFO" ]; then
+  kubectl wait --for=delete "moduleinfo/$MODULE_INFO" --timeout=10m
+else
+  echo "No ModuleInfo remains for cluster $CLUSTER."
+fi
+```
+
+Switch to the workload cluster and wait for the legacy `AppRelease` to be removed:
+
+```bash
+kubectl -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
+```
+
+After these steps, wait 60 seconds and verify that the resources stayed gone. Each command must return no resource.
+
+**On the global cluster**
+
+```bash
+kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=<workload-cluster-name>' --ignore-not-found
+```
+
+**On the workload cluster**
+
+```bash
+kubectl get clusterplugininstance logcenter --ignore-not-found
+kubectl -n cpaas-system get apprelease logcenter --ignore-not-found
+```
+
+If `ClusterPluginInstance/logcenter` remains or reappears, delete it again and repeat the checks; until it is gone, the platform can recreate `ModuleInfo`. If `ModuleInfo` also reappears, remove `ClusterPluginInstance/logcenter` first, then delete the new `ModuleInfo` again. The `labelCluster` fields may be rewritten to `true`; that is normal once the per-cluster install record is gone. If the critical sequence fails before `ModuleInfo` is deleted, the platform normally restores `labelCluster` automatically; fix the cause and run the sequence again.
 
 ### Step 4: Migrate historical data
 
