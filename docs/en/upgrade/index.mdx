@@ -58,11 +58,11 @@ During the upgrade, do not stop, scale, or delete the legacy Elasticsearch, Kafk
 
 The operator does not create the external OpenSearch/ClickHouse cluster or the new Kafka service. Create them separately, then provide the connection details through the Secrets in Step 1.
 
-Plan the size with [Log Component Capacity Planning](../architecture/capacity_planning.mdx), and do not plan below the current logcenter deployment. The target must hold the migrated history plus new traffic. The reference disk configuration in that guide is `6000 IOPS` and `250 MB/s` read/write on dedicated SSD mounts; if the actual storage is weaker, move to a larger profile.
+Plan the size with [Log Component Capacity Planning](../architecture/capacity_planning.mdx), and do not plan below the current Alauda Container Platform Log Storage for Elasticsearch deployment. The target must hold the migrated history plus new traffic. The reference disk configuration in that guide is `6000 IOPS` and `250 MB/s` read/write on dedicated SSD mounts; if the actual storage is weaker, move to a larger profile.
 
-The legacy logcenter values below are the current deployment baseline, not target settings. They are `chart-alauda-log-center` defaults and can differ per site; check the deployed values before you plan:
+The legacy Alauda Container Platform Log Storage for Elasticsearch values below are the current deployment baseline, not target settings. They are `chart-alauda-log-center` defaults and can differ per site; check the deployed values before you plan:
 
-| Legacy logcenter chart setting | Typical baseline | What to prepare for the target |
+| Legacy Alauda Container Platform Log Storage for Elasticsearch chart setting | Typical baseline | What to prepare for the target |
 | --- | --- | --- |
 | `elasticsearch.storage.node_size`, `node_replicas` | 200 Gi per data node; `node_replicas` sets the data-node count (1 by default; the small-scale profile uses 3) | Size the target storage for the historical data plus new traffic and the target HA policy |
 | `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | Use independent storage for the new target; the legacy local path is not reused |
@@ -86,7 +86,7 @@ Read the target settings from the CRs that are actually deployed in the environm
 
 | Check | Expected |
 | --- | --- |
-| Source | Legacy ES, Kafka, ZooKeeper, lanaya, and Razor are running; `logcenter` is `Running` |
+| Source | Legacy ES, Kafka, ZooKeeper, lanaya, and Razor are running; Alauda Container Platform Log Storage for Elasticsearch is `Running` |
 | Target storage | OpenSearch 3.7.0 or the supported ClickHouse topology is reachable; database/Keeper requirements are met |
 | Target Kafka | New bootstrap is reachable; topics and Logging user access are ready |
 | Connection Secrets | Required keys are present and valid; legacy Secrets are not reused |
@@ -383,7 +383,7 @@ Run this step only when all of these conditions are true:
 :::
 
 :::warning
-This sequence temporarily clears platform discovery fields for `logcenter` so the legacy plugin can be removed. Run it only in the approved change window, and do not modify or delete logagent or its dependencies.
+This sequence temporarily clears platform discovery fields for Alauda Container Platform Log Storage for Elasticsearch so the legacy plugin can be removed. Run it only in the approved change window, and do not modify or delete logagent or its dependencies.
 :::
 
 If the platform provides a supported plugin-uninstall action for this upgrade, follow the platform or support instructions first. If the action is rejected, or the platform team asks you to run the controlled procedure, use the sequence below.
