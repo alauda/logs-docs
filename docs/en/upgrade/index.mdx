@@ -275,7 +275,7 @@ If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeep
 
 Skip this step only when the approved upgrade plan confirms that the historical Elasticsearch data is not required. Record that decision. Do not delete the source PVCs or PVs just to skip migration.
 
-If the data is required, create the `LegacyESMigration` resource **before** you uninstall the legacy plugin, so the platform can capture the final source state and resolve the source volumes automatically. Creating the migration after the uninstall requires explicit source volume references and cannot use the final capture.
+If the data is required, create the `LegacyESMigration` resource **before** you uninstall the legacy plugin. Resource creation and the data copy happen at different times: the platform captures the final source state and records the source volumes when you create the resource, and copies the data only after the uninstall. Creating the migration after the uninstall requires explicit source volume references and cannot use the final capture.
 
 #### Target OpenSearch
 
@@ -350,7 +350,7 @@ The standard `indexScope` categories are:
 
 If the source also contains per-project logs or metering data, add `log-project-*` or `meter-*` to `indexScope`; otherwise that data is not migrated. Do not use a single-day index such as `audit-20260825` unless you intentionally want to migrate only that day. The `source` and `target` sections cannot be changed after creation. The migration options above show the defaults; adjust them only when your migration plan requires it.
 
-Do not set `source.pvcRefs` in this recommended flow: the platform discovers the source volumes automatically while the legacy Elasticsearch StatefulSet still exists and records them in `status.resolvedPvcRefs`. If the migration reports `SourcePVCsUnavailable`, stop and contact support; do not delete or edit the migration resource.
+Do not set `source.pvcRefs` in this flow; the platform records the discovered source volumes in `status.resolvedPvcRefs`. If the migration reports `SourcePVCsUnavailable`, stop and contact support; do not delete or edit the migration resource.
 
 Apply the resource and wait for `PrecaptureReady`:
 
