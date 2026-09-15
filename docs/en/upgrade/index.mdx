@@ -34,17 +34,6 @@ Use this guide when the cluster matches the source and target below.
 | Target storage | A separately prepared ClickHouse or OpenSearch 3.7.0 cluster |
 | Supported source Logging plugin versions | 4.2.x, 4.3.x |
 
-Do not use this guide for a fresh installation, or when the cluster already stores logs in ClickHouse or OpenSearch. See [Installation](../install_log.mdx) instead.
-
-## Who Runs This Procedure
-
-This is an implementation runbook for Alauda implementation engineers or platform administrators. It is not an end-user self-service procedure.
-
-- Use a platform account that can access both the global management cluster and the target workload cluster.
-- Use a separate terminal or kubectl context for each cluster where possible. Each command block in this guide states which cluster it runs on.
-- Before each block, confirm the current context with `kubectl config current-context`.
-- In a managed environment, confirm the change window and escalation path with Alauda support before you start.
-
 ## Prerequisites
 
 Before you start, ensure that:
