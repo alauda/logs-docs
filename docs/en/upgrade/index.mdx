@@ -60,17 +60,17 @@ The operator does not create the external OpenSearch/ClickHouse cluster or the n
 
 Plan the size with [Log Component Capacity Planning](../architecture/capacity_planning.mdx), and do not plan below the current Alauda Container Platform Log Storage for Elasticsearch deployment. The target must hold the migrated history plus new traffic. The reference disk configuration in that guide is `6000 IOPS` and `250 MB/s` read/write on dedicated SSD mounts; if the actual storage is weaker, move to a larger profile.
 
-The legacy Alauda Container Platform Log Storage for Elasticsearch values below are the current deployment baseline, not target settings. They are `chart-alauda-log-center` defaults and can differ per site; check the deployed values before you plan:
+The values in the table are the current deployment baseline, not the target configuration. Actual site values may differ, so verify them before planning:
 
-| Legacy Alauda Container Platform Log Storage for Elasticsearch chart setting | Typical baseline | What to prepare for the target |
+| Legacy deployment setting | Typical baseline | What to prepare for the target |
 | --- | --- | --- |
 | `elasticsearch.storage.node_size`, `node_replicas` | 200 Gi per data node; `node_replicas` sets the data-node count (1 by default; the small-scale profile uses 3) | Size the target storage for the historical data plus new traffic and the target HA policy |
 | `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | Use independent storage for the new target; the legacy local path is not reused |
 | `logging.esReplicas`, `logging.shards` | Index-level settings: 1 replica, per-type shard counts | OpenSearch only: these are the baseline for the index templates; override the template if the target needs different values. They do not map to ClickHouse — ClickHouse uses `externalStorage.shards` and `replicas` for the cluster topology (see the alignment table below) |
-| `kafka.retention_hours` | 48 hours | Set the same retention in the target `KafkaTopic` CRs; size the Kafka brokers through your Kafka deployment, not from this legacy chart value |
+| `kafka.retention_hours` | 48 hours | Set the same retention in the target `KafkaTopic` CRs; size the Kafka brokers through your Kafka deployment, not from this legacy value |
 | `logging.ttl` | Logs 7 days; events/audits 180 days; metering 540 days | `PlatformLogForward` applies the same TTLs to the target; plan capacity with the retention you configure there |
 
-The operator applies the TTL and, for ClickHouse, the shard and replica values from the `PlatformLogForward` spec, so the prepared cluster must be able to satisfy them. The chart does not cover the target node size: size ClickHouse with the capacity-planning profiles, and size OpenSearch with your OpenSearch deployment sizing using the same data volume and throughput inputs.
+The operator applies the TTL and, for ClickHouse, the shard and replica values from the `PlatformLogForward` spec, so the prepared cluster must be able to satisfy them. These settings do not cover the target node size: size ClickHouse with the capacity-planning profiles, and size OpenSearch with your OpenSearch deployment sizing using the same data volume and throughput inputs.
 
 ### Aligning the target with the PlatformLogForward
 
