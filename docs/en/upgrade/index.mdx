@@ -4,7 +4,7 @@ weight: 15
 
 # Upgrade
 
-This section explains how to upgrade the Logging components of an existing ACP deployment.
+This section explains how to upgrade **Alauda Container Platform Log Storage Manager** in an existing ACP deployment.
 
 ## Introduction
 
@@ -32,18 +32,18 @@ Use this guide when the cluster matches the source and target below.
 | Source | A workload cluster with **Alauda Container Platform Log Storage for Elasticsearch** installed and running |
 | Target platform | ACP 4.4 |
 | Target storage | A separately prepared ClickHouse or OpenSearch 3.7.0 cluster |
-| Supported source Logging plugin versions | 4.2.x, 4.3.x |
+| Supported source plugin versions | 4.2.x, 4.3.x |
 
 ## Prerequisites
 
 Before you start, ensure that:
 
-1. The ACP 4.4 platform upgrade is complete and the Logging components can be upgraded. Upgrade the Logging control components as part of this procedure, and keep **Alauda Container Platform Log Storage for Elasticsearch** installed.
-2. You have downloaded the ACP 4.4 Logging plugin package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
+1. The ACP 4.4 platform upgrade is complete and **Alauda Container Platform Log Storage Manager** can be upgraded. Upgrade its control components as part of this procedure, and keep **Alauda Container Platform Log Storage for Elasticsearch** installed.
+2. You have downloaded the **Alauda Container Platform Log Storage Manager** package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
 3. You have separately prepared the target storage and message queue used by this upgrade. The upgrade does not reuse the storage or Kafka that ship with the Elasticsearch plugin, so you provide:
    - For OpenSearch 3.7.0, `analysis-ik` is optional. Without it, log searches fall back to a standard analyzer without Chinese word segmentation: they still work, but Chinese full-text search quality is lower. Install the matching 3.7.0 plugin on every node if that matters for the site. The connection account must be able to manage index templates and lifecycle policies and to read and write the log data.
    - For ClickHouse, use a supported replicated cluster (`ReplicatedMergeTree` with Keeper/ZooKeeper). The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target database must exist before you create the PlatformLogForward; if the new data path stays unready with `UNKNOWN_DATABASE`, create the database and wait for the next reconciliation. The connection account must be able to create and update the schema, to read and write data, and to run `SYSTEM DROP DNS CACHE`.
-   - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
+   - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Kafka user granted access to these topics and the related consumer groups.
    - The target storage and Kafka connection details prepared according to their product documentation.
 4. If you migrate historical data, you have the migration image provided for this release, with the complete registry, tag, or digest. Do not reuse an image from an earlier version.
 5. An approved change window is available, and a platform administrator can access both the global management cluster and the target workload cluster. In a managed environment, coordinate with Alauda support.
@@ -88,7 +88,7 @@ Read the target settings from the CRs that are actually deployed in the environm
 | --- | --- |
 | Source | Legacy ES, Kafka, ZooKeeper, lanaya, and Razor are running; Alauda Container Platform Log Storage for Elasticsearch is `Running` |
 | Target storage | OpenSearch 3.7.0 or the supported ClickHouse topology is reachable; database/Keeper requirements are met |
-| Target Kafka | New bootstrap is reachable; topics and Logging user access are ready |
+| Target Kafka | New bootstrap is reachable; topics and Kafka permissions are ready |
 | Connection Secrets | Required keys are present and valid; legacy Secrets are not reused |
 | Access and change window | Platform administrator can reach global and workload clusters; support path and change window are confirmed |
 | Historical migration | The migration image for this release is available; the target account can create and write the required schema and data |
@@ -369,7 +369,7 @@ In this flow, data copy starts only after the legacy plugin is uninstalled, so t
 
 The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
 
-Use the migration image provided for this ACP 4.4 Logging release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
+Use the migration image provided for this **Alauda Container Platform Log Storage Manager** release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
 
 ### Step 4: Uninstall the legacy Elasticsearch storage plugin
 
