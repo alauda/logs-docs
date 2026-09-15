@@ -6,10 +6,6 @@ weight: 15
 
 This section explains how to upgrade the Logging components of an existing ACP deployment.
 
-:::info
-If the cluster already stores logs in ClickHouse or OpenSearch, no upgrade guide is needed. Follow [Installation](../install_log.mdx) to install or update the plugins.
-:::
-
 ## Introduction
 
 This guide upgrades a cluster that stores logs with **Alauda Container Platform Log Storage for Elasticsearch** to ACP 4.4, where new log data is written to ClickHouse or to an OpenSearch 3.7.0 cluster.
@@ -382,9 +378,7 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
 
 Data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
 
-:::info
 The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
-:::
 
 Use the migration image provided for this ACP 4.4 Logging release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
 
