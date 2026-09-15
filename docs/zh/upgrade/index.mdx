@@ -1,0 +1,553 @@
+---
+weight: 15
+sourceSHA: ae9e0e3a793eebf71d8cd10c294b316313c8dc578a27a9a099cf1b94dee84ae7
+---
+
+# 升级
+
+本文介绍如何升级现有 ACP 部署中的日志组件。
+
+:::info
+如果集群已使用 ClickHouse 或 OpenSearch 存储日志，则无需执行本升级指南，请参考[安装](https://docs.alauda.cn/logging-service/4.4/install_log.html)完成插件安装或更新。
+:::
+
+## 简介
+
+本指南用于将使用 **Alauda Container Platform Log Storage for Elasticsearch** 存储日志的集群升级到 ACP 4.4。升级后，新的日志数据将写入 ClickHouse 或 OpenSearch 3.7.0 集群。
+
+升级过程中 Elasticsearch 及其存储卷保持不动，平台会在旧链路旁边创建新链路，因此日志采集不会中断：
+
+1. 平台创建新的日志接收与存储链路，并开始将新的日志、事件和审计数据写入该链路。
+2. 旧 Elasticsearch 集群和旧链路保持运行，直到队列中的数据消费完成。
+3. 切换和排空完成后，PlatformLogForward 会报告 `LegacyESUpgradeCompleted`。
+4. 如果需要保留历史数据，请创建迁移资源，并在卸载旧插件前等待其进入 `PrecaptureReady`。
+5. 确认升级程序已完成旧 Elasticsearch 存储卷保护，然后卸载旧插件。
+6. 持续观察同一个迁移资源直到其成功，并在校验完成前保留受保护的源端存储卷。
+
+:::warning
+在本指南明确要求之前，请勿卸载 Elasticsearch 存储插件、停止旧数据链路，或删除其 PVC 和 PV。提前执行这些操作可能导致历史数据不可用，或导致无法捕获源端元数据快照。
+:::
+
+## 适用场景
+
+当集群符合下面的源端和目标端条件时，请使用本指南。
+
+| 项目 | 值 |
+| --- | --- |
+| 源端 | 已安装并运行 **Alauda Container Platform Log Storage for Elasticsearch** 的业务集群 |
+| 目标平台 | ACP 4.4 |
+| 目标存储 | 单独准备的 ClickHouse 或 OpenSearch 3.7.0 集群 |
+| 支持的源端日志插件版本 | 4.2.x、4.3.x |
+
+全新安装，或集群已使用 ClickHouse / OpenSearch 存储日志时，请勿使用本指南，请参考[安装](https://docs.alauda.cn/logging-service/4.4/install_log.html)。
+
+## 适用人员
+
+本文是面向 Alauda 实施工程师或平台管理员的实施手册，不是最终用户的自助操作流程。
+
+- 请使用可同时访问全局管理集群和目标业务集群的平台账号。
+- 尽量为每个集群使用独立的终端或 kubectl context。本文每个命令块都说明了在哪个集群执行。
+- 执行每个命令块前，请先用 `kubectl config current-context` 确认当前 context。
+- 在托管环境中，开始操作前请与 Alauda 支持确认变更窗口和升级路径。
+
+## 前置条件
+
+开始前，请确保：
+
+1. ACP 4.4 平台升级已完成，且日志组件可以升级。请在本流程中升级日志控制组件，并保持 **Alauda Container Platform Log Storage for Elasticsearch** 处于安装状态。
+2. 已从 **Alauda Cloud** 下载 ACP 4.4 日志插件包，且该插件包已上传到集群的插件市场。
+3. 已单独准备本次升级所需的目标存储和消息队列。本次升级不会复用 Elasticsearch 插件自带的存储和 Kafka，需要准备：
+   - 对于 OpenSearch 3.7.0，`analysis-ik` 插件可选。未安装时，日志查询使用 OpenSearch 内置的 standard 分词器：查询仍可正常执行，但中文全文检索效果会下降。如果现场需要中文检索质量，请在每个节点安装与 3.7.0 匹配的该插件。连接账号需要具备索引模板和生命周期策略的管理权限，以及日志数据的读写权限。
+   - 对于 ClickHouse，请使用支持 `ReplicatedMergeTree` 和 Keeper/ZooKeeper 的复制集群。连接 Secret 中的 `cluster` 值必须与 ClickHouse 集群名一致；目标数据库必须在创建 PlatformLogForward 之前存在，如果新链路因 `UNKNOWN_DATABASE` 一直未就绪，请先创建数据库并等待下一次调谐。连接账号需要具备建表和改表、数据读写权限，以及执行 `SYSTEM DROP DNS CACHE` 的权限。
+   - 新的 Kafka 服务，并已创建 `ALAUDA_LOG_TOPIC`、`ALAUDA_EVENT_TOPIC` 和 `ALAUDA_AUDIT_TOPIC` 三个 topic，日志 Kafka 用户已获得这些 topic 及相关消费组的访问权限。
+   - 按各自产品文档准备好的目标存储和 Kafka 连接信息。
+4. 如果需要迁移历史数据，已取得本版本提供的迁移镜像，并包含完整的 registry、tag 或 digest。请勿复用旧版本的镜像。
+5. 已获得批准的变更窗口，且平台管理员可同时访问全局管理集群和目标业务集群。在托管环境中，请与 Alauda 支持协同。
+6. 旧 Elasticsearch、Kafka、ZooKeeper、lanaya 和 Razor 工作负载仍在运行。在本指南要求之前，请勿停止、缩容或删除它们。
+
+:::warning
+升级期间，请勿停止、缩容或删除旧 Elasticsearch、Kafka、ZooKeeper、lanaya 或 Razor 工作负载；请勿删除 PVC、PV 或保护 finalizer；请勿删除或重建 `LegacyESMigration` 资源。这些操作可能导致历史数据不可用，或破坏迁移边界。
+:::
+
+## 目标存储准备
+
+Operator 不会创建外部 OpenSearch/ClickHouse 集群和新的 Kafka 服务，需要单独创建，并通过步骤 1 中的 Secret 提供连接信息。
+
+请参考[日志组件容量规划](https://docs.alauda.cn/logging-service/4.4/architecture/capacity_planning.html)规划容量，且不要低于当前 logcenter 部署的规格。目标存储需要能够容纳迁移的历史数据和新产生的数据。该指南中的参考磁盘配置为 `6000 IOPS`、`250 MB/s` 读写、独立 SSD 挂载；如果实际存储性能低于该配置，请选择更大规格。
+
+下表中的旧 logcenter 参数是当前部署的基线，而不是目标端配置。它们来自 `chart-alauda-log-center` 的默认值，不同现场可能不同，规划前请先核对实际部署值：
+
+| 旧 logcenter chart 参数 | 典型基线 | 需要为目标端准备什么 |
+| --- | --- | --- |
+| `elasticsearch.storage.node_size`、`node_replicas` | 每个数据节点 200 Gi；`node_replicas` 表示数据节点数量（默认 1，小规模档位为 3） | 按历史数据量、新增数据量和目标端 HA 策略规划目标存储 |
+| `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | 目标端使用独立存储，不复用旧的本地路径 |
+| `logging.esReplicas`、`logging.shards` | 索引级配置：1 副本、按类型设置分片数 | 仅适用于 OpenSearch：作为索引模板的基线；如果目标端需要不同的值，请覆盖模板。它们不适用于 ClickHouse——ClickHouse 使用 `externalStorage.shards` 和 `replicas` 描述集群拓扑（见下方对齐表） |
+| `kafka.retention_hours` | 48 小时 | 在目标 `KafkaTopic` CR 中设置相同的保留时间；Kafka broker 的容量请按你的 Kafka 部署规划，不要沿用该旧 chart 参数 |
+| `logging.ttl` | 日志 7 天；事件/审计 180 天；计量 540 天 | PlatformLogForward 会把相同的 TTL 下发到目标端；请按实际配置的保留时间规划容量 |
+
+Operator 会根据 PlatformLogForward 中的配置下发 TTL，以及 ClickHouse 的分片和副本数，因此准备好的集群必须能够满足这些值。chart 不包含目标端节点规格：ClickHouse 请按容量规划的档位选择，OpenSearch 请按 OpenSearch 的部署规格并使用相同的数据量和吞吐输入进行规划。
+
+### 与 PlatformLogForward 对齐目标端配置
+
+请以环境中实际部署的 CR 为准读取目标端配置，不要以本文档中的值为准：
+
+| 目标端 | 从哪里读取实际部署的配置 | 需要对齐什么 |
+| --- | --- | --- |
+| ClickHouse | `ClickHouseInstallation` CR：`spec.configuration.clusters[].layout.shardsCount` 和 `replicasCount` | 将 PlatformLogForward 的 `spec.externalStorage.shards` 和 `replicas` 设置为 CHI CR 中声明的值，并将 Secret 中的 `cluster` 设置为 `ON CLUSTER` 使用的集群名。数据链路会按这两个值展开，配置不一致会写入错误的 replica set |
+| Kafka | `Kafka` CR（`spec.kafka.config`）、`KafkaNodePool`（旧布局为 `Kafka.spec.kafka`）中的 broker 数量和存储、`KafkaTopic` CR、`KafkaUser` CR | Secret 中的 topic 名（`topics.log`、`topics.event`、`topics.audit`）必须与 `KafkaTopic.spec.topicName` 以及 `KafkaUser` ACL 中的 topic 名完全一致，`kafkaClusterName` 必须与 Kafka CR 名称一致。分区数、副本因子和保留时间在 `KafkaTopic` CR 中设置（或使用你的 Kafka 部署中对应的 topic 配置）；副本因子不能超过 broker 数量。Broker 和 topic 的最大消息大小必须能够容纳审计批次——Kafka 默认的 1 MiB 不够，参考 CR 使用 10 MiB。保持 `auto.create.topics.enable` 为关闭，避免自动创建名称错误的 topic |
+| OpenSearch | 实际部署的 OpenSearch 集群（其 operator CR 或运行它的 manifest），以及已生效的索引模板（`GET /_index_template`） | 索引的分片和副本不由 PlatformLogForward 控制。平台会下发低优先级模板，默认为 1 分片、1 副本；如果生产环境的节点数或 HA 策略需要不同的值，请在切换前应用更高优先级的 composable template，并通过 `GET /_index_template` 确认结果 |
+
+## 升级前检查清单
+
+| 检查项 | 期望结果 |
+| --- | --- |
+| 源端 | 旧 ES、Kafka、ZooKeeper、lanaya 和 Razor 均在运行；`logcenter` 为 `Running` |
+| 目标存储 | OpenSearch 3.7.0 或受支持的 ClickHouse 拓扑可访问；数据库/Keeper 要求已满足 |
+| 目标 Kafka | 新的 bootstrap 可访问；topic 和日志用户权限已就绪 |
+| 连接 Secret | 必需 key 齐全且有效；未复用旧 Secret |
+| 访问与变更窗口 | 平台管理员可访问全局和业务集群；支持路径和变更窗口已确认 |
+| 历史迁移 | 已取得本版本的迁移镜像；目标账号可以创建并写入所需的 schema 和数据 |
+
+## 升级流程概览
+
+请按以下顺序执行。每步的卡点通过后才能进入下一步。
+
+| 步骤 | 执行位置 | 操作 | 继续执行的条件 |
+| --- | --- | --- | --- |
+| 1 | 业务集群 | 准备目标存储、Kafka 和连接 Secret | 目标存储和 topic 可访问 |
+| 2 | 业务集群 | 创建 `PlatformLogForward` | `Phase=Ready` 且 `LegacyESUpgradeCompleted` |
+| 3 | 业务集群 | 如需历史数据，创建 `LegacyESMigration` | `PrecaptureReady`（已有迁移时为 `Succeeded`） |
+| 4 | 全局与业务集群 | 执行旧插件的受控卸载 | 60 秒内 `ModuleInfo`、`ClusterPluginInstance`、`AppRelease` 均未出现，且新日志查询正常 |
+| 5 | 业务集群 | 观察同一个 `LegacyESMigration` | `Phase=Succeeded` 且目标端查询通过 |
+| 6 | 业务集群 | 保留受保护的源端存储卷 | 清理前需获得明确批准 |
+
+## 升级步骤
+
+### 步骤 1：准备目标存储、Kafka 和连接 Secret
+
+**在业务集群执行。**
+
+在业务集群的 `cpaas-system` 中创建两个 Secret：一个用于目标存储，一个用于新的 Kafka。请勿覆盖或复用旧 Elasticsearch 和 Kafka 的 Secret。
+
+#### 目标 OpenSearch
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-os-conn                  # 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoints: "https://<opensearch-lb>:9200"       # 必填；逗号分隔的 HTTP(S) 地址；请把高可用协调节点或负载均衡地址放在最前面
+  username: "<opensearch-username>"               # 目标端允许匿名访问时可省略
+  password: "<opensearch-password>"               # 目标端允许匿名访问时可省略
+  tls.ca: |-                                      # 迁移历史数据且目标端使用 HTTPS 私有 CA 时必填，供迁移程序写入前校验目标端
+    -----BEGIN CERTIFICATE-----
+    <opensearch-ca-certificate>
+    -----END CERTIFICATE-----
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn                  # Kafka 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  bootstrap: "<kafka-bootstrap-addresses>"        # 必填；Kafka 地址，host:port 形式，逗号分隔
+  kafkaClusterName: "<kafka-cluster-name>"        # 必填；Kafka broker 资源名称，必须与实际名称一致
+  username: "<kafka-username>"                    # 必填；Kafka 用户名
+  password: "<kafka-password-with-at-least-32-characters>"   # 必填；在 Alauda OS 节点或其他启用 FIPS 的主机上至少 32 个字符
+  sasl_mechanism: "SCRAM-SHA-512"                 # 可选，默认 SCRAM-SHA-512
+  topics.log: "ALAUDA_LOG_TOPIC"                  # 可选，日志 topic 名，默认 ALAUDA_LOG_TOPIC
+  topics.event: "ALAUDA_EVENT_TOPIC"              # 可选，事件 topic 名，默认 ALAUDA_EVENT_TOPIC
+  topics.audit: "ALAUDA_AUDIT_TOPIC"              # 可选，审计 topic 名，默认 ALAUDA_AUDIT_TOPIC
+  tls.ca: |-                                      # Kafka 使用 TLS 且证书不被系统信任时必填
+    -----BEGIN CERTIFICATE-----
+    <kafka-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+`endpoints` 支持多个逗号分隔的 HTTP(S) 地址。部分数据链路只会使用第一个地址，因此请把高可用的负载均衡或协调节点地址放在最前面，不要放单个数据节点，并确保第一个 URL 前没有多余空格。
+
+#### 目标 ClickHouse
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn                  # 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "https://<clickhouse-host>:8443"      # 必填；ClickHouse 地址，包含协议和端口
+  cluster: "replicated"                           # 必须与 ClickHouse 集群名一致；ACP 基线默认为 replicated
+  database: "observability"                       # 目标数据库名，默认 observability
+  username: "<clickhouse-username>"               # ClickHouse 用户名
+  password: "<clickhouse-password>"               # ClickHouse 密码
+  tls.ca: |-                                      # 目标端使用 HTTPS 私有 CA 时必填
+    -----BEGIN CERTIFICATE-----
+    <clickhouse-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+新的 Kafka 服务复用 OpenSearch 章节中的同一个 `platform-default-mq-conn`。
+
+迁移历史数据时，请勿在目标存储连接 Secret 中设置 `tls.insecure_skip_verify: "true"`；请提供 `tls.ca`，以便迁移程序校验目标端。
+
+### 步骤 2：创建新的数据链路
+
+**在业务集群执行。**
+
+为你的目标端创建一个 `PlatformLogForward`。必须使用 `installMode: Fresh` 和 `log.alauda.io/legacy-es-upgrade: "true"` 注解，请勿使用 `installMode: Adopt`。
+
+#### 目标 OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # 固定的集群单例名称，请勿修改
+  annotations:
+    log.alauda.io/legacy-es-upgrade: "true"               # 固定值，进入旧 Elasticsearch 升级流程
+spec:
+  installMode: Fresh                                      # 始终为 Fresh，请勿改为 Adopt
+  externalStorage:
+    type: opensearch                                      # 目标存储类型
+    secretRef:
+      name: platform-default-os-conn                      # 步骤 1 创建的目标存储连接 Secret
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # 消息队列类型，目前仅支持 kafka
+    secretRef:
+      name: platform-default-mq-conn                      # 步骤 1 创建的 Kafka 连接 Secret，topic 名来自该 Secret
+      namespace: cpaas-system
+```
+
+#### 目标 ClickHouse
+
+ClickHouse 目标端必须设置 `output.type` 字段。
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # 固定的集群单例名称，请勿修改
+  annotations:
+    log.alauda.io/legacy-es-upgrade: "true"               # 固定值，进入旧 Elasticsearch 升级流程
+spec:
+  installMode: Fresh                                      # 始终为 Fresh，请勿改为 Adopt
+  output:
+    type: clickhouse                                      # 目标为 ClickHouse 时必填
+  externalStorage:
+    type: clickhouse                                      # 目标存储类型
+    shards: 1                                             # 目标 ClickHouse 的实际分片数
+    replicas: 1                                           # 目标 ClickHouse 的实际副本数
+    secretRef:
+      name: platform-default-ch-conn                      # 步骤 1 创建的目标存储连接 Secret
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # 消息队列类型，目前仅支持 kafka
+    secretRef:
+      name: platform-default-mq-conn                      # 步骤 1 创建的 Kafka 连接 Secret，topic 名来自该 Secret
+      namespace: cpaas-system
+```
+
+`externalStorage.shards` 和 `externalStorage.replicas` 必须与实际的 ClickHouse 拓扑一致。两者默认都是 `1`；在多分片或复制部署中填错会导致目标端拓扑只有一部分被使用。
+
+`PlatformLogForward` 是集群级资源，请勿添加 `metadata.namespace`；`secretRef` 中的 `namespace` 字段仍然用于指定 `cpaas-system` 中的连接 Secret。CRD 默认值为 `aggregateVector.replicas: 3` 和 `razor.replicas: 2`；如果容量或调度规划需要不同的副本数，请显式设置。
+
+将 YAML 保存为 `platform-log-forward.yaml` 并执行：
+
+```bash
+kubectl apply -f platform-log-forward.yaml
+```
+
+新数据链路不会立即就绪。平台会先创建链路，然后切换日志入口，最后等待旧集群中排队的数据被消费完；耗时取决于积压量。请观察状态直到完成，按 `Ctrl+C` 结束：
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+`Phase` 列会从 `Provisioning` 变为 `Ready`，同时 `Ready` 列变为 `True`。只有看到 `Ready` 后才能继续。
+
+如需跟踪进度或排查问题，可以查看状态 conditions：
+
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+请关注 `LegacyESUpgrade` 这一行：当 reason 变为 `LegacyESUpgradeCompleted` 时，说明日志入口已切换到新数据链路，且旧集群中排队的数据已消费完，本步骤完成。如果 reason 为 `Blocked`，`message` 会说明原因。
+
+本步骤完成后，请生成或找到新的日志、事件和审计记录，确认可以从新目标端查询到，然后再继续。`LegacyESUpgrade` 未完成前，请勿卸载旧插件。
+
+如果源端集群使用旧 Kafka，请勿停止或缩容 Kafka、ZooKeeper 或 lanaya。平台会自动通过旧链路排空排队数据，并在旧消费组 lag 归零时记录 `LegacyKafkaDrained`；`LegacyESUpgradeCompleted` 是本流程的卡点。
+
+### 步骤 3：准备历史数据迁移（可选）
+
+**在业务集群执行。**
+
+只有在升级方案确认不需要历史 Elasticsearch 数据时才能跳过本步骤，并请记录该决定。请勿为了跳过迁移而删除源端 PVC 或 PV。
+
+如果需要历史数据，请在卸载旧插件**之前**创建 `LegacyESMigration`，这样平台可以自动捕获最终的源端状态并解析源端存储卷。卸载后再创建迁移需要显式指定源端存储卷，且无法使用最终捕获。
+
+#### 目标 OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LegacyESMigration
+metadata:
+  name: platform-es-history                               # 固定的迁移名称，后续命令使用
+  namespace: cpaas-system
+spec:
+  image: <migration-worker-image>                         # 必填；本版本提供的迁移镜像，需包含 registry 和 tag 或 digest
+  source:
+    indexScope:                                           # 必填，选择要迁移的历史索引
+      - "log-workload-*"
+      - "log-platform-*"
+      - "log-system-*"
+      - "log-kubernetes-*"
+      - "event-*"
+      - "audit-*"
+  target:
+    type: opensearch                                      # 必须与 PlatformLogForward 的目标一致
+    secretRef:
+      name: platform-default-os-conn                      # 与 PlatformLogForward 使用同一个连接 Secret
+      namespace: cpaas-system
+  options:
+    batchSize: 250                                        # 每批写入的文档数，1~100000，默认 250
+    syncIntervalSeconds: 5                                # 每批之间的最小等待时间（秒）
+    maxConcurrentJobs: 1                                  # 并发任务数，OpenSearch 最多 2
+```
+
+#### 目标 ClickHouse
+
+将 `target.type` 改为 `clickhouse`，并把 Secret 指向 `platform-default-ch-conn`。
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LegacyESMigration
+metadata:
+  name: platform-es-history                               # 固定的迁移名称，后续命令使用
+  namespace: cpaas-system
+spec:
+  image: <migration-worker-image>                         # 必填；本版本提供的迁移镜像，需包含 registry 和 tag 或 digest
+  source:
+    indexScope:                                           # 必填，选择要迁移的历史索引
+      - "log-workload-*"
+      - "log-platform-*"
+      - "log-system-*"
+      - "log-kubernetes-*"
+      - "event-*"
+      - "audit-*"
+  target:
+    type: clickhouse                                      # 必须与 PlatformLogForward 的目标一致
+    secretRef:
+      name: platform-default-ch-conn                      # 与 PlatformLogForward 使用同一个连接 Secret
+      namespace: cpaas-system
+  options:
+    batchSize: 250                                        # 每批写入的文档数，1~100000，默认 250
+    syncIntervalSeconds: 5                                # 每批之间的最小等待时间（秒）
+    maxConcurrentJobs: 1                                  # 并发任务数，ClickHouse 只能为 1
+```
+
+标准的 `indexScope` 分类如下：
+
+| `indexScope` 值 | 数据 | 完整索引名示例 |
+| --- | --- | --- |
+| `log-workload-*` | 应用和容器日志 | `log-workload-20260825` |
+| `log-platform-*` | 平台组件日志 | `log-platform-20260825` |
+| `log-system-*` | 系统日志 | `log-system-20260825` |
+| `log-kubernetes-*` | Kubernetes 日志 | `log-kubernetes-20260825` |
+| `event-*` | Kubernetes 事件 | `event-20260825` |
+| `audit-*` | 审计日志 | `audit-20260825` |
+
+如果源端还包含项目级日志或计量数据，请将 `log-project-*` 或 `meter-*` 加入 `indexScope`，否则这些数据不会被迁移。除非确实只想迁移某一天的数据，否则不要把条目缩小到单日索引（如 `audit-20260825`）。`source` 和 `target` 在创建后无法修改。上面的迁移参数是默认值，仅在迁移方案需要时调整。
+
+在推荐流程中不要设置 `source.pvcRefs`：只要旧 Elasticsearch StatefulSet 仍存在，平台会自动发现源端存储卷，并记录在 `status.resolvedPvcRefs` 中。如果迁移报告 `SourcePVCsUnavailable`，请停止并联系支持；请勿删除或修改迁移资源。
+
+应用该资源并等待 `PrecaptureReady`：
+
+```bash
+kubectl -n cpaas-system apply -f legacy-es-migration.yaml
+
+# 观察 phase；按 Ctrl+C 结束
+kubectl -n cpaas-system get legacyesmigration platform-es-history -w
+
+# phase 不推进时查看 conditions
+kubectl -n cpaas-system get legacyesmigration platform-es-history \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+只有在旧插件卸载之后才会开始复制数据，因此在此之前 phase 会一直停留在 `PrecaptureReady`。只有 phase 为 `PrecaptureReady`（已完成的迁移为 `Succeeded`）时才继续步骤 4。如果 phase 为 `Blocked`，请勿删除或重建迁移资源；请阅读 condition message 并联系支持。
+
+:::info
+迁移过程中新数据链路会持续接收日志、事件和审计数据。请保持新数据链路及其目标连接不变。如果迁移无法完成，请停止并联系支持。
+:::
+
+请使用本 ACP 4.4 日志版本提供的迁移镜像。如果目标数据已经完整但迁移一直停留在 `Running`，请停止并联系支持；请勿删除迁移资源或源端存储卷。
+
+### 步骤 4：卸载旧 Elasticsearch 存储插件
+
+:::warning
+只有在以下条件全部满足时才能执行本步骤：
+
+- `PlatformLogForward/platform-default` 为 `Ready`，且其 `LegacyESUpgrade` condition 的 reason 为 `LegacyESUpgradeCompleted`。
+- 如需历史迁移，`LegacyESMigration/platform-es-history` 为 `PrecaptureReady` 或 `Succeeded`。
+- 平台已报告旧 Elasticsearch 存储卷（PVC/PV）的保护完成。请勿修改或移除该保护；如果平台报告保护失败，请停止并联系支持。
+- 如果源端使用旧 Kafka，平台已确认所有排队数据均已排空。请勿通过停止或缩容 Kafka、ZooKeeper、lanaya 或 Elasticsearch 来强制达到该状态。
+:::
+
+:::warning
+本流程会临时清理 `logcenter` 的平台发现字段，以便卸载旧插件。请仅在批准的变更窗口内执行，并请勿修改或删除 logagent 及其依赖。
+:::
+
+如果平台提供了本次升级支持的插件卸载操作，请先按平台或支持人员的说明执行。如果该操作被拒绝，或平台团队要求执行受控流程，请使用下面的步骤。
+
+两次删除必须连续执行：中间不要等待 `ModuleInfo` 消失、不要检查 `AppRelease`，也不要执行其他检查。
+
+**在全局集群：开始关键步骤**
+
+将 `CLUSTER` 设置为业务集群在全局集群中注册的名称，然后执行：
+
+```bash
+set -euo pipefail
+
+CLUSTER=<workload-cluster-name>
+
+# 1. 解析目标 ModuleInfo。结果不唯一时停止。
+MODULE_INFOS="$(kubectl get moduleplugin logcenter \
+  -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
+MODULE_COUNT="$(printf '%s\n' "$MODULE_INFOS" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [ "$MODULE_COUNT" -gt 1 ]; then
+  echo "More than one logcenter ModuleInfo exists for cluster $CLUSTER; stop and contact support." >&2
+  exit 1
+fi
+
+if [ "$MODULE_COUNT" -eq 1 ]; then
+  MODULE_INFO="$MODULE_INFOS"
+  MODULE_VERSION="$(kubectl get moduleinfo "$MODULE_INFO" -o jsonpath='{.spec.version}')"
+  MODULE_CONFIG="logcenter-${MODULE_VERSION}"
+
+  # 2. 修改前先备份当前的管理对象。
+  kubectl get moduleinfo "$MODULE_INFO" -o yaml > moduleinfo-logcenter.backup.yaml
+  kubectl get moduleplugin logcenter -o yaml > moduleplugin-logcenter.backup.yaml
+  kubectl get moduleconfig "$MODULE_CONFIG" -o yaml > moduleconfig-logcenter.backup.yaml
+
+  # 3. 清理发现标记，这一步同时绕过 logagent 的依赖检查。
+  kubectl patch moduleplugin logcenter --type=merge -p '{"spec":{"labelCluster":""}}'
+  kubectl patch moduleconfig "$MODULE_CONFIG" --type=merge -p '{"spec":{"labelCluster":""}}'
+
+  # 4. 删除请求被接受后立即返回，不要在此等待。
+  kubectl delete moduleinfo "$MODULE_INFO" --ignore-not-found --wait=false
+else
+  echo "No logcenter ModuleInfo found for cluster $CLUSTER; continuing to verify the install record."
+fi
+```
+
+**在业务集群：完成关键步骤**
+
+立即把 kubectl context 切换到业务集群，不要先执行任何等待或校验。执行：
+
+```bash
+# 5. 删除单集群安装记录，避免其重新创建 ModuleInfo。
+kubectl delete clusterplugininstance logcenter --ignore-not-found
+```
+
+**等待旧数据链路移除**
+
+切回全局集群，等待 `ModuleInfo` 消失：
+
+```bash
+CLUSTER=<workload-cluster-name>
+MODULE_INFOS="$(kubectl get moduleplugin logcenter \
+  -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
+MODULE_INFO="$(printf '%s\n' "$MODULE_INFOS" | sed -n '1p')"
+
+if [ -n "$MODULE_INFO" ]; then
+  kubectl wait --for=delete "moduleinfo/$MODULE_INFO" --timeout=10m
+else
+  echo "No ModuleInfo remains for cluster $CLUSTER."
+fi
+```
+
+切换到业务集群，等待旧 `AppRelease` 被删除：
+
+```bash
+kubectl -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
+```
+
+完成这些步骤后，等待 60 秒并确认这些资源没有重新出现。每条命令都不应返回资源。
+
+**在全局集群**
+
+```bash
+kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=<workload-cluster-name>' --ignore-not-found
+```
+
+**在业务集群**
+
+```bash
+kubectl get clusterplugininstance logcenter --ignore-not-found
+kubectl -n cpaas-system get apprelease logcenter --ignore-not-found
+kubectl -n cpaas-system get statefulset cpaas-elasticsearch --ignore-not-found
+```
+
+如果 `ClusterPluginInstance/logcenter` 仍然存在或重新出现，请再次删除并重复检查；只要它存在，平台就可能重新创建 `ModuleInfo`。如果 `ModuleInfo` 也重新出现，请先删除 `ClusterPluginInstance/logcenter`，再删除新的 `ModuleInfo`。请勿手动恢复被清理的发现字段；只需确认 `ModuleInfo`、`ClusterPluginInstance` 和 `AppRelease` 不再出现。如果全局集群的步骤在删除 `ModuleInfo` 之前失败，请勿执行本次的业务集群步骤：先修复原因，再重新执行全局集群步骤。
+
+稳定性检查通过后，生成新的日志、事件和审计记录，并确认可以从新目标端查询到。如果新数据链路不健康，请勿继续迁移校验。
+
+### 步骤 5：完成并校验历史迁移（可选）
+
+**在业务集群执行。**
+
+如果已创建 `LegacyESMigration`，请持续观察同一个资源。请勿删除或重建它。phase 应从 `PrecaptureReady` 依次变为 `Validating`、`Running`（或 `Retrying`），最终变为 `Succeeded`。
+
+```bash
+kubectl -n cpaas-system get legacyesmigration platform-es-history -w
+
+kubectl -n cpaas-system get legacyesmigration platform-es-history \
+  -o jsonpath='{.status.phase}{"\n"}{.status.progress}{"\n"}'
+kubectl -n cpaas-system get legacyesmigration platform-es-history \
+  -o jsonpath='{range .status.tasks[*]}{.pvcName}{"\t"}{.phase}{"\t"}{.processedDocs}{"\t"}{.lastError}{"\n"}{end}'
+```
+
+**校验：**
+
+- `status.phase` 为 `Succeeded`。
+- `status.tasks` 中的每一项都成功。
+- 针对新目标端的抽样查询能返回所选每个 `indexScope` 分类的预期历史数据。
+- 受保护的源端 PVC 和 PV 仍然存在且处于绑定状态。
+
+如果 phase 为 `Blocked` 或 `Failed`，请勿删除迁移资源、Job 或源端存储卷；请联系支持。
+
+如果未创建迁移，请记录「不需要历史数据」的明确决定，并在该决定获批前保留受保护的源端存储卷。
+
+### 步骤 6：保留的存储卷
+
+受保护的旧 Elasticsearch PVC 和 PV 会被保留。请在迁移和目标端校验完成前保留它们。请勿移除保护注解、删除 PVC/PV 或移除 finalizer。校验完成后如需释放这些存储卷，请联系 Alauda 支持或按照单独的、已批准的清理流程执行。
+
+本次升级只保留 ES 的 PVC 和 PV。旧 Kafka 和 ZooKeeper 的存储卷不在保留范围内。
+
+请导出或记录最终的 PLF conditions、迁移状态、目标端查询结果以及保留的 PVC/PV 名称，用于实施交接。请勿在本次升级中移除保护注解或删除这些存储卷。
+
+## 完成检查清单
+
+| 状态 | 期望 |
+| --- | --- |
+| `PlatformLogForward/platform-default` | `Phase=Ready` 且 `LegacyESUpgradeCompleted` |
+| `LegacyESMigration/platform-es-history`（如已创建） | `Phase=Succeeded` |
+| 新日志查询 | 新的日志、事件和审计记录可以通过新查询链路返回 |
+| 旧插件卸载 | `ModuleInfo`、`ClusterPluginInstance/logcenter`、`AppRelease/logcenter` 均不存在，旧 ES 工作负载已消失 |
+| 源端存储卷 | 受保护的旧 ES PVC 和 PV 仍然存在 |
+
+如果任何状态不符合预期，请停止并联系 Alauda 支持。请勿通过删除迁移资源、源端存储卷或目标端数据来绕过故障。
+
+## 步骤受阻时
+
+- 平台以 `moduleinfo is depended by ...` 拒绝卸载插件：请停止，不要修改 logagent，重新执行受控流程；如果仍然失败，请联系支持。
+- 迁移为 `Blocked`、`Failed` 或一直停留在 `Running`：请勿删除迁移资源、Job、源端存储卷或目标端数据；请联系支持。
+- `ModuleInfo` 或 `ClusterPluginInstance` 重新出现：请先删除 `ClusterPluginInstance`，再删除新的 `ModuleInfo`，并重复 60 秒稳定性检查。
+- `AppRelease/logcenter` 未消失：请勿移除 finalizer；请联系支持。
+- 卸载后新日志查询失败：请停止并联系支持。请勿删除保留的存储卷。
