@@ -41,7 +41,7 @@ Before you start, ensure that:
 1. The ACP 4.4 platform upgrade is complete and the Logging components can be upgraded. Upgrade the Logging control components as part of this procedure, and keep **Alauda Container Platform Log Storage for Elasticsearch** installed.
 2. You have downloaded the ACP 4.4 Logging plugin package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
 3. You have separately prepared the target storage and message queue used by this upgrade. The upgrade does not reuse the storage or Kafka that ship with the Elasticsearch plugin, so you provide:
-   - For OpenSearch 3.7.0, `analysis-ik` is optional. Without it, log searches use the OpenSearch standard analyzer: they still work, but Chinese full-text search quality is lower. Install the matching 3.7.0 plugin on every node if that matters for the site. The connection account must be able to manage index templates and lifecycle policies and to read and write the log data.
+   - For OpenSearch 3.7.0, `analysis-ik` is optional. Without it, log searches fall back to a standard analyzer without Chinese word segmentation: they still work, but Chinese full-text search quality is lower. Install the matching 3.7.0 plugin on every node if that matters for the site. The connection account must be able to manage index templates and lifecycle policies and to read and write the log data.
    - For ClickHouse, use a supported replicated cluster (`ReplicatedMergeTree` with Keeper/ZooKeeper). The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target database must exist before you create the PlatformLogForward; if the new data path stays unready with `UNKNOWN_DATABASE`, create the database and wait for the next reconciliation. The connection account must be able to create and update the schema, to read and write data, and to run `SYSTEM DROP DNS CACHE`.
    - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
    - The target storage and Kafka connection details prepared according to their product documentation.
@@ -66,7 +66,7 @@ The values in the table are the current deployment baseline, not the target conf
 | --- | --- | --- |
 | `elasticsearch.storage.node_size`, `node_replicas` | 200 Gi per data node; `node_replicas` sets the data-node count (1 by default; the small-scale profile uses 3) | Size the target storage for the historical data plus new traffic and the target HA policy |
 | `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | Use independent storage for the new target; the legacy local path is not reused |
-| `logging.esReplicas`, `logging.shards` | Index-level settings: 1 replica, per-type shard counts | OpenSearch only: these are the baseline for the index templates; override the template if the target needs different values. They do not map to ClickHouse — ClickHouse uses `externalStorage.shards` and `replicas` for the cluster topology (see the alignment table below) |
+| `logging.esReplicas`, `logging.shards` | Index-level settings: 1 replica, per-type shard counts | OpenSearch only: the platform's index templates start at 1 shard and 1 replica and do not inherit these legacy values; override the template if the target needs different values. They do not map to ClickHouse — ClickHouse uses `externalStorage.shards` and `replicas` for the cluster topology (see the alignment table below) |
 | `kafka.retention_hours` | 48 hours | Set the same retention in the target `KafkaTopic` CRs; size the Kafka brokers through your Kafka deployment, not from this legacy value |
 | `logging.ttl` | Logs 7 days; events/audits 180 days; metering 540 days | `PlatformLogForward` applies the same TTLs to the target; plan capacity with the retention you configure there |
 
@@ -80,7 +80,7 @@ Read the target settings from the CRs that are actually deployed in the environm
 | --- | --- | --- |
 | ClickHouse | `ClickHouseInstallation` CR: `spec.configuration.clusters[].layout.shardsCount` and `replicasCount` | Set `spec.externalStorage.shards` and `replicas` in the `PlatformLogForward` to the values declared in the CHI CR, and set the Secret `cluster` value to the cluster name used by `ON CLUSTER`. The data path expands by these two values, so a mismatch writes to the wrong replica set. |
 | Kafka | `Kafka` CR (`spec.kafka.config`), `KafkaNodePool` (or `Kafka.spec.kafka` in older layouts) for broker count and storage, `KafkaTopic` CRs, and `KafkaUser` CR | Keep the Secret topic names (`topics.log`, `topics.event`, `topics.audit`) equal to `KafkaTopic.spec.topicName` and to the topic names in the `KafkaUser` ACLs, and keep `kafkaClusterName` equal to the Kafka CR name. Set partitions, replication factor, and retention in the `KafkaTopic` CRs (or the equivalent topic configuration on your Kafka deployment); the replication factor cannot exceed the number of brokers. The broker and topic maximum message size must accept the audit batches — the Kafka default is 1 MiB, which is too small; the reference CRs use 10 MiB. Keep `auto.create.topics.enable` disabled so a misnamed topic is not created automatically. |
-| OpenSearch | The deployed OpenSearch cluster (its operator CR or the manifests that run it) and the applied index templates (`GET /_index_template`) | Index shards and replicas are not controlled by the `PlatformLogForward`. The platform applies low-priority templates with 1 shard and 1 replica; if the production node count or HA policy needs different values, apply a higher-priority composable template before cutover and confirm the result with `GET /_index_template`. |
+| OpenSearch | The deployed OpenSearch cluster (its operator CR or the manifests that run it) and the applied index templates (`GET /_index_template`) | Index shards and replicas are not controlled by the `PlatformLogForward`. The platform applies low-priority templates with 1 shard and 1 replica; if the production node count or HA policy needs different values, apply a higher-priority composable template before cutover and confirm the result with `GET /_index_template`. Existing indices keep the settings they were created with. |
 
 ## Preflight Checklist
 
@@ -127,7 +127,7 @@ stringData:
   endpoints: "https://<opensearch-lb>:9200"       # Required; comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
   username: "<opensearch-username>"               # Can be omitted when the target allows anonymous access
   password: "<opensearch-password>"               # Can be omitted when the target allows anonymous access
-  tls.ca: |-                                      # Required when you migrate historical data and the target uses HTTPS with a private CA, so the worker can verify the target before writing
+  tls.ca: |-                                      # Required when you migrate historical data and the target uses HTTPS with a private CA, so the migration can verify the target before writing
     -----BEGIN CERTIFICATE-----
     <opensearch-ca-certificate>
     -----END CERTIFICATE-----
@@ -254,7 +254,7 @@ The new data path is not available immediately. The platform first creates it, t
 kubectl get platformlogforward platform-default -w
 ```
 
-The `Phase` column changes from `Provisioning` to `Ready`, and the `Ready` column becomes `True` at the same time. Continue only after you see `Ready`.
+The `Phase` column reaches `Ready`, and the `Ready` column becomes `True`. Continue only after you see `Ready`.
 
 To follow the progress or troubleshoot, read the status conditions:
 
@@ -301,9 +301,9 @@ spec:
       name: platform-default-os-conn                      # The same connection Secret as PlatformLogForward
       namespace: cpaas-system
   options:
-    batchSize: 250                                        # Documents written per batch, 1~100000, defaults to 250
-    syncIntervalSeconds: 5                                # Minimum wait between batches, in seconds
-    maxConcurrentJobs: 1                                  # Concurrent jobs, up to 2 for OpenSearch
+    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
+    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (no fixed wait for OpenSearch)
+    maxConcurrentJobs: 1                                  # Concurrent jobs; default 1, up to 2 for OpenSearch
 ```
 
 #### Target ClickHouse
@@ -332,9 +332,9 @@ spec:
       name: platform-default-ch-conn                      # The same connection Secret as PlatformLogForward
       namespace: cpaas-system
   options:
-    batchSize: 250                                        # Documents written per batch, 1~100000, defaults to 250
-    syncIntervalSeconds: 5                                # Minimum wait between batches, in seconds
-    maxConcurrentJobs: 1                                  # Concurrent jobs, 1 for ClickHouse only
+    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
+    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (1 second for ClickHouse)
+    maxConcurrentJobs: 1                                  # Concurrent jobs; ClickHouse is always serial (1)
 ```
 
 The standard `indexScope` categories are:
@@ -348,7 +348,7 @@ The standard `indexScope` categories are:
 | `event-*` | Kubernetes events | `event-20260825` |
 | `audit-*` | Audit logs | `audit-20260825` |
 
-If the source also contains per-project logs or metering data, add `log-project-*` or `meter-*` to `indexScope`; otherwise that data is not migrated. Do not use a single-day index such as `audit-20260825` unless you intentionally want to migrate only that day. The `source` and `target` sections cannot be changed after creation. The migration options above show the defaults; adjust them only when your migration plan requires it.
+If the source also contains per-project logs or metering data, add `log-project-*` or `meter-*` to `indexScope`; otherwise that data is not migrated. Do not use a single-day index such as `audit-20260825` unless you intentionally want to migrate only that day. The `source` and `target` sections cannot be changed after creation. The `options` block is optional; adjust it only when your migration plan requires it (the example keeps the default batch size and concurrency).
 
 Do not set `source.pvcRefs` in this flow; the platform records the discovered source volumes in `status.resolvedPvcRefs`. If the migration reports `SourcePVCsUnavailable`, stop and contact support; do not delete or edit the migration resource.
 
@@ -365,7 +365,7 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-Data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
+In this flow, data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
 
 The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
 
@@ -378,7 +378,7 @@ Run this step only when all of these conditions are true:
 
 - `PlatformLogForward/platform-default` is `Ready` and its `LegacyESUpgrade` condition has reason `LegacyESUpgradeCompleted`.
 - If historical migration is required, `LegacyESMigration/platform-es-history` is `PrecaptureReady` or `Succeeded`.
-- The platform reports that protection for the legacy Elasticsearch volumes (PVC/PV) is complete. Do not modify or remove this protection; if the platform reports a protection failure, stop and contact support.
+- Confirm that the upgrade program has completed protection for the legacy Elasticsearch volumes (PVC/PV). Do not modify or remove this protection; if the platform reports a protection failure, stop and contact support.
 - If the source uses legacy Kafka, the platform has confirmed that all queued data is drained. Do not stop or scale Kafka, ZooKeeper, lanaya, or Elasticsearch to force this state.
 :::
 
