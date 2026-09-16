@@ -1,0 +1,945 @@
+---
+weight: 13
+---
+
+# Environment Preparation
+
+This chapter explains how to set up the ClickHouse or OpenSearch 3.7.0 cluster and the Kafka service that the logging components use: nodes and disks, the operators, the cluster, its accounts, and the Kafka password, user, ACLs, and topics.
+
+Follow the steps in order and complete each verification.
+
+## Before You Start
+
+Make sure you have:
+
+1. Administrator access to the cluster that runs the logging components.
+2. The nodes and disks planned in Step 1.
+3. The operator packages available in the platform marketplace: `clickhouse-operator`, the Alauda Kafka operator, and `opensearch-operator`.
+
+Use [Log Component Capacity Planning](../architecture/capacity_planning.mdx) with the tables below to choose the scale, and place the workloads on dedicated nodes as described in [Planning Infra Nodes for Logging Storage](../how_to/infra_nodes.mdx).
+
+## Step 0: Choose the Target and the Scale
+
+Choose the target (ClickHouse or OpenSearch) and the scale.
+
+### ClickHouse profiles
+
+The CPU and memory values are the container limits for each ClickHouse pod.
+
+| Profile | ClickHouse pods | Layout | CPU limit per pod | Memory limit per pod | Measured throughput |
+| --- | --- | --- | --- | --- | --- |
+| Single node | 1 | 1 shard × 1 replica | 2C | 4G | 18,000 logs/s |
+| Three nodes | 3 | 1 shard × 3 replicas | 2C | 4G | 20,000 logs/s |
+| Six nodes | 6 | 2 shards × 3 replicas | 4C | 8G | 40,000 logs/s |
+| Nine nodes | 9 | 3 shards × 3 replicas | 4C | 8G | 69,000 logs/s |
+
+Use the single-node profile for evaluation only. Start production at the three-node profile, and move to six or nine nodes when a single shard no longer fits.
+
+### Kafka
+
+Set up three brokers with a 2C/4G limit each. Size the broker volumes by retention and throughput.
+
+### OpenSearch profiles
+
+The CPU and memory values are per-node limits.
+
+| Profile | Nodes | Layout | CPU limit per node | Memory limit per node | Measured throughput |
+| --- | --- | --- | --- | --- | --- |
+| Small scale | 3 | 3 nodes, all roles | 2C | 4G | 6,300 logs/s |
+| Small scale | 5 | 5 nodes, all roles | 2C | 4G | 9,900 logs/s |
+| Large scale | 3 + 5 | 3 master, 5 data | 2C master / 8C data | 4G master / 16G data | 25,000 logs/s |
+| Large scale | 3 + 7 | 3 master, 7 data | 2C master / 8C data | 4G master / 16G data | 30,000 logs/s |
+
+Do not size below the smallest profile, and use the large-scale profiles once a single node pool can no longer serve the data volume. If your measured storage is weaker than 6,000 IOPS and 250 MB/s read/write, size up.
+
+### Disk
+
+Provide dedicated SSD storage with at least 6,000 IOPS and 250 MB/s read/write, and size the volumes for your retention: 7 days for most logs, 30 days for Kubernetes logs, 180 days for events and audits, and 540 days for metering. The ClickHouse and Kafka examples below use 200 Gi per pod; size the OpenSearch master and data pools separately.
+
+## Step 1: Nodes and Disks
+
+1. Select the nodes that will run the storage cluster. Do not co-locate them with business workloads.
+2. Label them as infra nodes and add the matching taint, following [Planning Infra Nodes for Logging Storage](../how_to/infra_nodes.mdx).
+3. Attach a dedicated SSD to every node as a persistent path:
+   - On the traditional operating system layout, use `/cpaas/data/...`.
+   - On Alauda OS nodes only `/var/cpaas` is writable, so use `/var/cpaas/data/...`.
+4. Make sure the path survives node re-provisioning.
+5. Create the directories the storage pods use and set their ownership. The examples use the traditional layout; on Alauda OS nodes replace `/cpaas` with `/var/cpaas`.
+
+   ```bash
+   # ClickHouse runs as uid 101
+   sudo mkdir -p /cpaas/data/clickhouse
+   sudo chown -R 101:101 /cpaas/data/clickhouse
+
+   # Kafka runs as uid 1001
+   sudo mkdir -p /cpaas/data/kafka
+   sudo chown -R 1001:1001 /cpaas/data/kafka
+
+   # OpenSearch runs as uid 1000
+   sudo mkdir -p /cpaas/data/opensearch
+   sudo chown -R 1000:1000 /cpaas/data/opensearch
+   ```
+
+6. Decide how the volumes are provisioned:
+
+| Approach | When to use it | What you must do |
+| --- | --- | --- |
+| Static local volumes | You are pinning each pod to a specific node, which is what the infra-node setup usually does | Create one StorageClass without a provisioner, and pre-create one PV per intended pod, each with `nodeAffinity` and `local.path` pointing at the directory above |
+| Dynamic provisioner | Your platform provides a block-storage provisioner | Create the StorageClass and let the claims bind dynamically; confirm the provisioner supports `ReadWriteOnce` block volumes and the throughput above |
+
+Record the StorageClass name; the claims below reference it.
+
+## Step 2: Install the Operators
+
+Install the three operators from the platform marketplace. Every storage and messaging resource below is created in `cpaas-system`, so each operator must be able to reconcile resources in that namespace.
+
+| Operator | Subscription namespace | Namespaces the operator must watch |
+| --- | --- | --- |
+| `clickhouse-operator` | `cpaas-system` | `cpaas-system` |
+| Alauda Kafka operator (`strimzi-kafka-operator`) | `kafka-system` | All namespaces |
+| `opensearch-operator` (OpenSearch target only) | `opensearch-operator` | All namespaces |
+
+- Install only the operators that are missing. If one is already installed on the cluster, for example by an earlier release, keep it and do not install a second copy: two copies of the same operator write to the same `cpaas-system` resources. Check its watch scope instead and widen it if needed.
+- Do not create an OperatorGroup in `cpaas-system`. The platform already owns one there, and a second OperatorGroup makes the platform reject every Subscription in that namespace, including its own.
+- For `kafka-system` and `opensearch-operator`, the OperatorGroup must have no `spec.targetNamespaces`. If an OperatorGroup scoped to its own namespace already exists, remove the field and wait for the operator pod to restart.
+
+  ```bash
+  kubectl -n kafka-system patch operatorgroup kafka-system \
+    --type=json -p='[{"op":"remove","path":"/spec/targetNamespaces"}]'
+  kubectl -n opensearch-operator patch operatorgroup opensearch-operator \
+    --type=json -p='[{"op":"remove","path":"/spec/targetNamespaces"}]'
+  ```
+
+Verify each operator before you continue:
+
+```bash
+# ClickHouse
+kubectl get crd clickhouseinstallations.clickhouse.altinity.com
+kubectl -n cpaas-system get deploy clickhouse-operator
+
+# Kafka
+kubectl get crd rdskafkas.middleware.alauda.io
+kubectl -n kafka-system get deploy strimzi-cluster-operator
+
+# OpenSearch (only when the target is OpenSearch)
+kubectl get crd opensearchclusters.opensearch.opster.io
+kubectl -n opensearch-operator get deploy opensearch-operator-controller-manager
+```
+
+:::warning
+An operator that does not watch `cpaas-system` ignores the resources below silently: no status, no events, and no pods. Confirm the deployments are ready and that the Kafka and OpenSearch OperatorGroups reach all namespaces before you continue.
+:::
+
+## Step 3: Create the ClickHouse Cluster
+
+Skip this step when the target is OpenSearch.
+
+### 3.1 Create the admin password Secret
+
+```bash
+kubectl -n cpaas-system create secret generic clickhouse-basic-auth \
+  --from-literal=password="$(openssl rand -hex 16)"
+```
+
+### 3.2 Create the Keeper (three nodes and above)
+
+Every profile needs a Keeper, including the single-node profile, because the logging components create `ReplicatedMergeTree` tables. The single-node profile runs the Keeper inside the ClickHouse pod, through the `keeper_server/*` settings in 3.3, so skip this step for it.
+
+For three nodes and above, create a three-node Keeper quorum and point the `ClickHouseInstallation` at it. The `clickhouse-operator` package on the platform ships only the `ClickHouseInstallation` resources and no Keeper resource, so the Keeper is deployed as its own workload. The `clickhouse-keeper` binary ships in the ClickHouse server image, so use the same `<clickhouse-server-image>` as the ClickHouse pods.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpaas-clickhouse-keeper-config
+  namespace: cpaas-system
+data:
+  keeper_config.xml: |
+    <clickhouse>
+      <logger>
+        <level>information</level>
+        <console>true</console>
+      </logger>
+      <listen_host>0.0.0.0</listen_host>
+      <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse-keeper/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse-keeper/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+          <operation_timeout_ms>10000</operation_timeout_ms>
+          <session_timeout_ms>30000</session_timeout_ms>
+        </coordination_settings>
+        <raft_configuration>
+          <server><id>1</id><hostname>cpaas-clickhouse-keeper-0.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
+          <server><id>2</id><hostname>cpaas-clickhouse-keeper-1.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
+          <server><id>3</id><hostname>cpaas-clickhouse-keeper-2.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
+        </raft_configuration>
+      </keeper_server>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpaas-clickhouse-keeper
+  namespace: cpaas-system
+spec:
+  clusterIP: None
+  selector:
+    app: cpaas-clickhouse-keeper
+  ports:
+    - {name: client, port: 9181, targetPort: 9181}
+    - {name: raft, port: 9234, targetPort: 9234}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cpaas-clickhouse-keeper
+  namespace: cpaas-system
+spec:
+  serviceName: cpaas-clickhouse-keeper
+  replicas: 3
+  selector:
+    matchLabels: {app: cpaas-clickhouse-keeper}
+  template:
+    metadata:
+      labels: {app: cpaas-clickhouse-keeper}
+    spec:
+      containers:
+        - name: keeper
+          image: <clickhouse-server-image>
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cp /config/keeper_config.xml /tmp/keeper_config.xml
+              ID=$(( ${HOSTNAME##*-} + 1 ))
+              sed -i "s|<server_id>1</server_id>|<server_id>${ID}</server_id>|" /tmp/keeper_config.xml
+              exec clickhouse-keeper --config-file=/tmp/keeper_config.xml
+          ports:
+            - {name: client, containerPort: 9181}
+            - {name: raft, containerPort: 9234}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: config, mountPath: /config}
+            - {name: data, mountPath: /var/lib/clickhouse-keeper}
+      volumes:
+        - name: config
+          configMap: {name: cpaas-clickhouse-keeper-config}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: <your-storage-class>    # From Step 1
+        resources:
+          requests: {storage: 10Gi}
+```
+
+The raft peers use fully qualified pod names. Short pod names do not resolve, and a Keeper that cannot reach its peers never opens port `9181`; the `ClickHouseInstallation` then fails to start for no visible reason.
+
+Wait for one leader and two followers before you continue:
+
+```bash
+for pod in 0 1 2; do
+  echo "keeper-$pod: $(kubectl -n cpaas-system exec cpaas-clickhouse-keeper-$pod -- \
+    clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr |
+    awk '$1 == "zk_server_state" {print $2}')"
+done
+# expect: one leader, two followers
+```
+
+### 3.3 Create the ClickHouseInstallation
+
+Set `shardsCount`, `replicasCount`, and the resource limits from the Step 0 profile, and keep the cluster name `replicated` for the logging components.
+
+Replace `<clickhouse-server-image>` with the ClickHouse server image published with the platform middleware packages, for example `registry.alauda.cn:60070/middleware/clickhouse-server:v25.8.16.34-61a7880e`.
+
+```yaml
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: cpaas-clickhouse
+  namespace: cpaas-system
+spec:
+  configuration:
+    users:
+      # The admin password comes from the Secret created above.
+      admin/k8s_secret_password: cpaas-system/clickhouse-basic-auth/password
+      admin/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      admin/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+
+    profiles:
+      default/allow_nondeterministic_mutations: "1"
+      default/allow_unrestricted_reads_from_keeper: "1"
+      default/max_execution_time: 120
+      default/max_estimated_execution_time: 120
+
+    clusters:
+      - name: replicated                    # Reused in the connection Secret
+        templates:
+          podTemplate: pod-template
+          dataVolumeClaimTemplate: data-volumeclaim-template
+        layout:
+          shardsCount: 1                    # From the profile: 1, 1, 2, or 3
+          replicasCount: 1                  # The example runs one pod; use 3 for three nodes and above
+
+    settings:
+      default_database: observability       # Reused in the connection Secret
+      merge_tree/materialize_ttl_recalculate_only: "1"
+      # Co-located Keeper for the single-node profile. For three nodes and above,
+      # remove these lines and point zookeeper.nodes at your own Keeper quorum.
+      keeper_server/tcp_port: "9181"
+      keeper_server/server_id: "1"
+      keeper_server/log_storage_path: /var/lib/clickhouse/coordination/log
+      keeper_server/snapshot_storage_path: /var/lib/clickhouse/coordination/snapshots
+      keeper_server/coordination_settings/operation_timeout_ms: "10000"
+      keeper_server/coordination_settings/session_timeout_ms: "30000"
+      keeper_server/raft_configuration/server/id: "1"
+      keeper_server/raft_configuration/server/hostname: localhost
+      keeper_server/raft_configuration/server/port: "9234"
+
+    zookeeper:
+      nodes:
+        - host: localhost
+          port: 9181
+
+  defaults:
+    templates:
+      podTemplate: pod-template
+      dataVolumeClaimTemplate: data-volumeclaim-template
+      serviceTemplate: service-template
+
+  templates:
+    podTemplates:
+      - name: pod-template
+        podDistribution:
+          - scope: Shard
+            topologyKey: kubernetes.io/hostname
+            type: ShardAntiAffinity
+        spec:
+          containers:
+            - name: clickhouse
+              image: <clickhouse-server-image>
+              ports:
+                - name: http
+                  containerPort: 8123
+                - name: client
+                  containerPort: 9000
+                - name: interserver
+                  containerPort: 9009
+                - name: keeper
+                  containerPort: 9181
+                - name: raft
+                  containerPort: 9234
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 4Gi
+                limits:
+                  cpu: "2"                          # From the profile
+                  memory: 4Gi                       # From the profile
+              volumeMounts:
+                - name: data-volumeclaim-template
+                  mountPath: /var/lib/clickhouse
+
+    serviceTemplates:
+      - name: service-template
+        spec:
+          ports:
+            - name: http
+              port: 8123
+            - name: tcp
+              port: 9000
+          type: ClusterIP
+
+    volumeClaimTemplates:
+      - name: data-volumeclaim-template
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 200Gi
+          storageClassName: <your-storage-class>    # From Step 1
+```
+
+The `keeper_server/*` settings in the example run the Keeper inside the ClickHouse pod. They belong to the single-node profile: for three nodes and above, delete them and list the Keeper quorum you created in 3.2.
+
+```yaml
+    zookeeper:
+      nodes:
+        - host: cpaas-clickhouse-keeper-0.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
+          port: 9181
+        - host: cpaas-clickhouse-keeper-1.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
+          port: 9181
+        - host: cpaas-clickhouse-keeper-2.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
+          port: 9181
+```
+
+For three nodes and above, spread the replicas across hosts by replacing the `podDistribution` entry in the pod template with:
+
+```yaml
+        podDistribution:
+          - scope: Replica
+            topologyKey: kubernetes.io/hostname
+            type: ReplicaAntiAffinity
+```
+
+The tables are created inside `observability`; no pre-created database is needed.
+
+### 3.4 Wait for the cluster
+
+```bash
+kubectl -n cpaas-system get clickhouseinstallation cpaas-clickhouse \
+  -o jsonpath='{.status.status}{"\n"}'        # wait for: Completed
+
+kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse
+kubectl -n cpaas-system get pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+```
+
+All ClickHouse pods must be `Running` and ready, and every claim must be `Bound`. A StorageClass name that does not exist or cannot bind produces no pods and no error, so check the claims rather than the `ClickHouseInstallation` status alone.
+
+### 3.5 Create the account used by the logging components
+
+The account must be able to create and alter tables in the target database. Scope it to that database.
+
+```sql
+CREATE USER `platform-logging` ON CLUSTER 'replicated' IDENTIFIED BY '<password>';
+GRANT ALL ON observability.* TO `platform-logging` ON CLUSTER 'replicated';
+GRANT SYSTEM DROP DNS CACHE ON *.* TO `platform-logging`;
+```
+
+Backtick the account name: the login name contains a hyphen, and ClickHouse rejects it unquoted. Use the cluster name declared in the `ClickHouseInstallation`. `SYSTEM DROP DNS CACHE` is required by the retention cleaner. On Alauda OS or other FIPS-enabled hosts the password must be at least 32 characters; generate it with `openssl rand -hex 16`.
+
+### 3.6 Verify
+
+```bash
+CH_POD="$(kubectl -n cpaas-system get pod \
+  -l clickhouse.altinity.com/chi=cpaas-clickhouse \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n cpaas-system exec "$CH_POD" -- \
+  clickhouse-client --user platform-logging --password '<password>' \
+  --query "CREATE TABLE observability.__perm_check (a UInt8) ENGINE = Memory"
+
+kubectl -n cpaas-system exec "$CH_POD" -- \
+  clickhouse-client --user platform-logging --password '<password>' \
+  --query "DROP TABLE observability.__perm_check"
+```
+
+Both commands must succeed; a failed create means the account cannot manage the schema.
+
+Record these values:
+
+| Value | Where to read it |
+| --- | --- |
+| Endpoint | The cluster Service that exposes `8123`, listed by `kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=<chi-name>` |
+| Cluster name | `spec.configuration.clusters[].name` |
+| Database | `spec.configuration.settings.default_database` |
+| Shards / replicas | `shardsCount` / `replicasCount` |
+| User / password | The account created above |
+
+## Step 4: Create the Kafka Service
+
+### 4.1 Create the SASL password Secret
+
+The password must be at least 32 characters on Alauda OS nodes or other FIPS-enabled hosts.
+
+```bash
+kubectl -n cpaas-system create secret generic platform-logging-password \
+  --from-literal=password="$(openssl rand -hex 16)"
+```
+
+### 4.2 Create the broker cluster
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafka
+metadata:
+  name: cpaas-kafka
+  namespace: cpaas-system
+spec:
+  mode: KRaft
+  version: 4.2.0                       # Minimum supported by the Alauda Kafka operator
+  replicas: 3
+  resources:
+    limits: { cpu: "2", memory: 4Gi }  # From the profile
+    requests: { cpu: 500m, memory: 2Gi }
+  storage:
+    size: 200Gi
+    class: <your-storage-class>
+    deleteClaim: false
+  controller:
+    replicas: 3
+    roles: ["controller"]              # Required: without it the node pool is rejected
+    resources:
+      limits: { cpu: "1", memory: 2Gi }
+      requests: { cpu: 100m, memory: 512Mi }
+    storage:
+      size: 20Gi
+      class: <your-storage-class>
+      deleteClaim: false
+  kafka:
+    listeners:
+      plain:
+        authentication:
+          type: scram-sha-512
+      tls:
+        authentication:
+          type: scram-sha-512
+    authorization:
+      type: simple
+  config:
+    auto.create.topics.enable: "false"
+    default.replication.factor: "3"
+    min.insync.replicas: "2"
+    offsets.topic.replication.factor: "3"
+    transaction.state.log.replication.factor: "3"
+    transaction.state.log.min.isr: "2"
+    log.retention.hours: "48"
+    unclean.leader.election.enable: "false"
+    message.max.bytes: "10485760"
+    replica.fetch.max.bytes: "10485760"
+    socket.request.max.bytes: "104857600"
+  entityOperator:
+    topicOperator: {}                  # Required: it creates the topics in Step 4.5
+    userOperator: {}                   # Required: it creates the SASL user in Step 4.4
+```
+
+Do not omit these settings:
+
+| Setting | Why it is required |
+| --- | --- |
+| `message.max.bytes: "10485760"` | Audit batches are about 1.1–1.5 MiB each. The Kafka default of 1 MiB rejects every audit batch. |
+| `replica.fetch.max.bytes: "10485760"` | Must be at least `message.max.bytes`, otherwise replica synchronization stalls. |
+| `auto.create.topics.enable: "false"` | A mistyped topic name must not be created automatically and silently collect data. |
+| `entityOperator.topicOperator` / `userOperator` | Without them, the `RdsTopic` and `RdsKafkaUser` resources in the next steps are not applied to the brokers. |
+
+### 4.3 Wait for the broker cluster
+
+```bash
+kubectl -n cpaas-system get rdsKafka cpaas-kafka \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\n"}{end}'
+kubectl -n cpaas-system get pod -l strimzi.io/cluster=cpaas-kafka
+```
+
+Wait until the `Ready` condition is `True` and all broker pods are `Running`.
+
+Confirm the required settings reached the brokers:
+
+```bash
+KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- \
+  grep -E "^message\.max\.bytes|^replica\.fetch\.max\.bytes" /tmp/strimzi.properties
+```
+
+Both values must be `10485760`, otherwise stop. The broker applies these settings as static configuration, so `kafka-configs.sh --describe` does not show them.
+
+### 4.4 Create the SASL user and its ACLs
+
+The logging components use a single account with access to the three topics, the consumer groups, and the broker metadata.
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafkaUser
+metadata:
+  name: platform-logging
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: platform-logging-password
+          key: password
+  authorization:
+    type: simple
+    acls:
+      # The three topics
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_LOG_TOPIC, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_EVENT_TOPIC, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_AUDIT_TOPIC, patternType: literal }
+      # The consumer groups used by the log pipeline
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_log, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_event, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_audit, patternType: literal }
+      # The consumer group prefix used by LogForward
+      - host: "*"
+        operation: All
+        resource: { type: group, name: "logforward-", patternType: prefix }
+      # The consumer group prefix used by the log query service
+      - host: "*"
+        operation: All
+        resource: { type: group, name: "razor-", patternType: prefix }
+      # Broker metadata
+      - host: "*"
+        operation: All
+        resource: { type: cluster, name: kafka-cluster, patternType: literal }
+```
+
+All nine entries are required. `operation: All` covers the read and describe permissions these entries need. Verify:
+
+```bash
+kubectl -n cpaas-system get rdskafkauser platform-logging \
+  -o jsonpath='{.status.phase}{"\n"}'        # expect: Active
+kubectl -n cpaas-system get secret platform-logging
+```
+
+The group names use underscores (`alauda_log`), while the topic names use uppercase letters and underscores (`ALAUDA_LOG_TOPIC`).
+
+### 4.5 Create the three topics
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-log-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_LOG_TOPIC          # Broker-side name; must match the ACL and the connection Secret
+  partitions: 30                       # Upper bound for consumer parallelism
+  replicas: 3
+  config:
+    retention.ms: "172800000"            # 48 hours
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-event-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_EVENT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-audit-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_AUDIT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+```
+
+The resource name must be a valid DNS name. `spec.topicName` is the broker-side name and must match the ACL entries above.
+
+The example uses a 48-hour retention. Time-based retention alone does not cap disk usage: a burst of traffic can fill the broker volume before the window expires. Either size the broker volumes for the peak rate over the retention window, or add `retention.bytes` to each topic. `retention.bytes` applies per partition, so the broker volumes must hold `partitions × retention.bytes`.
+
+### 4.6 Verify the Kafka service end to end
+
+Build the client properties inside the broker pod from the user Secret. The broker listeners require SASL, so every command below needs them.
+
+```bash
+KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n cpaas-system exec -i "$KAFKA_BROKER_POD" -c kafka -- \
+  sh -c 'cat > /tmp/logging-client.properties' <<EOF
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=SCRAM-SHA-512
+sasl.jaas.config=$(kubectl -n cpaas-system get secret platform-logging \
+  -o jsonpath='{.data.sasl\.jaas\.config}' | base64 -d)
+EOF
+```
+
+Confirm the topics exist on the brokers:
+
+```bash
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --command-config /tmp/logging-client.properties --list
+```
+
+Then produce and consume one record with the logging account. The consumer group must be one of the groups the ACLs allow; the console consumer otherwise creates a random group and the broker rejects it.
+
+```bash
+kubectl -n cpaas-system exec -i "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --command-config /tmp/logging-client.properties \
+  --topic ALAUDA_LOG_TOPIC <<< "kafka-check"
+
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --command-config /tmp/logging-client.properties \
+  --topic ALAUDA_LOG_TOPIC --group alauda_log \
+  --from-beginning --max-messages 1 --timeout-ms 10000
+```
+
+Record these values:
+
+| Value | Where to read it |
+| --- | --- |
+| Bootstrap address | `<cluster-name>-kafka-bootstrap.cpaas-system.svc:9093` for SASL over TLS, or `:9092` for SASL without TLS |
+| Cluster name | `metadata.name` of the `RdsKafka` resource |
+| User / password | The `RdsKafkaUser` name and its password |
+| Topics | `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC` |
+
+## Step 5: Create the OpenSearch Cluster
+
+Skip this step when the target is ClickHouse.
+
+### 5.1 Create the cluster
+
+Set the node pools from the Step 0 profile. The example is 3 + 5: three master nodes and five data nodes. For the small-scale profiles, use a single pool with `roles: [cluster_manager, data]` and `replicas: 3` or `5`.
+
+```yaml
+apiVersion: opensearch.opster.io/v1
+kind: OpenSearchCluster
+metadata:
+  name: cpaas-opensearch
+  namespace: cpaas-system
+spec:
+  general:
+    serviceName: cpaas-opensearch
+    httpPort: 9200
+    version: 3.7.0
+  security:
+    tls:
+      http:
+        generate: true
+      transport:
+        generate: true
+        perNode: true
+  nodePools:
+    - component: masters
+      replicas: 3
+      diskSize: 100Gi
+      roles:
+        - cluster_manager
+      persistence:
+        pvc:
+          accessModes:
+            - ReadWriteOnce
+          storageClass: <your-storage-class>   # From Step 1
+      resources:
+        limits:
+          cpu: "2"                             # From the profile
+          memory: 4Gi                          # From the profile
+        requests:
+          cpu: "1"
+          memory: 2Gi
+    - component: data
+      replicas: 5
+      diskSize: 800Gi
+      roles:
+        - data
+        - ingest
+      persistence:
+        pvc:
+          accessModes:
+            - ReadWriteOnce
+          storageClass: <your-storage-class>   # From Step 1
+      resources:
+        limits:
+          cpu: "8"                             # From the profile
+          memory: 16Gi                         # From the profile
+        requests:
+          cpu: "2"
+          memory: 8Gi
+  dashboards:
+    replicas: 0
+```
+
+Wait for the cluster to be healthy:
+
+```bash
+kubectl -n cpaas-system get opensearchcluster cpaas-opensearch \
+  -o jsonpath='{.status.health}{"\n"}'       # expect: green
+```
+
+The health reports `unknown` and then `yellow` while the nodes start and the shards initialize. Wait for `green`.
+
+### 5.2 Optional: install the Chinese analyzer plugin
+
+`analysis-ik` is optional. Without it the standard analyzer is used and Chinese text is not segmented; with it Chinese text is segmented.
+
+Configure the plugin in the `OpenSearchCluster` spec. The operator passes every `pluginsList` entry to `opensearch-plugin install` each time a node starts, so the plugin survives pod restarts and node replacement. Installing it by hand inside a running container does not survive a restart, because the plugin is written outside the data volume.
+
+| Field | Effect |
+| --- | --- |
+| `spec.general.pluginsList` | Installs the plugin on every OpenSearch node |
+| `spec.bootstrap.pluginsList` | Installs the plugin on the bootstrap pod that forms the cluster. Set it whenever you configure the plugin on a cluster you have not created yet, otherwise cluster initialization can fail. |
+
+To create the cluster with the plugin from the start, add both fields to the `OpenSearchCluster` of 5.1 and apply that version:
+
+```yaml
+spec:
+  general:
+    pluginsList:
+      - "https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"
+  bootstrap:
+    pluginsList:
+      - "https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"
+```
+
+If you already created the cluster without the plugin, add `spec.general.pluginsList` and re-apply; the operator rolls the nodes to install it.
+
+The plugin version must match `spec.general.version`. A URL that returns 404 stops every node from starting. On a cluster without external network access, host the zip on an internal server and use that URL.
+
+Verify that every node has the plugin:
+
+```bash
+for pod in $(kubectl -n cpaas-system get pod \
+    -l opster.io/opensearch-cluster=cpaas-opensearch \
+    -o jsonpath='{.items[*].metadata.name}'); do
+  echo "$pod: $(kubectl -n cpaas-system exec "$pod" -c opensearch -- \
+    bin/opensearch-plugin list | grep -c '^analysis-ik')"
+done
+```
+
+Each node must print `1`. Then confirm the analyzer segments Chinese text:
+
+```bash
+curl -sk -u "admin:<admin-password>" -X POST "https://<opensearch-endpoint>/_analyze" \
+  -H 'Content-Type: application/json' \
+  -d '{"analyzer":"ik_smart","text":"自然语言处理技术"}'
+```
+
+The response must contain several tokens, for example `自然语言`, `处理`, `技术`.
+
+### 5.3 Create the account used by the logging components
+
+The account must read and write the log indices, install the index templates the logging components create, and manage their lifecycle policies. The security plugin is enabled, so create the role, the user, and the role mapping through its REST API. Replace `<admin-password>` with the password of the security plugin administrator and `<password>` with a value of at least 32 characters.
+
+```bash
+OS="https://<opensearch-endpoint>"
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/roles/log_storage_writer" \
+  -H 'Content-Type: application/json' -d '{
+    "cluster_permissions": [
+      "cluster:monitor/*",
+      "cluster:admin/opendistro/ism/policy/*",
+      "indices:admin/index_template/put",
+      "indices:admin/index_template/get",
+      "indices:admin/template/put",
+      "indices:admin/template/get"
+    ],
+    "index_permissions": [{
+      "index_patterns": ["log-*", "event-*", "audit-*", "meter-*"],
+      "allowed_actions": [
+        "indices:admin/create",
+        "indices:admin/mapping/put",
+        "indices:data/write/*",
+        "indices:data/read/*"
+      ]
+    }]
+  }'
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/internalusers/platform-logging" \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"<password>","backend_roles":[]}'
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/rolesmapping/log_storage_writer" \
+  -H 'Content-Type: application/json' -d '{"users":["platform-logging"]}'
+```
+
+The template and policy permissions are cluster-level. Declaring `indices:admin/index_template/put` and `indices:admin/template/put` under `index_permissions` does not grant them, and the logging components then fail to install their index templates. Without the role mapping the account is authenticated but has no permissions at all.
+
+Verify as the new account:
+
+```bash
+curl -sk -u "platform-logging:<password>" -X PUT "$OS/_index_template/perm-check" \
+  -H 'Content-Type: application/json' \
+  -d '{"index_patterns":["log-perm-check-*"],"template":{"settings":{"number_of_shards":1}}}'
+
+curl -sk -u "platform-logging:<password>" -X POST "$OS/log-perm-check/_doc" \
+  -H 'Content-Type: application/json' -d '{"check":1}'
+
+curl -sk -u "platform-logging:<password>" "$OS/_index_template/perm-check"
+```
+
+All three must succeed. A `security_exception` with `no permissions for [...]` means the role or the role mapping is incomplete. Clean up with the administrator account:
+
+```bash
+curl -sk -u "admin:<admin-password>" -X DELETE "$OS/_index_template/perm-check"
+curl -sk -u "admin:<admin-password>" -X DELETE "$OS/log-perm-check"
+```
+
+Record these values:
+
+| Value | Where to read it |
+| --- | --- |
+| Endpoint | The service address or load balancer, for example `https://<lb>:9200` |
+| User / password | The account created above |
+| CA certificate | The certificate for the endpoint, when it uses a private CA |
+
+The platform applies index templates with one shard and one replica. If your HA policy needs different values, apply a composable template with a higher priority and confirm the result with `GET /_index_template`. Existing indices keep the settings they were created with.
+
+## Step 6: Record the Connection Details
+
+Record every value below, and confirm the endpoint resolves from the cluster that runs the logging components.
+
+| Value | ClickHouse | OpenSearch | Kafka |
+| --- | --- | --- | --- |
+| Endpoint | Required | Required | Required |
+| Cluster name | Required | — | Required |
+| Database | Required | — | — |
+| Shards / replicas | Required | — | — |
+| User | Required | Required | Required |
+| Password | Required | Required | Required |
+| Topics | — | — | Required |
+| CA certificate | When the endpoint uses a private CA | When the endpoint uses a private CA (used for historical data migration) | When the endpoint uses a private CA |
+
+## Environment Checklist
+
+| Check | Expected |
+| --- | --- |
+| Nodes and disks | Dedicated nodes labelled, SSD mounted, directories created with the right ownership |
+| StorageClass | Exists and binds the volumes the storage cluster uses |
+| Operators | ClickHouse, Kafka, and (for OpenSearch) OpenSearch operators are ready, their CRDs exist, and they watch `cpaas-system` |
+| ClickHouse | `status.status` is `Completed`, all pods ready, the logging account can create and drop a table. For three nodes and above, the Keeper quorum reports one leader and two followers |
+| OpenSearch | Cluster health is `green`, the logging account can manage an index template, and `analysis-ik` is listed on every node and segments Chinese text when you enabled it |
+| Kafka brokers | Cluster ready, `message.max.bytes` and `replica.fetch.max.bytes` are both `10485760` |
+| Kafka user and ACLs | `RdsKafkaUser` is `Active`, all nine ACL entries are present |
+| Kafka topics | The three topics exist on the brokers with the intended partitions and retention |
+| Kafka connectivity | A record produced and consumed with the logging account |
+| Values recorded | Endpoint, cluster, database, topology, credentials, topics, and CA certificates are all captured |
+
+Fix any failed check before the logging components connect to this storage.
