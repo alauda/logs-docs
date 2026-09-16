@@ -66,7 +66,13 @@ Provide dedicated SSD storage with at least 6,000 IOPS and 250 MB/s read/write, 
    - On the traditional operating system layout, use `/cpaas/data/...`.
    - On Alauda OS nodes only `/var/cpaas` is writable, so use `/var/cpaas/data/...`.
 4. Make sure the path survives node re-provisioning.
-5. Create the directories the storage pods use and set their ownership. The examples use the traditional layout; on Alauda OS nodes replace `/cpaas` with `/var/cpaas`.
+5. OpenSearch needs `vm.max_map_count` set to at least `262144`. The OpenSearch operator sets it from an init container, so nothing is required here unless your cluster enforces restricted Pod Security Admission, in which case that init container cannot run and you must set it on every node yourself:
+
+   ```bash
+   sudo sysctl -w vm.max_map_count=262144
+   echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+   ```
+6. Create the directories the storage pods use and set their ownership. The examples use the traditional layout; on Alauda OS nodes replace `/cpaas` with `/var/cpaas`.
 
    ```bash
    # ClickHouse runs as uid 101
@@ -82,7 +88,7 @@ Provide dedicated SSD storage with at least 6,000 IOPS and 250 MB/s read/write, 
    sudo chown -R 1000:1000 /cpaas/data/opensearch
    ```
 
-6. Decide how the volumes are provisioned:
+7. Decide how the volumes are provisioned:
 
 | Approach | When to use it | What you must do |
 | --- | --- | --- |
@@ -128,7 +134,7 @@ Save the YAML as `local-storage.yaml` and apply it:
 kubectl apply -f local-storage.yaml
 ```
 
-Repeat the `PersistentVolume` part for every pod, with a distinct `metadata.name`, a distinct `local.path`, and the IP of the node that pod runs on. When a node hosts more than one pod of the same component, give each pod its own directory, for example `/cpaas/data/clickhouse-0` and `/cpaas/data/clickhouse-1`, created with the ownership from step 5.
+Repeat the `PersistentVolume` part for every pod, with a distinct `metadata.name`, a distinct `local.path`, and the IP of the node that pod runs on. When a node hosts more than one pod of the same component, give each pod its own directory, for example `/cpaas/data/clickhouse-0` and `/cpaas/data/clickhouse-1`, created with the ownership from step 6.
 
 ## Step 2: Install the Operators
 
@@ -752,6 +758,7 @@ spec:
       type: simple
   config:
     auto.create.topics.enable: "false"
+    auto.leader.rebalance.enable: "false"
     default.replication.factor: "3"
     min.insync.replicas: "2"
     offsets.topic.replication.factor: "3"
@@ -780,6 +787,7 @@ Do not omit these settings:
 | `message.max.bytes: "10485760"` | Audit batches are about 1.1–1.5 MiB each. The Kafka default of 1 MiB rejects every audit batch. |
 | `replica.fetch.max.bytes: "10485760"` | Must be at least `message.max.bytes`, otherwise replica synchronization stalls. |
 | `auto.create.topics.enable: "false"` | A mistyped topic name must not be created automatically and silently collect data. |
+| `auto.leader.rebalance.enable: "false"` | Keeps the platform from moving partition leaders on its own. Rebalance deliberately during maintenance instead. |
 | `entityOperator.topicOperator` / `userOperator` | Without them, the `RdsTopic` and `RdsKafkaUser` resources in the next steps are not applied to the brokers. |
 
 ### 4.3 Wait for the broker cluster
@@ -790,7 +798,15 @@ kubectl -n cpaas-system get rdsKafka cpaas-kafka \
 kubectl -n cpaas-system get pod -l strimzi.io/cluster=cpaas-kafka
 ```
 
-Wait until the `Ready` condition is `True` and all broker pods are `Running`.
+Wait until the `Ready` condition is `True` and all broker pods are `Running`. The Kafka operator applies hard pod anti-affinity, so the three brokers must land on three different nodes:
+
+```bash
+kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName'
+```
+
+Three distinct node names are required. The same three nodes are also the minimum for the cluster to schedule at all.
 
 Confirm the required settings reached the brokers:
 
@@ -1138,7 +1154,17 @@ The response must contain several tokens, for example `自然语言`, `处理`, 
 
 ### 5.3 Create the account used by the logging components
 
-The account must read and write the log indices, install the index templates the logging components create, and manage their lifecycle policies. The security plugin is enabled, so create the role, the user, and the role mapping through its REST API. Replace `<admin-password>` with the password of the security plugin administrator and `<password>` with a value of at least 32 characters.
+The account must read and write the log indices, install the index templates the logging components create, and manage their lifecycle policies. The security plugin is enabled, so create the role, the user, and the role mapping through its REST API.
+
+These calls authenticate as `admin`, the security plugin administrator. The operator generates that account and stores its credentials in the `<cluster-name>-admin-password` Secret, so read the password from there and use it wherever `<admin-password>` appears below. `admin` / `admin` is the default, which is what the examples assume:
+
+```bash
+kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
+  -o jsonpath='{.data.username}{" "}{.data.password}' | \
+  while read u p; do echo "$(echo $u | base64 -d) / $(echo $p | base64 -d)"; done
+```
+
+Change that password before production and keep it in sync with the operator, or the operator's own health checks stop working; the platform OpenSearch knowledge base documents the procedure (write an `internal_users.yml` with the new hash to `securityconfig-secret`, create the matching `admin-credentials-secret`, then update the cluster). Replace `<password>` with a value of at least 32 characters for the logging account.
 
 ```bash
 OS="https://<opensearch-endpoint>"        # the cluster service, for example https://cpaas-opensearch.cpaas-system.svc:9200
