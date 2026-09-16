@@ -806,7 +806,7 @@ kubectl -n cpaas-system get pod \
   -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName'
 ```
 
-Three distinct node names are required. The same three nodes are also the minimum for the cluster to schedule at all.
+Three distinct node names are required: hard anti-affinity needs at least three schedulable nodes.
 
 Confirm the required settings reached the brokers:
 
@@ -1105,6 +1105,18 @@ kubectl -n cpaas-system get opensearchcluster cpaas-opensearch \
 
 The health reports `unknown` and then `yellow` while the nodes start and the shards initialize. Wait for `green`.
 
+The steps that follow authenticate as `admin`, the security plugin administrator. The operator generates that account and stores its credentials in the `<cluster-name>-admin-password` Secret, so read the password from there and use it wherever `<admin-password>` appears in the steps below. `admin` / `admin` is the default, which is what the examples assume:
+
+```bash
+OS_ADMIN_USER="$(kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
+  -o jsonpath='{.data.username}' | base64 -d)"
+OS_ADMIN_PASSWORD="$(kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d)"
+echo "$OS_ADMIN_USER / $OS_ADMIN_PASSWORD"
+```
+
+Change that password before production and keep it in sync with the operator, or the operator's own health checks stop working; the platform OpenSearch knowledge base documents the procedure (write an `internal_users.yml` with the new hash to `securityconfig-secret`, create the matching `admin-credentials-secret`, then update the cluster). Replace `<password>` with a value of at least 32 characters for the logging account.
+
 ### 5.2 Optional: install the Chinese analyzer plugin
 
 `analysis-ik` is optional. Without it the standard analyzer is used and Chinese text is not segmented; with it Chinese text is segmented.
@@ -1154,17 +1166,7 @@ The response must contain several tokens, for example `自然语言`, `处理`, 
 
 ### 5.3 Create the account used by the logging components
 
-The account must read and write the log indices, install the index templates the logging components create, and manage their lifecycle policies. The security plugin is enabled, so create the role, the user, and the role mapping through its REST API.
-
-These calls authenticate as `admin`, the security plugin administrator. The operator generates that account and stores its credentials in the `<cluster-name>-admin-password` Secret, so read the password from there and use it wherever `<admin-password>` appears below. `admin` / `admin` is the default, which is what the examples assume:
-
-```bash
-kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
-  -o jsonpath='{.data.username}{" "}{.data.password}' | \
-  while read u p; do echo "$(echo $u | base64 -d) / $(echo $p | base64 -d)"; done
-```
-
-Change that password before production and keep it in sync with the operator, or the operator's own health checks stop working; the platform OpenSearch knowledge base documents the procedure (write an `internal_users.yml` with the new hash to `securityconfig-secret`, create the matching `admin-credentials-secret`, then update the cluster). Replace `<password>` with a value of at least 32 characters for the logging account.
+The account must read and write the log indices, install the index templates the logging components create, and manage their lifecycle policies. The security plugin is enabled, so create the role, the user, and the role mapping through its REST API. These calls authenticate as `admin`, using the password you read in 5.1.
 
 ```bash
 OS="https://<opensearch-endpoint>"        # the cluster service, for example https://cpaas-opensearch.cpaas-system.svc:9200
