@@ -260,6 +260,16 @@ spec:
     settings:
       default_database: observability       # Reused in the connection Secret
       merge_tree/materialize_ttl_recalculate_only: "1"
+      # Self-observability system tables grow without bound and eventually fill the volume.
+      asynchronous_metric_log/database: system
+      asynchronous_metric_log/table: asynchronous_metric_log
+      asynchronous_metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      metric_log/database: system
+      metric_log/table: metric_log
+      metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      trace_log/database: system
+      trace_log/table: trace_log
+      trace_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
       # Co-located Keeper for the single-node profile. For three nodes and above,
       # use the manifest below instead, which runs Keeper in every ClickHouse pod.
       keeper_server/tcp_port: "9181"
@@ -355,6 +365,8 @@ The static Keeper configuration is injected through the cluster `files` and pull
 
 The readiness probe checks the Raft port. This is required: the default HTTP probe only succeeds after ClickHouse is serving, and ClickHouse does not finish starting until the Keeper quorum exists, so the operator would wait for the first replica forever and never create the remaining ones.
 
+The Keeper `path` sits under `/var/lib/clickhouse`, which is the mounted data volume, so the Keeper log and snapshots live on the persistent volume together with the ClickHouse data. Do not move it outside that mount: Keeper state kept in the container filesystem is lost whenever the pod restarts.
+
 The `wait-for-self-dns` init container waits until the pod resolves its own headless service name. Without it, a pod that starts before its DNS record is published initialises its distributed DDL worker against an unresolved hostname and then never retries: `CREATE TABLE ... ON CLUSTER` succeeds on the other replicas, and that replica silently misses the statement.
 
 ```yaml
@@ -388,6 +400,16 @@ spec:
     settings:
       default_database: observability       # Reused in the connection Secret
       merge_tree/materialize_ttl_recalculate_only: "1"
+      # Self-observability system tables grow without bound and eventually fill the volume.
+      asynchronous_metric_log/database: system
+      asynchronous_metric_log/table: asynchronous_metric_log
+      asynchronous_metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      metric_log/database: system
+      metric_log/table: metric_log
+      metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      trace_log/database: system
+      trace_log/table: trace_log
+      trace_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
 
     clusters:
       - name: replicated                    # Reused in the connection Secret
@@ -403,7 +425,7 @@ spec:
                   <clickhouse>
                       <include_from>/tmp/clickhouse/keeper_dynamic_configuration.xml</include_from>
                       <keeper_server incl="keeper_server">
-                          <path>/var/lib/clickhouse-keeper</path>
+                          <path>/var/lib/clickhouse/coordination</path>
                           <tcp_port>9181</tcp_port>
                           <four_letter_word_white_list>*</four_letter_word_white_list>
                           <coordination_settings>
