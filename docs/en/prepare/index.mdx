@@ -182,43 +182,15 @@ kubectl -n cpaas-system create secret generic clickhouse-basic-auth \
   --from-literal=password="$(openssl rand -hex 16)"
 ```
 
-### 3.2 Create the Keeper (three nodes and above)
+### 3.2 Create the Keeper client Service (three nodes and above)
 
-Every profile needs a Keeper, including the single-node profile, because the logging components create `ReplicatedMergeTree` tables. The single-node profile runs the Keeper inside the ClickHouse pod, through the `keeper_server/*` settings in 3.3, so skip this step for it.
+Every profile needs a Keeper, including the single-node profile, because the logging components create `ReplicatedMergeTree` tables. The single-node profile runs the Keeper inside its ClickHouse pod through the `keeper_server/*` settings in 3.3, so skip this step for it.
 
-For three nodes and above, create a three-node Keeper quorum and point the `ClickHouseInstallation` at it. The `clickhouse-operator` package on the platform ships only the `ClickHouseInstallation` resources and no Keeper resource, so the Keeper is deployed as its own workload. The `clickhouse-keeper` binary ships in the ClickHouse server image, so use the same `<clickhouse-server-image>` as the ClickHouse pods.
+For three nodes and above, the ClickHouse pods themselves form the Keeper quorum: every ClickHouse pod is also a Keeper member. ClickHouse reaches that quorum through a headless Service that selects all ready pods of the installation.
+
+Save the YAML as `cpaas-clickhouse-keeper-service.yaml` and apply it:
 
 ```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cpaas-clickhouse-keeper-config
-  namespace: cpaas-system
-data:
-  keeper_config.xml: |
-    <clickhouse>
-      <logger>
-        <level>information</level>
-        <console>true</console>
-      </logger>
-      <listen_host>0.0.0.0</listen_host>
-      <keeper_server>
-        <tcp_port>9181</tcp_port>
-        <server_id>1</server_id>
-        <log_storage_path>/var/lib/clickhouse-keeper/coordination/log</log_storage_path>
-        <snapshot_storage_path>/var/lib/clickhouse-keeper/coordination/snapshots</snapshot_storage_path>
-        <coordination_settings>
-          <operation_timeout_ms>10000</operation_timeout_ms>
-          <session_timeout_ms>30000</session_timeout_ms>
-        </coordination_settings>
-        <raft_configuration>
-          <server><id>1</id><hostname>cpaas-clickhouse-keeper-0.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
-          <server><id>2</id><hostname>cpaas-clickhouse-keeper-1.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
-          <server><id>3</id><hostname>cpaas-clickhouse-keeper-2.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local</hostname><port>9234</port></server>
-        </raft_configuration>
-      </keeper_server>
-    </clickhouse>
----
 apiVersion: v1
 kind: Service
 metadata:
@@ -226,81 +198,24 @@ metadata:
   namespace: cpaas-system
 spec:
   clusterIP: None
-  selector:
-    app: cpaas-clickhouse-keeper
+  type: ClusterIP
   ports:
-    - {name: client, port: 9181, targetPort: 9181}
-    - {name: raft, port: 9234, targetPort: 9234}
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: cpaas-clickhouse-keeper
-  namespace: cpaas-system
-spec:
-  serviceName: cpaas-clickhouse-keeper
-  replicas: 3
+    - name: keeper
+      port: 9181
+      protocol: TCP
+      targetPort: 9181
   selector:
-    matchLabels: {app: cpaas-clickhouse-keeper}
-  template:
-    metadata:
-      labels: {app: cpaas-clickhouse-keeper}
-    spec:
-      nodeSelector:
-        node-role.kubernetes.io/infra: ""      # The label you set in Step 1
-      tolerations:
-        - key: node-role.kubernetes.io/infra   # The taint you set in Step 1
-          operator: Exists
-          effect: NoSchedule
-      containers:
-        - name: keeper
-          image: <clickhouse-server-image>
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              cp /config/keeper_config.xml /tmp/keeper_config.xml
-              ID=$(( ${HOSTNAME##*-} + 1 ))
-              sed -i "s|<server_id>1</server_id>|<server_id>${ID}</server_id>|" /tmp/keeper_config.xml
-              exec clickhouse-keeper --config-file=/tmp/keeper_config.xml
-          ports:
-            - {name: client, containerPort: 9181}
-            - {name: raft, containerPort: 9234}
-          resources:
-            requests: {cpu: 100m, memory: 256Mi}
-            limits: {cpu: "1", memory: 1Gi}
-          volumeMounts:
-            - {name: config, mountPath: /config}
-            - {name: data, mountPath: /var/lib/clickhouse-keeper}
-      volumes:
-        - name: config
-          configMap: {name: cpaas-clickhouse-keeper-config}
-  volumeClaimTemplates:
-    - metadata: {name: data}
-      spec:
-        accessModes: [ReadWriteOnce]
-        storageClassName: <your-storage-class>    # From Step 1
-        resources:
-          requests: {storage: 10Gi}
+    clickhouse.altinity.com/chi: cpaas-clickhouse
+    clickhouse.altinity.com/namespace: cpaas-system
+    clickhouse.altinity.com/ready: "yes"
+    clickhouse.altinity.com/role: keeper
 ```
-
-Save the YAML as `cpaas-clickhouse-keeper.yaml` and apply it:
 
 ```bash
-kubectl apply -f cpaas-clickhouse-keeper.yaml
+kubectl apply -f cpaas-clickhouse-keeper-service.yaml
 ```
 
-The raft peers use fully qualified pod names. Short pod names do not resolve, and a Keeper that cannot reach its peers never opens port `9181`; the `ClickHouseInstallation` then fails to start for no visible reason.
-
-Wait until one Keeper is the leader and the other two are followers before you continue:
-
-```bash
-kubectl -n cpaas-system get pod -l app=cpaas-clickhouse-keeper
-kubectl -n cpaas-system exec cpaas-clickhouse-keeper-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
-kubectl -n cpaas-system exec cpaas-clickhouse-keeper-1 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
-kubectl -n cpaas-system exec cpaas-clickhouse-keeper-2 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
-```
-
-The three lines must report one `leader` and two `follower`.
+The `chi`, `namespace` and `ready` labels are set by the operator. The `role: keeper` label comes from the pod template in 3.3.
 
 ### 3.3 Create the ClickHouseInstallation
 
@@ -346,7 +261,7 @@ spec:
       default_database: observability       # Reused in the connection Secret
       merge_tree/materialize_ttl_recalculate_only: "1"
       # Co-located Keeper for the single-node profile. For three nodes and above,
-      # remove these lines and point zookeeper.nodes at your own Keeper quorum.
+      # use the manifest below instead, which runs Keeper in every ClickHouse pod.
       keeper_server/tcp_port: "9181"
       keeper_server/server_id: "1"
       keeper_server/log_storage_path: /var/lib/clickhouse/coordination/log
@@ -434,7 +349,13 @@ Save the YAML as `cpaas-clickhouse.yaml` and apply it:
 kubectl apply -f cpaas-clickhouse.yaml
 ```
 
-**Three nodes and above.** Use this manifest instead of the one above. It drops the Keeper settings, points `zookeeper.nodes` at the three Keeper pods created in 3.2, and spreads the replicas across hosts.
+**Three nodes and above.** Use this manifest instead of the one above. The Keeper runs inside every ClickHouse pod, so the pods form the quorum among themselves and the installation stays a single `ClickHouseInstallation`.
+
+The static Keeper configuration is injected through the cluster `files` and pulls in a generated file with `include_from`. The identity-dependent part — `server_id` and the member list — is generated per pod by an init container into an in-memory `emptyDir`. Keep `SHARDS_COUNT` and `REPLICAS_COUNT` in that init container equal to `layout.shardsCount` and `layout.replicasCount`, otherwise the member list is incomplete and the quorum never forms.
+
+The readiness probe checks the Raft port. This is required: the default HTTP probe only succeeds after ClickHouse is serving, and ClickHouse does not finish starting until the Keeper quorum exists, so the operator would wait for the first replica forever and never create the remaining ones.
+
+The `wait-for-self-dns` init container waits until the pod resolves its own headless service name. Without it, a pod that starts before its DNS record is published initialises its distributed DDL worker against an unresolved hostname and then never retries: `CREATE TABLE ... ON CLUSTER` succeeds on the other replicas, and that replica silently misses the statement.
 
 ```yaml
 apiVersion: clickhouse.altinity.com/v1
@@ -445,6 +366,7 @@ metadata:
 spec:
   configuration:
     users:
+      # The admin password comes from the Secret created above.
       admin/k8s_secret_password: cpaas-system/clickhouse-basic-auth/password
       admin/networks/ip:
         - "0.0.0.0/0"
@@ -458,6 +380,15 @@ spec:
       default/max_execution_time: 120
       default/max_estimated_execution_time: 120
 
+    zookeeper:
+      nodes:
+        - host: cpaas-clickhouse-keeper        # The Service created in 3.2
+          port: 9181
+
+    settings:
+      default_database: observability       # Reused in the connection Secret
+      merge_tree/materialize_ttl_recalculate_only: "1"
+
     clusters:
       - name: replicated                    # Reused in the connection Secret
         templates:
@@ -466,33 +397,35 @@ spec:
         layout:
           shardsCount: 1                    # From the profile: 1, 2, or 3
           replicasCount: 3                  # 3 for three nodes and above
-
-    settings:
-      default_database: observability       # Reused in the connection Secret
-      merge_tree/materialize_ttl_recalculate_only: "1"
-
-    zookeeper:
-      nodes:
-        - host: cpaas-clickhouse-keeper-0.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
-          port: 9181
-        - host: cpaas-clickhouse-keeper-1.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
-          port: 9181
-        - host: cpaas-clickhouse-keeper-2.cpaas-clickhouse-keeper.cpaas-system.svc.cluster.local
-          port: 9181
-
+          shards:
+            - files:
+                keeper_config.xml: |
+                  <clickhouse>
+                      <include_from>/tmp/clickhouse/keeper_dynamic_configuration.xml</include_from>
+                      <keeper_server incl="keeper_server">
+                          <path>/var/lib/clickhouse-keeper</path>
+                          <tcp_port>9181</tcp_port>
+                          <four_letter_word_white_list>*</four_letter_word_white_list>
+                          <coordination_settings>
+                              <raft_logs_level>information</raft_logs_level>
+                          </coordination_settings>
+                      </keeper_server>
+                  </clickhouse>
   defaults:
     templates:
       podTemplate: pod-template
       dataVolumeClaimTemplate: data-volumeclaim-template
       serviceTemplate: service-template
-
   templates:
     podTemplates:
       - name: pod-template
         podDistribution:
-          - scope: Replica
+          - scope: Shard
             topologyKey: kubernetes.io/hostname
-            type: ReplicaAntiAffinity
+            type: ShardAntiAffinity
+        metadata:
+          labels:
+            clickhouse.altinity.com/role: keeper   # Selected by the Service in 3.2
         spec:
           nodeSelector:
             node-role.kubernetes.io/infra: ""      # The label you set in Step 1
@@ -503,6 +436,9 @@ spec:
           containers:
             - name: clickhouse
               image: <clickhouse-server-image>
+              env:
+                - name: RAFT_PORT
+                  value: "9444"
               ports:
                 - name: http
                   containerPort: 8123
@@ -510,6 +446,10 @@ spec:
                   containerPort: 9000
                 - name: interserver
                   containerPort: 9009
+                - name: ch-keeper
+                  containerPort: 9181
+                - name: raft
+                  containerPort: 9444
               resources:
                 requests:
                   cpu: "1"
@@ -520,7 +460,92 @@ spec:
               volumeMounts:
                 - name: data-volumeclaim-template
                   mountPath: /var/lib/clickhouse
-
+                - name: keeper-dynamic-config
+                  mountPath: /tmp/clickhouse
+              readinessProbe:
+                tcpSocket:
+                  port: 9444
+                initialDelaySeconds: 10
+                timeoutSeconds: 5
+                periodSeconds: 10
+                failureThreshold: 3
+          initContainers:
+            - name: wait-for-self-dns
+              image: <clickhouse-server-image>
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  SELF="$(hostname -s).$(hostname -d)"
+                  MY_IP="$(hostname -i)"
+                  for i in $(seq 1 60); do
+                    RESOLVED=$(getent hosts "$SELF" 2>/dev/null | awk '{print $1}' | head -1)
+                    if [ "$RESOLVED" = "$MY_IP" ]; then
+                      echo "resolved $SELF to $MY_IP after ${i}s"
+                      exit 0
+                    fi
+                    sleep 2
+                  done
+                  echo "still unresolved after 120s, continuing"
+                  exit 0
+            - name: keeper-config-initializer
+              image: <clickhouse-server-image>
+              env:
+                - name: RAFT_PORT
+                  value: "9444"
+                - name: SHARDS_COUNT
+                  value: "1"                    # Keep equal to layout.shardsCount
+                - name: REPLICAS_COUNT
+                  value: "3"                    # Keep equal to layout.replicasCount
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  OUT="/tmp/config/keeper_dynamic_configuration.xml"
+                  HOST=$(hostname -s)
+                  DOMAIN=$(hostname -d)
+                  if [[ $HOST =~ (.*)-([0-9]+)-([0-9]+)-([0-9]+)$ ]]; then
+                      SHARD=${BASH_REMATCH[2]}
+                      REPLICA=${BASH_REMATCH[3]}
+                  else
+                      echo "Failed to parse shard/replica from hostname $HOST"; exit 1
+                  fi
+                  if [[ $DOMAIN =~ ^(.*)-([0-9]+)-([0-9]+)\.(.*)$ ]]; then
+                      DOMAIN_NAME=${BASH_REMATCH[1]}
+                      DOMAIN_SUFFIX=.${BASH_REMATCH[4]}
+                  else
+                      echo "Failed to parse domain $DOMAIN"; exit 1
+                  fi
+                  MY_ID=$((SHARD * REPLICAS_COUNT + REPLICA + 1))
+                  KEEPER_ID=1
+                  {
+                    echo "<clickhouse>"
+                    echo "  <keeper_server>"
+                    echo "    <server_id>${MY_ID}</server_id>"
+                    echo "    <raft_configuration>"
+                    for (( i=0; i<SHARDS_COUNT; i++ )); do
+                        for (( j=0; j<REPLICAS_COUNT; j++ )); do
+                            echo "      <server>"
+                            echo "        <id>${KEEPER_ID}</id>"
+                            echo "        <hostname>${DOMAIN_NAME}-${i}-${j}${DOMAIN_SUFFIX}</hostname>"
+                            echo "        <port>${RAFT_PORT}</port>"
+                            echo "      </server>"
+                            KEEPER_ID=$((KEEPER_ID + 1))
+                        done
+                    done
+                    echo "    </raft_configuration>"
+                    echo "  </keeper_server>"
+                    echo "</clickhouse>"
+                  } > "$OUT"
+                  echo "Keeper dynamic configuration generated for server_id=${MY_ID}"
+              volumeMounts:
+                - name: keeper-dynamic-config
+                  mountPath: /tmp/config
+          volumes:
+            - name: keeper-dynamic-config
+              emptyDir:
+                medium: Memory
     serviceTemplates:
       - name: service-template
         spec:
@@ -530,7 +555,6 @@ spec:
             - name: tcp
               port: 9000
           type: ClusterIP
-
     volumeClaimTemplates:
       - name: data-volumeclaim-template
         spec:
@@ -562,6 +586,22 @@ kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=cpaas-clickhouse
 ```
 
 All ClickHouse pods must be `Running` and ready, and every claim must be `Bound`. A StorageClass name that does not exist or cannot bind produces no pods and no error, so check the claims rather than the `ClickHouseInstallation` status alone.
+
+For three nodes and above, confirm the Keeper quorum before you continue. The Keeper runs inside the ClickHouse pods, so check one pod per replica:
+
+```bash
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-0-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-1-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-2-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+```
+
+The three lines must report one `leader` and two `follower`. Also confirm that ClickHouse reads the quorum through the Service from 3.2:
+
+```bash
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-0-0 -- \
+  clickhouse-client -q "SELECT host, port FROM system.zookeeper_connection FORMAT TSV"
+# expect: cpaas-clickhouse-keeper	9181
+```
 
 ### 3.5 Create the account used by the logging components
 
