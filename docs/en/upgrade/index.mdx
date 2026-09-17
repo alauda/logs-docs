@@ -44,7 +44,7 @@ Before you start, ensure that:
    - For OpenSearch 3.7.0, `analysis-ik` is optional. Without it, log searches fall back to a standard analyzer without Chinese word segmentation: they still work, but Chinese full-text search quality is lower. Install the matching 3.7.0 plugin on every node if that matters for the site. The connection account must be able to manage index templates and lifecycle policies and to read and write the log data.
    - For ClickHouse, use a supported replicated cluster (`ReplicatedMergeTree` with Keeper/ZooKeeper). The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target database must exist before you create the PlatformLogForward; if the new data path stays unready with `UNKNOWN_DATABASE`, create the database and wait for the next reconciliation. The connection account must be able to create and update the schema, to read and write data, and to run `SYSTEM DROP DNS CACHE`.
    - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
-   - The target storage and Kafka connection details prepared according to their product documentation.
+   - The target storage and Kafka connection details prepared as described in [Environment Preparation](../prepare/index.mdx).
 4. If you migrate historical data, you have the migration image provided for this release, with the complete registry, tag, or digest. Do not reuse an image from an earlier version.
 5. An approved change window is available, and a platform administrator can access both the global management cluster and the target workload cluster. In a managed environment, coordinate with Alauda support.
 6. The legacy Elasticsearch, Kafka, ZooKeeper, lanaya, and Razor workloads are still running. Do not stop, scale, or delete them before this guide tells you to.
@@ -56,7 +56,7 @@ During the upgrade, do not stop, scale, or delete the legacy Elasticsearch, Kafk
 
 ## Target Storage Preparation
 
-The operator does not create the external OpenSearch/ClickHouse cluster or the new Kafka service. Create them separately, then provide the connection details through the Secrets in Step 1.
+The operator does not create the external OpenSearch/ClickHouse cluster or the new Kafka service. Create them as described in [Environment Preparation](../prepare/index.mdx), then provide the connection details through the Secrets in Step 1.
 
 Plan the size with [Log Component Capacity Planning](../architecture/capacity_planning.mdx), and do not plan below the current Alauda Container Platform Log Storage for Elasticsearch deployment. The target must hold the migrated history plus new traffic. The reference disk configuration in that guide is `6000 IOPS` and `250 MB/s` read/write on dedicated SSD mounts; if the actual storage is weaker, move to a larger profile.
 
@@ -99,154 +99,34 @@ Use this order. Each gate must pass before the next step starts.
 
 | Step | Where | Action | Gate to continue |
 | --- | --- | --- | --- |
-| 1 | Workload cluster | Prepare the target storage, Kafka, and connection Secrets | The target storage and topics are reachable |
-| 2 | Workload cluster | Create `PlatformLogForward` | `Phase=Ready` and `LegacyESUpgradeCompleted` |
-| 3 | Workload cluster | If history is needed, create `LegacyESMigration` | `PrecaptureReady` (or `Succeeded` on an existing run) |
-| 4 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` stay absent for 60 seconds and new log queries still pass |
-| 5 | Workload cluster | Observe the same `LegacyESMigration` | `Phase=Succeeded` and target queries pass |
-| 6 | Workload cluster | Keep the protected source volumes | Explicit approval before any cleanup |
+| 1 | Workload cluster | Install the new data path: connection Secrets plus `PlatformLogForward` with the upgrade annotation | `Phase=Ready` and `LegacyESUpgradeCompleted` |
+| 2 | Workload cluster | If history is needed, create `LegacyESMigration` | `PrecaptureReady` (or `Succeeded` on an existing run) |
+| 3 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` stay absent for 60 seconds and new log queries still pass |
+| 4 | Workload cluster | Observe the same `LegacyESMigration` | `Phase=Succeeded` and target queries pass |
+| 5 | Workload cluster | Keep the protected source volumes | Explicit approval before any cleanup |
 
 ## Upgrade Procedure
 
-### Step 1: Prepare the target storage, Kafka, and connection Secrets
+### Step 1: Install the new data path with the upgrade annotation
 
-**Run on the workload cluster.**
+The new data path is installed the same way as a fresh installation: create the connection Secrets for the target storage and for Kafka, then create one `PlatformLogForward`. Follow **Install Log Storage with External ClickHouse or OpenSearch** in [Installation](../install_log.mdx) for those manifests and the notes that come with them.
 
-Create two Secrets in `cpaas-system` on the workload cluster: one for the target storage, and one for the new Kafka service. Do not overwrite or reuse the Secrets of the legacy Elasticsearch and Kafka.
-
-#### Target OpenSearch
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: platform-default-os-conn                  # Connection Secret name, referenced when you create the PlatformLogForward later
-  namespace: cpaas-system
-type: Opaque
-stringData:
-  endpoints: "https://<opensearch-lb>:9200"       # Required; comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
-  username: "<opensearch-username>"               # Can be omitted when the target allows anonymous access
-  password: "<opensearch-password>"               # Can be omitted when the target allows anonymous access
-  tls.ca: |-                                      # Required when you migrate historical data and the target uses HTTPS with a private CA, so the migration can verify the target before writing
-    -----BEGIN CERTIFICATE-----
-    <opensearch-ca-certificate>
-    -----END CERTIFICATE-----
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: platform-default-mq-conn                  # Kafka connection Secret name, referenced when you create the PlatformLogForward later
-  namespace: cpaas-system
-type: Opaque
-stringData:
-  bootstrap: "<kafka-bootstrap-addresses>"        # Required; Kafka addresses in host:port form, separated by commas
-  kafkaClusterName: "<kafka-cluster-name>"        # Required; Kafka broker resource name; must match the actual name
-  username: "<kafka-username>"                    # Required; Kafka user name
-  password: "<kafka-password-with-at-least-32-characters>"   # Required; at least 32 characters on Alauda OS nodes or other FIPS-enabled hosts
-  sasl_mechanism: "SCRAM-SHA-512"                 # Optional, defaults to SCRAM-SHA-512
-  topics.log: "ALAUDA_LOG_TOPIC"                  # Optional, log topic name, defaults to ALAUDA_LOG_TOPIC
-  topics.event: "ALAUDA_EVENT_TOPIC"              # Optional, event topic name, defaults to ALAUDA_EVENT_TOPIC
-  topics.audit: "ALAUDA_AUDIT_TOPIC"              # Optional, audit topic name, defaults to ALAUDA_AUDIT_TOPIC
-  tls.ca: |-                                      # Required when Kafka uses TLS and its certificate is not trusted by the system
-    -----BEGIN CERTIFICATE-----
-    <kafka-ca-certificate>
-    -----END CERTIFICATE-----
-```
-
-`endpoints` accepts multiple comma-separated HTTP(S) URLs. Some data paths use only the first address, so put the highly available load balancer or coordinator endpoint first, not a single data node, and do not add leading whitespace before the first URL.
-
-#### Target ClickHouse
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: platform-default-ch-conn                  # Connection Secret name, referenced when you create the PlatformLogForward later
-  namespace: cpaas-system
-type: Opaque
-stringData:
-  endpoint: "https://<clickhouse-host>:8443"      # Required; ClickHouse address, including protocol and port
-  cluster: "replicated"                           # Must match the ClickHouse cluster name; ACP baseline default is replicated
-  database: "observability"                       # Target database name, defaults to observability
-  username: "<clickhouse-username>"               # ClickHouse user name
-  password: "<clickhouse-password>"               # ClickHouse password
-  tls.ca: |-                                      # Required when the target uses HTTPS with a private CA
-    -----BEGIN CERTIFICATE-----
-    <clickhouse-ca-certificate>
-    -----END CERTIFICATE-----
-```
-
-The new Kafka service uses the same `platform-default-mq-conn` as in the OpenSearch section.
-
-When you migrate historical data, do not set `tls.insecure_skip_verify: "true"` in the target storage connection Secret; provide `tls.ca` instead so the migration can verify the target.
-
-### Step 2: Create the new data path
-
-**Run on the workload cluster.**
-
-Create one `PlatformLogForward` for your target. It must use `installMode: Fresh` and the `log.alauda.io/legacy-es-upgrade: "true"` annotation. Do not use `installMode: Adopt`.
-
-#### Target OpenSearch
+**The annotation is the only difference.** Add `log.alauda.io/legacy-es-upgrade: "true"` to the `PlatformLogForward`, so the platform enters the legacy Elasticsearch upgrade flow instead of switching the log entry point directly:
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
 kind: PlatformLogForward
 metadata:
-  name: platform-default                                  # Fixed cluster singleton name, do not change
+  name: platform-default                            # Fixed cluster singleton name, do not change
   annotations:
-    log.alauda.io/legacy-es-upgrade: "true"               # Fixed value, enters the legacy Elasticsearch upgrade flow
+    log.alauda.io/legacy-es-upgrade: "true"         # Fixed value, enters the legacy Elasticsearch upgrade flow
 spec:
-  installMode: Fresh                                      # Always Fresh, do not change it to Adopt
-  externalStorage:
-    type: opensearch                                      # Target storage type
-    secretRef:
-      name: platform-default-os-conn                      # Target storage connection Secret created in Step 1
-      namespace: cpaas-system
-  externalMessageQueue:
-    type: kafka                                           # Message queue type, currently only kafka
-    secretRef:
-      name: platform-default-mq-conn                      # Kafka connection Secret created in Step 1, topic names come from this Secret
-      namespace: cpaas-system
+  installMode: Fresh                                # Always Fresh, do not change it to Adopt
+  # externalStorage and externalMessageQueue: as in Installation, pointing at the
+  # target storage and Kafka connection Secrets you created above
 ```
 
-#### Target ClickHouse
-
-The `output.type` field is required for this target.
-
-```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: PlatformLogForward
-metadata:
-  name: platform-default                                  # Fixed cluster singleton name, do not change
-  annotations:
-    log.alauda.io/legacy-es-upgrade: "true"               # Fixed value, enters the legacy Elasticsearch upgrade flow
-spec:
-  installMode: Fresh                                      # Always Fresh, do not change it to Adopt
-  output:
-    type: clickhouse                                      # Required when the target is ClickHouse
-  externalStorage:
-    type: clickhouse                                      # Target storage type
-    shards: 1                                             # Actual shard count of the target ClickHouse
-    replicas: 1                                           # Actual replica count of the target ClickHouse
-    secretRef:
-      name: platform-default-ch-conn                      # Target storage connection Secret created in Step 1
-      namespace: cpaas-system
-  externalMessageQueue:
-    type: kafka                                           # Message queue type, currently only kafka
-    secretRef:
-      name: platform-default-mq-conn                      # Kafka connection Secret created in Step 1, topic names come from this Secret
-      namespace: cpaas-system
-```
-
-`externalStorage.shards` and `externalStorage.replicas` must match the actual ClickHouse topology. Both default to `1`; a wrong value in a multi-shard or replicated deployment leaves part of the target topology unused.
-
-`PlatformLogForward` is cluster-scoped. Do not add `metadata.namespace` to it; the `namespace` fields inside `secretRef` still identify the connection Secrets in `cpaas-system`. The CRD defaults are `aggregateVector.replicas: 3` and `razor.replicas: 2`; set explicit values if your capacity or placement plan requires different replica counts.
-
-Save the YAML as `platform-log-forward.yaml` and apply it:
-
-```bash
-kubectl apply -f platform-log-forward.yaml
-```
+Keep `installMode: Fresh`; `Adopt` is not part of this flow.
 
 The new data path is not available immediately. The platform first creates it, then switches the log entry point, and finally waits for the data that queued up in the old cluster to be consumed; the time this takes depends on the backlog. Watch the status until it finishes, and press `Ctrl+C` to stop:
 
@@ -254,9 +134,7 @@ The new data path is not available immediately. The platform first creates it, t
 kubectl get platformlogforward platform-default -w
 ```
 
-The `Phase` column reaches `Ready`, and the `Ready` column becomes `True`. Continue only after you see `Ready`.
-
-To follow the progress or troubleshoot, read the status conditions:
+The `Phase` column reaches `Ready`, and the `Ready` column becomes `True`. To follow the progress or troubleshoot, read the status conditions:
 
 ```bash
 kubectl get platformlogforward platform-default \
@@ -269,7 +147,7 @@ Once this step is complete, produce or locate new log, event, and audit records,
 
 If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The platform drains the queued data through the legacy path automatically and records `LegacyKafkaDrained` when the old consumer lag reaches zero; `LegacyESUpgradeCompleted` is the gate for this procedure.
 
-### Step 3: Prepare the historical data migration (optional)
+### Step 2: Prepare the historical data migration (optional)
 
 **Run on the workload cluster.**
 
@@ -365,13 +243,13 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-In this flow, data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 4 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
+In this flow, data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 3 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
 
 The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
 
 Use the migration image provided for this ACP 4.4 Logging release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
 
-### Step 4: Uninstall the legacy Elasticsearch storage plugin
+### Step 3: Uninstall the legacy Elasticsearch storage plugin
 
 :::warning
 Run this step only when all of these conditions are true:
@@ -481,7 +359,7 @@ If `ClusterPluginInstance/logcenter` remains or reappears, delete it again and r
 
 After the stability check passes, produce new log, event, and audit records and confirm that they can be queried from the new target. Do not continue to migration verification if the new data path is unhealthy.
 
-### Step 5: Complete and verify the historical migration (optional)
+### Step 4: Complete and verify the historical migration (optional)
 
 **Run on the workload cluster.**
 
@@ -507,7 +385,7 @@ If the phase is `Blocked` or `Failed`, do not delete the migration resource, Job
 
 If no migration was created, record the explicit decision that historical data is not required, and keep the protected source volumes until that decision is approved.
 
-### Step 6: Retained volumes
+### Step 5: Retained volumes
 
 The protected legacy Elasticsearch PVCs and PVs are retained. Keep them until migration and target validation are complete. Do not remove protection annotations, delete PVCs or PVs, or remove finalizers. To release the volumes after validation, contact Alauda support or follow the separate approved cleanup procedure.
 

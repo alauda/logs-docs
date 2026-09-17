@@ -612,6 +612,169 @@ config:
 
 Before applying these scheduling rules, make sure your infra node planning and local storage placement are compatible. For the node planning considerations, see [Planning Infra Nodes for Logging Storage](./how_to/infra_nodes.mdx).
 
+## Install Log Storage with External ClickHouse or OpenSearch
+
+Use this path when the log, event, and audit data must live in storage you operate — a ClickHouse or an OpenSearch cluster, plus a Kafka service — instead of the storage that the platform storage plugins install. OpenSearch as a log storage target is only available through this path.
+
+### Prepare the storage first
+
+Create the target cluster and the Kafka service, including their accounts, ACLs, and topics, and record the connection details:
+
+- [Environment Preparation](../prepare/index.mdx)
+
+Those recorded values are the inputs to the Secrets below.
+
+### Step 1: Create the connection Secrets
+
+**Run on the workload cluster.**
+
+Create the Secret for your target storage and the Secret for the Kafka service in `cpaas-system`. Create only the storage Secret that matches your target.
+
+#### Target OpenSearch
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-os-conn                  # Connection Secret name, referenced when you create the PlatformLogForward later
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoints: "https://<opensearch-lb>:9200"       # Required; comma-separated HTTP(S) URLs; put the highly available coordinator or load balancer first
+  username: "<opensearch-username>"               # Can be omitted when the target allows anonymous access
+  password: "<opensearch-password>"               # Can be omitted when the target allows anonymous access
+  tls.ca: |-                                      # Required when the target uses HTTPS with a private CA, so the platform can verify the target
+    -----BEGIN CERTIFICATE-----
+    <opensearch-ca-certificate>
+    -----END CERTIFICATE-----
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn                  # Kafka connection Secret name, referenced when you create the PlatformLogForward later
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  bootstrap: "<kafka-bootstrap-addresses>"        # Required; Kafka addresses in host:port form, separated by commas
+  kafkaClusterName: "<kafka-cluster-name>"        # Required; Kafka broker resource name; must match the actual name
+  username: "<kafka-username>"                    # Required; Kafka user name
+  password: "<kafka-password-with-at-least-32-characters>"   # Required; at least 32 characters on Alauda OS nodes or other FIPS-enabled hosts
+  sasl_mechanism: "SCRAM-SHA-512"                 # Optional, defaults to SCRAM-SHA-512
+  topics.log: "ALAUDA_LOG_TOPIC"                  # Optional, log topic name, defaults to ALAUDA_LOG_TOPIC
+  topics.event: "ALAUDA_EVENT_TOPIC"              # Optional, event topic name, defaults to ALAUDA_EVENT_TOPIC
+  topics.audit: "ALAUDA_AUDIT_TOPIC"              # Optional, audit topic name, defaults to ALAUDA_AUDIT_TOPIC
+  tls.ca: |-                                      # Required when Kafka uses TLS and its certificate is not trusted by the system
+    -----BEGIN CERTIFICATE-----
+    <kafka-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+#### Target ClickHouse
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn                  # Connection Secret name, referenced when you create the PlatformLogForward later
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "https://<clickhouse-host>:8443"      # Required; ClickHouse address, including protocol and port
+  cluster: "replicated"                           # Must match the ClickHouse cluster name; ACP baseline default is replicated
+  database: "observability"                       # Target database name, defaults to observability
+  username: "<clickhouse-username>"               # ClickHouse user name
+  password: "<clickhouse-password>"               # ClickHouse password
+  tls.ca: |-                                      # Required when the target uses HTTPS with a private CA
+    -----BEGIN CERTIFICATE-----
+    <clickhouse-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+`endpoints` accepts multiple comma-separated HTTP(S) URLs. Some data paths use only the first address, so put the highly available load balancer or coordinator endpoint first, not a single data node, and do not add leading whitespace before the first URL.
+
+Do not set `tls.insecure_skip_verify: "true"`. Provide `tls.ca` instead, so the platform can verify the target.
+
+### Step 2: Create the PlatformLogForward
+
+**Run on the workload cluster.**
+
+Create one `PlatformLogForward` for your target.
+
+#### Target OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # Fixed cluster singleton name, do not change
+spec:
+  installMode: Fresh                                      # Always Fresh, do not change it to Adopt
+  externalStorage:
+    type: opensearch                                      # Target storage type
+    secretRef:
+      name: platform-default-os-conn                      # Target storage connection Secret created in Step 1
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # Message queue type, currently only kafka
+    secretRef:
+      name: platform-default-mq-conn                      # Kafka connection Secret created in Step 1, topic names come from this Secret
+      namespace: cpaas-system
+```
+
+#### Target ClickHouse
+
+The `output.type` field is required for this target.
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # Fixed cluster singleton name, do not change
+spec:
+  installMode: Fresh                                      # Always Fresh, do not change it to Adopt
+  output:
+    type: clickhouse                                      # Required when the target is ClickHouse
+  externalStorage:
+    type: clickhouse                                      # Target storage type
+    shards: 1                                             # Actual shard count of the target ClickHouse
+    replicas: 1                                           # Actual replica count of the target ClickHouse
+    secretRef:
+      name: platform-default-ch-conn                      # Target storage connection Secret created in Step 1
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # Message queue type, currently only kafka
+    secretRef:
+      name: platform-default-mq-conn                      # Kafka connection Secret created in Step 1, topic names come from this Secret
+      namespace: cpaas-system
+```
+
+`externalStorage.shards` and `externalStorage.replicas` must match the actual ClickHouse topology. Both default to `1`; a wrong value in a multi-shard or replicated deployment leaves part of the target topology unused.
+
+`PlatformLogForward` is cluster-scoped. Do not add `metadata.namespace` to it; the `namespace` fields inside `secretRef` still identify the connection Secrets in `cpaas-system`. The CRD defaults are `aggregateVector.replicas: 3` and `razor.replicas: 2`; set explicit values if your capacity or placement plan requires different replica counts.
+
+Save the YAML as `platform-log-forward.yaml` and apply it:
+
+```bash
+kubectl apply -f platform-log-forward.yaml
+```
+
+### Step 3: Verify
+
+Watch the status until it finishes, and press `Ctrl+C` to stop:
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+The `Phase` column reaches `Ready` and the `Ready` column becomes `True`. To follow the progress or troubleshoot, read the status conditions:
+
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+Then produce or locate new log, event, and audit records and confirm that you can query them from the target storage.
+
 ## Install Alauda Container Platform Log Collector Plugin
 
 ### Console
