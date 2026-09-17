@@ -79,8 +79,8 @@ Provide dedicated SSD storage with at least 6,000 IOPS and 250 MB/s read/write, 
    sudo mkdir -p /cpaas/data/clickhouse
    sudo chown -R 101:101 /cpaas/data/clickhouse
 
-   # Kafka runs as uid 1001
-   sudo mkdir -p /cpaas/data/kafka
+   # Kafka runs as uid 1001; one directory per pod, see below
+   sudo mkdir -p /cpaas/data/kafka/broker-0 /cpaas/data/kafka/controller-3
    sudo chown -R 1001:1001 /cpaas/data/kafka
 
    # OpenSearch runs as uid 1000
@@ -95,16 +95,31 @@ Provide dedicated SSD storage with at least 6,000 IOPS and 250 MB/s read/write, 
 | Static local volumes | You are pinning each pod to a specific node, which is what the infra-node setup usually does | Create one StorageClass without a provisioner, and pre-create one PV per intended pod, each with `nodeAffinity` and `local.path` pointing at the directory above |
 | Dynamic provisioner | Your platform provides a block-storage provisioner | Create the StorageClass and let the claims bind dynamically; confirm the provisioner supports `ReadWriteOnce` block volumes and the throughput above |
 
-For static local volumes, create one StorageClass and one PV per pod, then write the StorageClass name into `<your-storage-class>` in the manifests below. The number of PVs is the sum of the pods you plan: ClickHouse `shardsCount × replicasCount`, Kafka `replicas + controller.replicas`, and OpenSearch the sum of the node pool `replicas`.
+For static local volumes, create one StorageClass and one PV per pod, and **reserve every PV for the claim it belongs to**. A `local` volume cannot follow its pod: unless a volume is reserved, a claim can bind a volume that was prepared for another pod or component, and after an instance is deleted and recreated its pods can bind each other's disks. Reserving the volume with `spec.claimRef` removes that risk, because the volume then only ever matches the claim named in it.
+
+Use a separate StorageClass per component. The example below creates the one for ClickHouse and reserves a single volume for the first ClickHouse replica. The number of PVs is the sum of the pods you plan: ClickHouse `shardsCount × replicasCount`, Kafka `replicas + controller.replicas`, and OpenSearch the sum of the node pool `replicas`.
+
+Claim names are deterministic for ClickHouse and OpenSearch, so their volumes can be reserved before the instance exists:
+
+| Component | Claim name for replica `<n>` |
+| --- | --- |
+| ClickHouse | `data-volumeclaim-template-chi-<chi-name>-<cluster-name>-<shard>-<n>-0` |
+| OpenSearch | `data-<cluster-name>-<pool-component>-<n>` |
+| Kafka | `data-<instance-name>-broker-<generated-hash>-<n>`, so read the names from the instance first — see Step 4 |
 
 ```yaml
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: cpaas-local
+  name: cpaas-local-clickhouse
+  labels:
+    # Required in a project namespace: without the grant, the pvc-validator
+    # admission webhook rejects every claim using this class.
+    project.cpaas.io/ALL_ALL: "true"
 provisioner: kubernetes.io/no-provisioner
-reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: false
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -113,10 +128,16 @@ metadata:
 spec:
   capacity:
     storage: 200Gi
+  volumeMode: Filesystem
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: cpaas-local
+  storageClassName: cpaas-local-clickhouse
+  claimRef:                                 # Reserve this volume for exactly this claim
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: cpaas-system
+    name: data-volumeclaim-template-chi-cpaas-clickhouse-replicated-0-0-0
   local:
     path: /cpaas/data/clickhouse
   nodeAffinity:
@@ -134,7 +155,9 @@ Save the YAML as `local-storage.yaml` and apply it:
 kubectl apply -f local-storage.yaml
 ```
 
-Repeat the `PersistentVolume` part for every pod, with a distinct `metadata.name`, a distinct `local.path`, and the IP of the node that pod runs on. When a node hosts more than one pod of the same component, give each pod its own directory, for example `/cpaas/data/clickhouse-0` and `/cpaas/data/clickhouse-1`, created with the ownership from step 6.
+Repeat the `PersistentVolume` part for every pod, with a distinct `metadata.name`, a distinct `local.path` and the IP of the node that pod runs on. When a node hosts more than one pod of the same component, give each pod its own directory, for example `/cpaas/data/clickhouse-0` and `/cpaas/data/clickhouse-1`, created with the ownership from step 6.
+
+`capacity.storage` on a `local` volume is matching metadata, not a quota: nothing stops a pod from filling the underlying disk past it. Set it to the real usable size and enforce retention on the storage side as well.
 
 ## Step 2: Install the Operators
 
@@ -758,7 +781,6 @@ spec:
       type: simple
   config:
     auto.create.topics.enable: "false"
-    auto.leader.rebalance.enable: "false"
     default.replication.factor: "3"
     min.insync.replicas: "2"
     offsets.topic.replication.factor: "3"
@@ -780,6 +802,50 @@ Save the YAML as `cpaas-kafka.yaml` and apply it:
 kubectl apply -f cpaas-kafka.yaml
 ```
 
+The instance creates its claims immediately. They stay `Pending` until you reserve volumes for them, because the broker claim names contain a hash that is generated per instance, which is why the volumes cannot be prepared up front:
+
+```bash
+kubectl -n cpaas-system get pvc \
+  -o custom-columns='PVC:.metadata.name,STATUS:.status.phase,CLASS:.spec.storageClassName'
+```
+
+Copy the six names exactly — three `...-broker-...` and three `...-controller-...` — and create one pre-bound volume per claim. Set `capacity.storage` to the size the claim asks for, point `local.path` at that pod's directory, and pin the node:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cpaas-kafka-broker-0
+spec:
+  capacity:
+    storage: 200Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cpaas-local-kafka
+  claimRef:                                 # Reserve this volume for exactly this claim
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: cpaas-system
+    name: data-cpaas-kafka-broker-<generated-hash>-0
+  local:
+    path: /cpaas/data/kafka/broker-0
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["<node-ip>"]
+```
+
+Save the YAML as `cpaas-kafka-volumes.yaml`, repeat the `PersistentVolume` part for all six claims, and apply it. The claims bind as soon as their volumes exist, and the brokers and controllers start:
+
+```bash
+kubectl apply -f cpaas-kafka-volumes.yaml
+```
+
 Do not omit these settings:
 
 | Setting | Why it is required |
@@ -787,7 +853,6 @@ Do not omit these settings:
 | `message.max.bytes: "10485760"` | Audit batches are about 1.1–1.5 MiB each. The Kafka default of 1 MiB rejects every audit batch. |
 | `replica.fetch.max.bytes: "10485760"` | Must be at least `message.max.bytes`, otherwise replica synchronization stalls. |
 | `auto.create.topics.enable: "false"` | A mistyped topic name must not be created automatically and silently collect data. |
-| `auto.leader.rebalance.enable: "false"` | Keeps the platform from moving partition leaders on its own. Rebalance deliberately during maintenance instead. |
 | `entityOperator.topicOperator` / `userOperator` | Without them, the `RdsTopic` and `RdsKafkaUser` resources in the next steps are not applied to the brokers. |
 
 ### 4.3 Wait for the broker cluster
@@ -802,7 +867,7 @@ Wait until the `Ready` condition is `True` and all broker pods are `Running`. Th
 
 ```bash
 kubectl -n cpaas-system get pod \
-  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
   -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName'
 ```
 
@@ -812,7 +877,7 @@ Confirm the required settings reached the brokers:
 
 ```bash
 KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
-  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
   -o jsonpath='{.items[0].metadata.name}')"
 
 kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- \
@@ -968,7 +1033,7 @@ Build the client properties inside the broker pod from the user Secret. The brok
 
 ```bash
 KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
-  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/pool-name=broker \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
   -o jsonpath='{.items[0].metadata.name}')"
 
 kubectl -n cpaas-system exec -i "$KAFKA_BROKER_POD" -c kafka -- \
