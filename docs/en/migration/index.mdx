@@ -17,6 +17,10 @@ This chapter migrates the historical log, event, and audit data that the legacy 
 | Concurrency | ClickHouse targets always run one job at a time. OpenSearch targets accept `options.maxConcurrentJobs: 2`; the default is `1`. |
 | Batch size | `options.batchSize` accepts `1..100000`; `options.syncIntervalSeconds` sets the minimum wait between batches. |
 
+:::warning
+Provide the source volumes in time. Discovery only works while the legacy StatefulSet and its PVCs are still present. If they are already gone, or if discovery fails, list the PVCs yourself in `source.pvcRefs` — the operator never guesses a source volume. Once the source PVCs are deleted, or their PVs are released and cleaned up, the historical data can no longer be migrated, so create the migration resource, or supply `pvcRefs`, before anything releases those volumes.
+:::
+
 ## Before you start
 
 1. The new data path exists and is `Ready`; its `PlatformLogForward` points at the target you migrate into. Follow the upgrade chapter through the step that installs the new data path first.
