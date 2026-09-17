@@ -100,9 +100,9 @@ Use this order. Each gate must pass before the next step starts.
 | Step | Where | Action | Gate to continue |
 | --- | --- | --- | --- |
 | 1 | Workload cluster | Install the new data path: connection Secrets plus `PlatformLogForward` with the upgrade annotation | `Phase=Ready` and `LegacyESUpgradeCompleted` |
-| 2 | Workload cluster | If history is needed, create `LegacyESMigration` | `PrecaptureReady` (or `Succeeded` on an existing run) |
+| 2 | Workload cluster | If history is needed, create `LegacyESMigration` as described in [Historical Data Migration](../migration/index.mdx) | `PrecaptureReady` (or `Succeeded` on an existing run) |
 | 3 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` stay absent for 60 seconds and new log queries still pass |
-| 4 | Workload cluster | Observe the same `LegacyESMigration` | `Phase=Succeeded` and target queries pass |
+| 4 | Workload cluster | Observe the same `LegacyESMigration` until it succeeds | `Phase=Succeeded` and target queries pass |
 | 5 | Workload cluster | Keep the protected source volumes | Explicit approval before any cleanup |
 
 ## Upgrade Procedure
@@ -147,107 +147,13 @@ Once this step is complete, produce or locate new log, event, and audit records,
 
 If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The platform drains the queued data through the legacy path automatically and records `LegacyKafkaDrained` when the old consumer lag reaches zero; `LegacyESUpgradeCompleted` is the gate for this procedure.
 
-### Step 2: Prepare the historical data migration (optional)
+### Step 2: Create the migration resource if history is required
 
-**Run on the workload cluster.**
+Skip this step only when the approved upgrade plan confirms that the historical Elasticsearch data is not required, and record that decision. Do not delete the source PVCs or PVs just to skip migration.
 
-Skip this step only when the approved upgrade plan confirms that the historical Elasticsearch data is not required. Record that decision. Do not delete the source PVCs or PVs just to skip migration.
+If the data is required, create the `LegacyESMigration` resource **before** you uninstall the legacy plugin. Creating it earlier is what records the final source state and the source volumes; a resource created after the uninstall has to name the source volumes explicitly and cannot use that final capture.
 
-If the data is required, create the `LegacyESMigration` resource **before** you uninstall the legacy plugin. Resource creation and the data copy happen at different times: the platform captures the final source state and records the source volumes when you create the resource, and copies the data only after the uninstall. Creating the migration after the uninstall requires explicit source volume references and cannot use the final capture.
-
-#### Target OpenSearch
-
-```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: LegacyESMigration
-metadata:
-  name: platform-es-history                               # Stable migration name, used by the commands below
-  namespace: cpaas-system
-spec:
-  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
-  source:
-    indexScope:                                           # Required, selects the historical indices to migrate
-      - "log-workload-*"
-      - "log-platform-*"
-      - "log-system-*"
-      - "log-kubernetes-*"
-      - "event-*"
-      - "audit-*"
-  target:
-    type: opensearch                                      # Must match the PlatformLogForward target
-    secretRef:
-      name: platform-default-os-conn                      # The same connection Secret as PlatformLogForward
-      namespace: cpaas-system
-  options:
-    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
-    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (no fixed wait for OpenSearch)
-    maxConcurrentJobs: 1                                  # Concurrent jobs; default 1, up to 2 for OpenSearch
-```
-
-#### Target ClickHouse
-
-Change `target.type` to `clickhouse` and point the Secret at `platform-default-ch-conn`.
-
-```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: LegacyESMigration
-metadata:
-  name: platform-es-history                               # Stable migration name, used by the commands below
-  namespace: cpaas-system
-spec:
-  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
-  source:
-    indexScope:                                           # Required, selects the historical indices to migrate
-      - "log-workload-*"
-      - "log-platform-*"
-      - "log-system-*"
-      - "log-kubernetes-*"
-      - "event-*"
-      - "audit-*"
-  target:
-    type: clickhouse                                      # Must match the PlatformLogForward target
-    secretRef:
-      name: platform-default-ch-conn                      # The same connection Secret as PlatformLogForward
-      namespace: cpaas-system
-  options:
-    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
-    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (1 second for ClickHouse)
-    maxConcurrentJobs: 1                                  # Concurrent jobs; ClickHouse is always serial (1)
-```
-
-The standard `indexScope` categories are:
-
-| `indexScope` value | Data | Full index name example |
-| --- | --- | --- |
-| `log-workload-*` | Application and container logs | `log-workload-20260825` |
-| `log-platform-*` | Platform component logs | `log-platform-20260825` |
-| `log-system-*` | System logs | `log-system-20260825` |
-| `log-kubernetes-*` | Kubernetes logs | `log-kubernetes-20260825` |
-| `event-*` | Kubernetes events | `event-20260825` |
-| `audit-*` | Audit logs | `audit-20260825` |
-
-If the source also contains per-project logs or metering data, add `log-project-*` or `meter-*` to `indexScope`; otherwise that data is not migrated. Do not use a single-day index such as `audit-20260825` unless you intentionally want to migrate only that day. The `source` and `target` sections cannot be changed after creation. The `options` block is optional; adjust it only when your migration plan requires it (the example keeps the default batch size and concurrency).
-
-Do not set `source.pvcRefs` in this flow; the platform records the discovered source volumes in `status.resolvedPvcRefs`. If the migration reports `SourcePVCsUnavailable`, stop and contact support; do not delete or edit the migration resource.
-
-Apply the resource and wait for `PrecaptureReady`:
-
-```bash
-kubectl -n cpaas-system apply -f legacy-es-migration.yaml
-
-# Watch the phase; press Ctrl+C to stop
-kubectl -n cpaas-system get legacyesmigration platform-es-history -w
-
-# Show the conditions if the phase does not advance
-kubectl -n cpaas-system get legacyesmigration platform-es-history \
-  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
-```
-
-In this flow, data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 3 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
-
-The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
-
-Use the migration image provided for this ACP 4.4 Logging release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
+The scope the migration supports, the requirement that the migrated time range still fits the target retention, the manifests, and the verification steps are all in [Historical Data Migration](../migration/index.mdx).
 
 ### Step 3: Uninstall the legacy Elasticsearch storage plugin
 
@@ -359,33 +265,7 @@ If `ClusterPluginInstance/logcenter` remains or reappears, delete it again and r
 
 After the stability check passes, produce new log, event, and audit records and confirm that they can be queried from the new target. Do not continue to migration verification if the new data path is unhealthy.
 
-### Step 4: Complete and verify the historical migration (optional)
-
-**Run on the workload cluster.**
-
-If you created `LegacyESMigration`, continue observing the same resource. Do not delete or recreate it. The phase should move from `PrecaptureReady` to `Validating`, `Running` (or `Retrying`), and finally `Succeeded`.
-
-```bash
-kubectl -n cpaas-system get legacyesmigration platform-es-history -w
-
-kubectl -n cpaas-system get legacyesmigration platform-es-history \
-  -o jsonpath='{.status.phase}{"\n"}{.status.progress}{"\n"}'
-kubectl -n cpaas-system get legacyesmigration platform-es-history \
-  -o jsonpath='{range .status.tasks[*]}{.pvcName}{"\t"}{.phase}{"\t"}{.processedDocs}{"\t"}{.lastError}{"\n"}{end}'
-```
-
-**Verification:**
-
-- `status.phase` is `Succeeded`.
-- Every entry in `status.tasks` succeeded.
-- Sample queries against the new target return the expected history for each `indexScope` category.
-- The protected source PVCs and PVs are still present and bound.
-
-If the phase is `Blocked` or `Failed`, do not delete the migration resource, Jobs, or source volumes; contact support.
-
-If no migration was created, record the explicit decision that historical data is not required, and keep the protected source volumes until that decision is approved.
-
-### Step 5: Retained volumes
+### Step 4: Retained volumes
 
 The protected legacy Elasticsearch PVCs and PVs are retained. Keep them until migration and target validation are complete. Do not remove protection annotations, delete PVCs or PVs, or remove finalizers. To release the volumes after validation, contact Alauda support or follow the separate approved cleanup procedure.
 
