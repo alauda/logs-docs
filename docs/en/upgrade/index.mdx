@@ -6,92 +6,22 @@ weight: 15
 
 This section explains how to upgrade **Alauda Container Platform Log Storage for Elasticsearch** in an existing ACP deployment.
 
-## Introduction
-
-This guide upgrades a cluster that stores logs with **Alauda Container Platform Log Storage for Elasticsearch** to ACP 4.4, where new log data is written to ClickHouse or to an OpenSearch 3.7.0 cluster.
-
-Elasticsearch and its volumes stay in place while the platform creates the new path alongside the legacy one, so log collection is not interrupted:
-
-1. The platform creates the new log receiving and storage path and starts writing new log, event, and audit data to it.
-2. The legacy Elasticsearch cluster and the old pipeline stay running while queued data is consumed.
-3. The PlatformLogForward reports `LegacyESUpgradeCompleted` after cutover and drain complete.
-4. If you need the historical data, create the migration resource and wait for `PrecaptureReady` before uninstalling the legacy plugin.
-5. Confirm that the upgrade program has protected the legacy Elasticsearch volumes, then uninstall the plugin.
-6. Observe the same migration resource until it succeeds, and keep the protected source volumes until validation is complete.
-
 :::warning
-Do not uninstall the Elasticsearch storage plugin, stop the legacy data path, or delete its PVCs and PVs before this guide tells you to. Doing it earlier can make the historical data unavailable, or prevent the source metadata snapshot from being captured.
+Do not uninstall the Elasticsearch storage plugin, stop the legacy data path, or delete its PVCs, PVs, or protection finalizers before this guide tells you to, and do not stop, scale, or delete the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads. Doing it earlier can make the historical data unavailable or invalidate the migration boundary.
 :::
 
-## Scenarios
+## Before you start
 
-Use this guide when the cluster matches the source and target below.
+1. The target ClickHouse or OpenSearch cluster and the new Kafka service are prepared as described in [Environment Preparation](../prepare/index.mdx), and their connection details are available.
+2. The legacy Elasticsearch, Kafka, ZooKeeper, lanaya, and Razor workloads are still running, and an approved change window is in place.
+3. To migrate historical data, the migration image for this release is available, with its complete registry, tag, or digest.
+4. The target matches what the `PlatformLogForward` will declare. Read the deployed CRs rather than this guide:
 
-| Item | Value |
-| --- | --- |
-| Source | A workload cluster with **Alauda Container Platform Log Storage for Elasticsearch** installed and running |
-| Target platform | ACP 4.4 |
-| Target storage | A separately prepared ClickHouse or OpenSearch 3.7.0 cluster |
-| Supported source Logging plugin versions | 4.2.x, 4.3.x |
-
-## Prerequisites
-
-Before you start, ensure that:
-
-1. The ACP 4.4 platform upgrade is complete and the Logging components can be upgraded. Upgrade the Logging control components as part of this procedure, and keep **Alauda Container Platform Log Storage for Elasticsearch** installed.
-2. You have downloaded the ACP 4.4 Logging plugin package from **Alauda Cloud**, and the package is available in the plugin marketplace of the cluster.
-3. You have separately prepared the target storage and message queue used by this upgrade. The upgrade does not reuse the storage or Kafka that ship with the Elasticsearch plugin, so you provide:
-   - For OpenSearch 3.7.0, `analysis-ik` is optional. Without it, log searches fall back to a standard analyzer without Chinese word segmentation: they still work, but Chinese full-text search quality is lower. Install the matching 3.7.0 plugin on every node if that matters for the site. The connection account must be able to manage index templates and lifecycle policies and to read and write the log data.
-   - For ClickHouse, use a supported replicated cluster (`ReplicatedMergeTree` with Keeper/ZooKeeper). The `cluster` value in the connection Secret must match the ClickHouse cluster name, and the target database must exist before you create the PlatformLogForward; if the new data path stays unready with `UNKNOWN_DATABASE`, create the database and wait for the next reconciliation. The connection account must be able to create and update the schema, to read and write data, and to run `SYSTEM DROP DNS CACHE`.
-   - A new Kafka service, with the `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, and `ALAUDA_AUDIT_TOPIC` topics created, and the Logging Kafka user granted access to these topics and the related consumer groups.
-   - The target storage and Kafka connection details prepared as described in [Environment Preparation](../prepare/index.mdx).
-4. If you migrate historical data, you have the migration image provided for this release, with the complete registry, tag, or digest. Do not reuse an image from an earlier version.
-5. An approved change window is available, and a platform administrator can access both the global management cluster and the target workload cluster. In a managed environment, coordinate with Alauda support.
-6. The legacy Elasticsearch, Kafka, ZooKeeper, lanaya, and Razor workloads are still running. Do not stop, scale, or delete them before this guide tells you to.
-
-
-:::warning
-During the upgrade, do not stop, scale, or delete the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads. Do not delete PVCs, PVs, or protection finalizers. Do not delete or recreate a `LegacyESMigration` resource. These actions can make historical data unavailable or invalidate the migration boundary.
-:::
-
-## Target Storage Preparation
-
-The operator does not create the external OpenSearch/ClickHouse cluster or the new Kafka service. Create them as described in [Environment Preparation](../prepare/index.mdx), then provide the connection details through the Secrets in Step 1.
-
-Plan the size with [Log Component Capacity Planning](../architecture/capacity_planning.mdx), and do not plan below the current Alauda Container Platform Log Storage for Elasticsearch deployment. The target must hold the migrated history plus new traffic. The reference disk configuration in that guide is `6000 IOPS` and `250 MB/s` read/write on dedicated SSD mounts; if the actual storage is weaker, move to a larger profile.
-
-The values in the table are the current deployment baseline, not the target configuration. Actual site values may differ, so verify them before planning:
-
-| Legacy deployment setting | Typical baseline | What to prepare for the target |
-| --- | --- | --- |
-| `elasticsearch.storage.node_size`, `node_replicas` | 200 Gi per data node; `node_replicas` sets the data-node count (1 by default; the small-scale profile uses 3) | Size the target storage for the historical data plus new traffic and the target HA policy |
-| `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | Use independent storage for the new target; the legacy local path is not reused |
-| `logging.esReplicas`, `logging.shards` | Index-level settings: 1 replica, per-type shard counts | OpenSearch only: the platform's index templates start at 1 shard and 1 replica and do not inherit these legacy values; override the template if the target needs different values. They do not map to ClickHouse — ClickHouse uses `externalStorage.shards` and `replicas` for the cluster topology (see the alignment table below) |
-| `kafka.retention_hours` | 48 hours | Set the same retention in the target `KafkaTopic` CRs; size the Kafka brokers through your Kafka deployment, not from this legacy value |
-| `logging.ttl` | Logs 7 days; events/audits 180 days; metering 540 days | `PlatformLogForward` applies the same TTLs to the target; plan capacity with the retention you configure there |
-
-The operator applies the TTL and, for ClickHouse, the shard and replica values from the `PlatformLogForward` spec, so the prepared cluster must be able to satisfy them. These settings do not cover the target node size: size ClickHouse with the capacity-planning profiles, and size OpenSearch with your OpenSearch deployment sizing using the same data volume and throughput inputs.
-
-### Aligning the target with the PlatformLogForward
-
-Read the target settings from the CRs that are actually deployed in the environment, not from this guide:
-
-| Target | Where to read the deployed settings | What must line up |
-| --- | --- | --- |
-| ClickHouse | `ClickHouseInstallation` CR: `spec.configuration.clusters[].layout.shardsCount` and `replicasCount` | Set `spec.externalStorage.shards` and `replicas` in the `PlatformLogForward` to the values declared in the CHI CR, and set the Secret `cluster` value to the cluster name used by `ON CLUSTER`. The data path expands by these two values, so a mismatch writes to the wrong replica set. |
-| Kafka | `Kafka` CR (`spec.kafka.config`), `KafkaNodePool` (or `Kafka.spec.kafka` in older layouts) for broker count and storage, `KafkaTopic` CRs, and `KafkaUser` CR | Keep the Secret topic names (`topics.log`, `topics.event`, `topics.audit`) equal to `KafkaTopic.spec.topicName` and to the topic names in the `KafkaUser` ACLs, and keep `kafkaClusterName` equal to the Kafka CR name. Set partitions, replication factor, and retention in the `KafkaTopic` CRs (or the equivalent topic configuration on your Kafka deployment); the replication factor cannot exceed the number of brokers. The broker and topic maximum message size must accept the audit batches — the Kafka default is 1 MiB, which is too small; the reference CRs use 10 MiB. Keep `auto.create.topics.enable` disabled so a misnamed topic is not created automatically. |
-| OpenSearch | The deployed OpenSearch cluster (its operator CR or the manifests that run it) and the applied index templates (`GET /_index_template`) | Index shards and replicas are not controlled by the `PlatformLogForward`. The platform applies low-priority templates with 1 shard and 1 replica; if the production node count or HA policy needs different values, apply a higher-priority composable template before cutover and confirm the result with `GET /_index_template`. Existing indices keep the settings they were created with. |
-
-## Preflight Checklist
-
-| Check | Expected |
-| --- | --- |
-| Source | Legacy ES, Kafka, ZooKeeper, lanaya, and Razor are running; Alauda Container Platform Log Storage for Elasticsearch is `Running` |
-| Target storage | OpenSearch 3.7.0 or the supported ClickHouse topology is reachable; database/Keeper requirements are met |
-| Target Kafka | New bootstrap is reachable; topics and Logging user access are ready |
-| Connection Secrets | Required keys are present and valid; legacy Secrets are not reused |
-| Access and change window | Platform administrator can reach global and workload clusters; support path and change window are confirmed |
-| Historical migration | The migration image for this release is available; the target account can create and write the required schema and data |
+   | Target | What must line up |
+   | --- | --- |
+   | ClickHouse | Set `externalStorage.shards` and `replicas` from the `ClickHouseInstallation` (`spec.configuration.clusters[].layout`), and set the Secret `cluster` value to the cluster name used by `ON CLUSTER`. A mismatch writes to the wrong replica set. |
+   | Kafka | Keep the Secret `topics.log` / `topics.event` / `topics.audit` equal to the deployed topic names and to the `KafkaUser` ACLs, and `kafkaClusterName` equal to the Kafka cluster name. The broker and topic maximum message size must accept the audit batches. |
+   | OpenSearch | Index shards and replicas are not controlled by the `PlatformLogForward`. The platform applies templates with 1 shard and 1 replica; apply a higher-priority template before cutover if production needs different values. |
 
 ## Upgrade Flow at a Glance
 

@@ -23,10 +23,8 @@ Provide the source volumes in time. Discovery only works while the legacy Statef
 
 ## Before you start
 
-1. The new data path exists and is `Ready`; its `PlatformLogForward` points at the target you migrate into. Follow the upgrade chapter through the step that installs the new data path first.
-2. The migration worker image for this release is available, with its complete registry, tag, or digest. `spec.image` is required; the operator keeps using the image the resource was created with unless you update it.
-3. The target account can create and write the tables or indices the migration needs, and it is the same account the connection Secret carries.
-4. **The migrated time range is still inside the retention of the target tables.** The migration does not widen, pause, or bypass the retention that the `PlatformLogForward` and razor have already applied, so records older than the target TTL can be written and then removed by the normal merge. Confirm the range first, or raise the target retention and confirm the table definitions took effect before you create this resource.
+1. The new data path is `Ready` and its `PlatformLogForward` points at the target you migrate into. The migration image for this release is available, with its complete registry, tag, or digest (`spec.image` is required).
+2. **The migrated time range is still inside the retention of the target tables.** The migration does not widen, pause, or bypass the retention that the `PlatformLogForward` and razor already applied, so records older than the target TTL can be written and then removed by the normal merge. Confirm the range first, or raise the target retention and confirm the table definitions took effect, before you create this resource.
 
 ## Step 1: Create the migration resource
 

@@ -1,97 +1,28 @@
 ---
 weight: 15
-sourceSHA: 79a73a4ff41a9767de749a344e865068eee4a08408cd98c8aeac2ba091c3e0a9
+sourceSHA: 937bc8eb61d1deab0bedea99d3237248087d3995447ea54692289f2dbaa3a2b4
 ---
 
 # 升级
 
 本文介绍如何升级现有 ACP 部署中的 **Alauda Container Platform Log Storage for Elasticsearch**。
 
-## 简介
-
-本指南用于将使用 **Alauda Container Platform Log Storage for Elasticsearch** 存储日志的集群升级到 ACP 4.4。升级后，新的日志数据将写入 ClickHouse 或 OpenSearch 3.7.0 集群。
-
-升级过程中 Elasticsearch 及其存储卷保持不动，平台会在旧链路旁边创建新链路，因此日志采集不会中断：
-
-1. 平台创建新的日志接收与存储链路，并开始将新的日志、事件和审计数据写入该链路。
-2. 旧 Elasticsearch 集群和旧链路保持运行，直到队列中的数据消费完成。
-3. 切换和排空完成后，PlatformLogForward 会报告 `LegacyESUpgradeCompleted`。
-4. 如果需要保留历史数据，请创建迁移资源，并在卸载旧插件前等待其进入 `PrecaptureReady`。
-5. 确认升级程序已完成旧 Elasticsearch 存储卷保护，然后卸载旧插件。
-6. 持续观察同一个迁移资源直到其成功，并在校验完成前保留受保护的源端存储卷。
-
 :::warning
-在本指南明确要求之前，请勿卸载 Elasticsearch 存储插件、停止旧数据链路，或删除其 PVC 和 PV。提前执行这些操作可能导致历史数据不可用，或导致无法捕获源端元数据快照。
+在本文档明确要求之前，请勿卸载 Elasticsearch 存储插件、停止旧数据链路，也不要删除其 PVC、PV 或保护 finalizer;同时请勿停止、缩容或删除旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载。提前操作可能导致历史数据不可用，或破坏迁移边界。
 :::
 
-## 适用场景
+## 开始之前
 
-当集群符合下面的源端和目标端条件时，请使用本指南。
+1. 目标 ClickHouse 或 OpenSearch 集群以及新的 Kafka 服务已按[环境准备](https://docs.alauda.cn/logging-service/4.3/prepare/index.html)准备好，连接信息可用。
+2. 旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载仍在运行，且已安排好变更窗口。
+3. 如需迁移历史数据，本版本的迁移镜像可用，并含完整的 registry、tag 或 digest。
+4. 目标端要与 `PlatformLogForward` 将要声明的取值一致。请以环境中实际部署的 CR 为准，而不是本文档：
 
-| 项目 | 值 |
-| --- | --- |
-| 源端 | 已安装并运行 **Alauda Container Platform Log Storage for Elasticsearch** 的业务集群 |
-| 目标平台 | ACP 4.4 |
-| 目标存储 | 单独准备的 ClickHouse 或 OpenSearch 3.7.0 集群 |
-| 支持的源端日志插件版本 | 4.2.x、4.3.x |
-
-## 前置条件
-
-开始前，请确保：
-
-1. ACP 4.4 平台升级已完成，且日志组件可以升级。请在本流程中升级日志控制组件，并保持 **Alauda Container Platform Log Storage for Elasticsearch** 处于安装状态。
-2. 已从 **Alauda Cloud** 下载 ACP 4.4 日志插件包，且该插件包已上传到集群的插件市场。
-3. 已单独准备本次升级所需的目标存储和消息队列。本次升级不会复用 Elasticsearch 插件自带的存储和 Kafka，需要准备：
-   - 对于 OpenSearch 3.7.0，`analysis-ik` 插件可选。未安装时，日志查询会退回到不带中文分词的 standard 分析器：查询仍可正常执行，但中文全文检索效果会下降。如果现场需要中文检索质量，请在每个节点安装与 3.7.0 匹配的该插件。连接账号需要具备索引模板和生命周期策略的管理权限，以及日志数据的读写权限。
-   - 对于 ClickHouse，请使用支持 `ReplicatedMergeTree` 和 Keeper/ZooKeeper 的复制集群。连接 Secret 中的 `cluster` 值必须与 ClickHouse 集群名一致；目标数据库必须在创建 PlatformLogForward 之前存在，如果新链路因 `UNKNOWN_DATABASE` 一直未就绪，请先创建数据库并等待下一次调谐。连接账号需要具备建表和改表、数据读写权限，以及执行 `SYSTEM DROP DNS CACHE` 的权限。
-   - 新的 Kafka 服务，并已创建 `ALAUDA_LOG_TOPIC`、`ALAUDA_EVENT_TOPIC` 和 `ALAUDA_AUDIT_TOPIC` 三个 topic，日志 Kafka 用户已获得这些 topic 及相关消费组的访问权限。
-   - 按各自产品文档准备好的目标存储和 Kafka 连接信息。
-4. 如果需要迁移历史数据，已取得本版本提供的迁移镜像，并包含完整的 registry、tag 或 digest。请勿复用旧版本的镜像。
-5. 已获得批准的变更窗口，且平台管理员可同时访问 global 管理集群和目标业务集群。在托管环境中，请与 Alauda 支持协同。
-6. 旧 Elasticsearch、Kafka、ZooKeeper、lanaya 和 Razor 工作负载仍在运行。在本指南要求之前，请勿停止、缩容或删除它们。
-
-:::warning
-升级期间，请勿停止、缩容或删除旧 Elasticsearch、Kafka、ZooKeeper、lanaya 或 Razor 工作负载；请勿删除 PVC、PV 或保护 finalizer；请勿删除或重建 `LegacyESMigration` 资源。这些操作可能导致历史数据不可用，或破坏迁移边界。
-:::
-
-## 目标存储准备
-
-Operator 不会创建外部 OpenSearch/ClickHouse 集群和新的 Kafka 服务，需要单独创建，并通过步骤 1 中的 Secret 提供连接信息。
-
-请参考[日志组件容量规划](https://docs.alauda.cn/logging-service/4.4/architecture/capacity_planning.html)规划容量，且不要低于当前 Alauda Container Platform Log Storage for Elasticsearch 部署的规格。目标存储需要能够容纳迁移的历史数据和新产生的数据。该指南中的参考磁盘配置为 `6000 IOPS`、`250 MB/s` 读写、独立 SSD 挂载；如果实际存储性能低于该配置，请选择更大规格。
-
-表中列出的参数是当前部署的基线，不是目标端配置。现场实际值可能不同，规划前请先核实：
-
-| 旧部署参数 | 典型基线 | 需要为目标端准备什么 |
-| --- | --- | --- |
-| `elasticsearch.storage.node_size`、`node_replicas` | 每个数据节点 200 Gi；`node_replicas` 表示数据节点数量（默认 1，小规模档位为 3） | 按历史数据量、新增数据量和目标端 HA 策略规划目标存储 |
-| `elasticsearch.hostpath` | `/cpaas/data/elasticsearch` | 目标端使用独立存储，不复用旧的本地路径 |
-| `logging.esReplicas`、`logging.shards` | 索引级配置：1 副本、按类型设置分片数 | 仅适用于 OpenSearch：平台索引模板的起点是 1 分片、1 副本，不会自动沿用这些旧值；如果目标端需要不同的值，请覆盖模板。它们不适用于 ClickHouse——ClickHouse 使用 `externalStorage.shards` 和 `replicas` 描述集群拓扑（见下方对齐表） |
-| `kafka.retention_hours` | 48 小时 | 在目标 `KafkaTopic` CR 中设置相同的保留时间；Kafka broker 的容量请按你的 Kafka 部署规划，不要沿用该旧参数 |
-| `logging.ttl` | 日志 7 天；事件/审计 180 天；计量 540 天 | PlatformLogForward 会把相同的 TTL 下发到目标端；请按实际配置的保留时间规划容量 |
-
-Operator 会根据 PlatformLogForward 中的配置下发 TTL，以及 ClickHouse 的分片和副本数，因此准备好的集群必须能够满足这些值。这些参数不包含目标端节点规格：ClickHouse 请按容量规划的档位选择，OpenSearch 请按 OpenSearch 的部署规格并使用相同的数据量和吞吐输入进行规划。
-
-### 与 PlatformLogForward 对齐目标端配置
-
-请以环境中实际部署的 CR 为准读取目标端配置，不要以本文档中的值为准：
-
-| 目标端 | 从哪里读取实际部署的配置 | 需要对齐什么 |
-| --- | --- | --- |
-| ClickHouse | `ClickHouseInstallation` CR：`spec.configuration.clusters[].layout.shardsCount` 和 `replicasCount` | 将 PlatformLogForward 的 `spec.externalStorage.shards` 和 `replicas` 设置为 CHI CR 中声明的值，并将 Secret 中的 `cluster` 设置为 `ON CLUSTER` 使用的集群名。数据链路会按这两个值展开，配置不一致会写入错误的 replica set |
-| Kafka | `Kafka` CR（`spec.kafka.config`）、`KafkaNodePool`（旧布局为 `Kafka.spec.kafka`）中的 broker 数量和存储、`KafkaTopic` CR、`KafkaUser` CR | Secret 中的 topic 名（`topics.log`、`topics.event`、`topics.audit`）必须与 `KafkaTopic.spec.topicName` 以及 `KafkaUser` ACL 中的 topic 名完全一致，`kafkaClusterName` 必须与 Kafka CR 名称一致。分区数、副本因子和保留时间在 `KafkaTopic` CR 中设置（或使用你的 Kafka 部署中对应的 topic 配置）；副本因子不能超过 broker 数量。Broker 和 topic 的最大消息大小必须能够容纳审计批次——Kafka 默认的 1 MiB 不够，参考 CR 使用 10 MiB。保持 `auto.create.topics.enable` 为关闭，避免自动创建名称错误的 topic |
-| OpenSearch | 实际部署的 OpenSearch 集群（其 operator CR 或运行它的 manifest），以及已生效的索引模板（`GET /_index_template`） | 索引的分片和副本不由 PlatformLogForward 控制。平台会下发低优先级模板，默认为 1 分片、1 副本；如果生产环境的节点数或 HA 策略需要不同的值，请在切换前应用更高优先级的 composable template，并通过 `GET /_index_template` 确认结果。已创建的索引会保留创建时的设置 |
-
-## 升级前检查清单
-
-| 检查项 | 期望结果 |
-| --- | --- |
-| 源端 | 旧 ES、Kafka、ZooKeeper、lanaya 和 Razor 均在运行；Alauda Container Platform Log Storage for Elasticsearch 为 `Running` |
-| 目标存储 | OpenSearch 3.7.0 或受支持的 ClickHouse 拓扑可访问；数据库/Keeper 要求已满足 |
-| 目标 Kafka | 新的 bootstrap 可访问；topic 和日志用户权限已就绪 |
-| 连接 Secret | 必需 key 齐全且有效；未复用旧 Secret |
-| 访问与变更窗口 | 平台管理员可访问 global 集群和业务集群；支持路径和变更窗口已确认 |
-| 历史迁移 | 已取得本版本的迁移镜像；目标账号可以创建并写入所需的 schema 和数据 |
+   | 目标 | 必须对齐的项 |
+   | --- | --- |
+   | ClickHouse | `externalStorage.shards` 与 `replicas` 按 `ClickHouseInstallation`（`spec.configuration.clusters[].layout`）填写;Secret 的 `cluster` 取 `ON CLUSTER` 使用的集群名。不一致会把数据写到错误的副本集。 |
+   | Kafka | Secret 的 `topics.log` / `topics.event` / `topics.audit` 必须与实际 topic 名及 `KafkaUser` 的 ACL 一致，`kafkaClusterName` 与 Kafka 集群名一致;broker 与 topic 的最大消息大小必须能容纳审计批次。 |
+   | OpenSearch | 索引的分片与副本不由 `PlatformLogForward` 控制。平台下发的是 1 分片 1 副本的模板;如果生产需要不同取值，请在切换前下发更高优先级的模板。 |
 
 ## 升级流程概览
 
