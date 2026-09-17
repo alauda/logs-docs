@@ -204,10 +204,14 @@ An operator that does not watch `cpaas-system` ignores the resources below silen
 
 Skip this step when the target is OpenSearch.
 
-### 3.1 Create the admin password Secret
+### 3.1 Create the password Secrets
+
+The instance defines two accounts: `admin` for administration, and `platform-logging` for the logging components. Both read their password from a Secret, so create both before you create the instance.
 
 ```bash
 kubectl -n cpaas-system create secret generic clickhouse-basic-auth \
+  --from-literal=password="$(openssl rand -hex 16)"
+kubectl -n cpaas-system create secret generic clickhouse-platform-logging-password \
   --from-literal=password="$(openssl rand -hex 16)"
 ```
 
@@ -269,6 +273,17 @@ spec:
         - "0.0.0.0/0"
         - "::/0"
       admin/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+      # The account the logging components use. It is declared here, like the admin
+      # account, so it carries the privileges the components need without a separate
+      # set of GRANT statements.
+      platform-logging/k8s_secret_password: cpaas-system/clickhouse-platform-logging-password/password
+      platform-logging/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      platform-logging/profile: default
+      platform-logging/quota: default
+      platform-logging/grants/query:
         - GRANT ALL ON *.* WITH GRANT OPTION
 
     profiles:
@@ -413,6 +428,17 @@ spec:
         - "0.0.0.0/0"
         - "::/0"
       admin/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+      # The account the logging components use. It is declared here, like the admin
+      # account, so it carries the privileges the components need without a separate
+      # set of GRANT statements.
+      platform-logging/k8s_secret_password: cpaas-system/clickhouse-platform-logging-password/password
+      platform-logging/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      platform-logging/profile: default
+      platform-logging/quota: default
+      platform-logging/grants/query:
         - GRANT ALL ON *.* WITH GRANT OPTION
 
     profiles:
@@ -654,27 +680,19 @@ kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-0-0 -- \
 # expect: cpaas-clickhouse-keeper	9181
 ```
 
-### 3.5 Create the account used by the logging components
+### 3.5 Read the logging account password
 
-The account must be able to create and alter tables in the target database. Scope it to that database.
+The account is declared in the `ClickHouseInstallation` you applied in 3.3, so there is nothing to create here and no `GRANT` statements to run: like the `admin` account, it is a server-configuration user and carries the privileges the logging components need.
 
-Run these on the host. They generate the password, then run the SQL inside the ClickHouse pod. The account name needs backticks because it contains a hyphen, and `SYSTEM DROP DNS CACHE` is required by the retention cleaner. Record the printed password: the connection details in Step 6 need it, and 3.6 reuses the `LOG_PASSWORD` variable.
+Read its password for the connection details in Step 6. 3.6 reuses the `CH_POD` and `LOG_PASSWORD` variables, so run both in the same shell.
 
 ```bash
 CH_POD="$(kubectl -n cpaas-system get pod \
   -l clickhouse.altinity.com/chi=cpaas-clickhouse \
   -o jsonpath='{.items[0].metadata.name}')"
-ADMIN_PASSWORD="$(kubectl -n cpaas-system get secret clickhouse-basic-auth \
+LOG_PASSWORD="$(kubectl -n cpaas-system get secret clickhouse-platform-logging-password \
   -o jsonpath='{.data.password}' | base64 -d)"
-LOG_PASSWORD="$(openssl rand -hex 16)"
 echo "platform-logging password: $LOG_PASSWORD"
-
-kubectl -n cpaas-system exec -i "$CH_POD" -- clickhouse-client \
-  --user admin --password "$ADMIN_PASSWORD" --multiquery <<SQL
-CREATE USER \`platform-logging\` ON CLUSTER 'replicated' IDENTIFIED BY '$LOG_PASSWORD';
-GRANT ALL ON observability.* TO \`platform-logging\` ON CLUSTER 'replicated';
-GRANT SYSTEM DROP DNS CACHE ON *.* TO \`platform-logging\`;
-SQL
 ```
 
 ### 3.6 Verify
