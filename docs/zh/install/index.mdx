@@ -1,0 +1,165 @@
+---
+weight: 14
+sourceSHA: f09d3facc79a57b4271628a04fea25c43cf9d09f43d5a42269d32c096c78b3d6
+---
+
+# 安装
+
+本章把日志组件安装到由你自行运维的存储与消息队列上：一套 ClickHouse 或 OpenSearch 集群，以及一个 Kafka 服务。请先完成它们的准备，包括账号、ACL 与 topic：
+
+## 先准备存储
+
+请先创建目标集群与 Kafka 服务，包括它们的账号、ACL 与 topic，并记录连接信息：
+
+- [环境准备](https://docs.alauda.cn/logging-service/4.3/prepare/index.html)
+
+在那里记录下来的连接信息，就是下面这些 Secret 的输入。
+
+## 步骤 1：创建连接 Secret
+
+**在运行日志组件的集群上执行。**
+
+在 `cpaas-system` 中创建目标存储的 Secret 和 Kafka 服务的 Secret。请只创建与你的目标类型对应的那个存储 Secret。
+
+### 目标 OpenSearch
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-os-conn                  # 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoints: "https://<opensearch-lb>:9200"       # 必填；逗号分隔的 HTTP(S) 地址；请把高可用协调节点或负载均衡地址放在最前面
+  username: "<opensearch-username>"               # 目标端允许匿名访问时可省略
+  password: "<opensearch-password>"               # 目标端允许匿名访问时可省略
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn                  # Kafka 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  bootstrap: "<kafka-bootstrap-addresses>"        # 必填；Kafka 地址，host:port 形式，逗号分隔
+  kafkaClusterName: "<kafka-cluster-name>"        # 必填；Kafka broker 资源名称，必须与实际名称一致
+  username: "<kafka-username>"                    # 必填；Kafka 用户名
+  password: "<kafka-password-with-at-least-32-characters>"   # 必填；在 Alauda OS 节点或其他启用 FIPS 的主机上至少 32 个字符
+  sasl_mechanism: "SCRAM-SHA-512"                 # 可选，默认 SCRAM-SHA-512
+  topics.log: "ALAUDA_LOG_TOPIC"                  # 可选，日志 topic 名，默认 ALAUDA_LOG_TOPIC
+  topics.event: "ALAUDA_EVENT_TOPIC"              # 可选，事件 topic 名，默认 ALAUDA_EVENT_TOPIC
+  topics.audit: "ALAUDA_AUDIT_TOPIC"              # 可选，审计 topic 名，默认 ALAUDA_AUDIT_TOPIC
+  tls.ca: |-                                      # Kafka 使用 TLS 且证书不被系统信任时必填
+    -----BEGIN CERTIFICATE-----
+    <kafka-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+### 目标 ClickHouse
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn                  # 连接 Secret 名称，创建 PlatformLogForward 时引用
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "https://<clickhouse-host>:8443"      # 必填；ClickHouse 地址，包含协议和端口
+  cluster: "replicated"                           # 必须与 ClickHouse 集群名一致；ACP 基线默认为 replicated
+  database: "observability"                       # 目标数据库名，默认 observability
+  username: "<clickhouse-username>"               # ClickHouse 用户名
+  password: "<clickhouse-password>"               # ClickHouse 密码
+  tls.ca: |-                                      # 目标端使用 HTTPS 私有 CA 时必填
+    -----BEGIN CERTIFICATE-----
+    <clickhouse-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+`endpoints` 支持以逗号分隔的多个 HTTP(S) 地址。部分数据链路只使用第一个地址，因此请把高可用的负载均衡器或 coordinator 地址放在最前面，不要使用单个数据节点，也不要在第一个 URL 前留空格。
+
+OpenSearch 的 Secret 不包含 TLS 相关字段。平台连接 OpenSearch 时关闭了证书校验，因此使用私有 CA 的地址不需要在这里填写任何证书;地址使用 `https://` 即可建立连接，与签发方无关。
+
+ClickHouse 请勿设置 `tls.insecure_skip_verify: "true"`，而应提供 `tls.ca`，以便平台校验目标端。
+
+## 步骤 2：创建 PlatformLogForward
+
+**在运行日志组件的集群上执行。**
+
+为你的目标类型创建一个 `PlatformLogForward`。
+
+### 目标 OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # 固定的集群单例名称，请勿修改
+spec:
+  installMode: Fresh                                      # 始终为 Fresh，请勿改为 Adopt
+  externalStorage:
+    type: opensearch                                      # 目标存储类型
+    secretRef:
+      name: platform-default-os-conn                      # 步骤 1 创建的目标存储连接 Secret
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # 消息队列类型，目前仅支持 kafka
+    secretRef:
+      name: platform-default-mq-conn                      # 步骤 1 创建的 Kafka 连接 Secret，topic 名来自该 Secret
+      namespace: cpaas-system
+```
+
+### 目标 ClickHouse
+
+目标为 ClickHouse 时必须填写 `output.type` 字段。
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                                  # 固定的集群单例名称，请勿修改
+spec:
+  installMode: Fresh                                      # 始终为 Fresh，请勿改为 Adopt
+  output:
+    type: clickhouse                                      # 目标为 ClickHouse 时必填
+  externalStorage:
+    type: clickhouse                                      # 目标存储类型
+    shards: 1                                             # 目标 ClickHouse 的实际分片数
+    replicas: 1                                           # 目标 ClickHouse 的实际副本数
+    secretRef:
+      name: platform-default-ch-conn                      # 步骤 1 创建的目标存储连接 Secret
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka                                           # 消息队列类型，目前仅支持 kafka
+    secretRef:
+      name: platform-default-mq-conn                      # 步骤 1 创建的 Kafka 连接 Secret，topic 名来自该 Secret
+      namespace: cpaas-system
+```
+
+`externalStorage.shards` 与 `externalStorage.replicas` 必须与 ClickHouse 实际拓扑一致。两者默认都是 `1`;多分片或多副本部署中填错会导致部分拓扑不被使用。
+
+`PlatformLogForward` 是集群级资源，请不要为它添加 `metadata.namespace`;`secretRef` 里的 `namespace` 字段仍用于指向 `cpaas-system` 中的连接 Secret。CRD 默认值为 `aggregateVector.replicas: 3` 和 `razor.replicas: 2`;如果容量或调度规划需要不同的副本数，请显式设置。
+
+请把 YAML 保存为 `platform-log-forward.yaml` 并应用：
+
+```bash
+kubectl apply -f platform-log-forward.yaml
+```
+
+## 步骤 3：校验
+
+观察状态直到完成，按 `Ctrl+C` 停止：
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+`Phase` 列会变为 `Ready`，`Ready` 列会变为 `True`。需要跟踪进度或排查问题时，读取 status conditions：
+
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+随后产生或找到新的日志、事件与审计记录，确认可以从目标存储中查询到它们。

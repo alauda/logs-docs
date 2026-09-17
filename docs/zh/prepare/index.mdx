@@ -1,0 +1,1348 @@
+---
+weight: 13
+sourceSHA: 78020a1b837c09abfd42a624d3d6a1fc12b64ac26c3152c44d72f724197548e8
+---
+
+# 环境准备
+
+本文说明如何搭建日志组件使用的 ClickHouse 或 OpenSearch 3.7.0 集群和 Kafka 服务，包括节点与磁盘、Operator、集群及其账号，以及 Kafka 的密码、用户、ACL 和 topic。
+
+请按顺序执行并完成校验。
+
+## 开始之前
+
+请先确认：
+
+1. 你拥有运行日志组件的集群的管理员权限。
+2. 已按步骤 1 规划好节点和磁盘。
+3. 平台市场中已上架以下 Operator 包：`clickhouse-operator`、Alauda Kafka Operator、`opensearch-operator`。
+
+请结合[日志组件容量规划](https://docs.alauda.cn/logging-service/4.3/architecture/capacity_planning.html)和下面的表格确定规格，并按[为日志存储规划基础设施节点](https://docs.alauda.cn/logging-service/4.3/how_to/infra_nodes.html)把工作负载放到独占节点上。
+
+本章所有命令都请在能访问该集群的 `kubectl` 主机上执行。每段 YAML 都需要先保存成文件再用 `kubectl apply -f` 应用；每段代码块下方都给出了文件名和对应的 apply 命令。
+
+## 步骤 0：选择目标类型和规格
+
+先确定目标类型（ClickHouse 或 OpenSearch）和规格。
+
+### ClickHouse 规格
+
+CPU 和内存是每个 ClickHouse Pod 的容器 limit。
+
+| 规格 | ClickHouse Pod 数 | 拓扑 | 每 Pod CPU limit | 每 Pod 内存 limit | 实测吞吐 |
+| --- | --- | --- | --- | --- | --- |
+| 单节点 | 1 | 1 分片 × 1 副本 | 2C | 4G | 18,000 logs/s |
+| 三节点 | 3 | 1 分片 × 3 副本 | 2C | 4G | 20,000 logs/s |
+| 六节点 | 6 | 2 分片 × 3 副本 | 4C | 8G | 40,000 logs/s |
+| 九节点 | 9 | 3 分片 × 3 副本 | 4C | 8G | 69,000 logs/s |
+
+单节点规格仅用于验证环境。生产环境请从三节点规格起步；单个分片无法容纳数据时，再扩展到六节点或九节点。
+
+### Kafka
+
+请准备三个 broker，每个 limit 为 2C/4G，另外还有步骤 4 清单中三个 limit 为 1C/2G 的 controller。broker 存储量按保留时长和吞吐规划。
+
+### OpenSearch 规格
+
+CPU 和内存是每个节点的 limit。
+
+| 规格 | 节点 | 拓扑 | 每节点 CPU limit | 每节点内存 limit | 实测吞吐 |
+| --- | --- | --- | --- | --- | --- |
+| 小规格 | 3 | 3 个节点，承担全部角色 | 2C | 4G | 6,300 logs/s |
+| 小规格 | 5 | 5 个节点，承担全部角色 | 2C | 4G | 9,900 logs/s |
+| 大规格 | 3 + 5 | 3 个 master，5 个 data | master 2C / data 8C | master 4G / data 16G | 25,000 logs/s |
+| 大规格 | 3 + 7 | 3 个 master，7 个 data | master 2C / data 8C | master 4G / data 16G | 30,000 logs/s |
+
+不要低于最小规格，当单个节点池无法承载数据量时，请改用大规格。如果实际存储低于 6,000 IOPS 和 250 MB/s 读写，请上调规格。
+
+### 磁盘
+
+请提供独占 SSD 存储，至少 6,000 IOPS 和 250 MB/s 读写，并按保留时长规划容量：大部分日志 7 天，Kubernetes 日志 30 天，事件和审计 180 天，计量 540 天。下面的示例按每个 ClickHouse Pod 200 Gi、每个 Kafka broker 200 Gi、每个 Kafka controller 20 Gi 规划；OpenSearch 的 master 与 data 节点池需要分别规划。
+
+## 步骤 1：节点和磁盘
+
+1. 选择用于运行存储集群的节点，不要与业务工作负载混部。
+2. 按[为日志存储规划基础设施节点](https://docs.alauda.cn/logging-service/4.3/how_to/infra_nodes.html)给这些节点打上基础设施节点标签，并添加对应的污点。下面的清单使用 `node-role.kubernetes.io/infra` 作为选择标签并容忍该污点；如果你的集群用别的 key，请在每个清单里同步改掉。
+3. 为每个节点挂载独占 SSD 作为持久化路径：
+   - 使用传统操作系统布局时，使用 `/cpaas/data/...`。
+   - 在 Alauda OS 节点上只有 `/var/cpaas` 可写，因此使用 `/var/cpaas/data/...`。
+4. 确保该路径在节点重新纳管后仍然保留。
+5. OpenSearch 需要把 `vm.max_map_count` 设置为不小于 `262144`。OpenSearch Operator 会通过 init 容器设置它，因此这里通常不用处理；只有集群启用了受限的 Pod Security Admission 时，该 init 容器无法设置，才需要在每个节点上手工设置：
+
+   ```bash
+   sudo sysctl -w vm.max_map_count=262144
+   echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+   ```
+6. 创建存储 Pod 使用的目录并设置属主。下面的示例使用传统布局；在 Alauda OS 节点上请把 `/cpaas` 换成 `/var/cpaas`。
+
+   ```bash
+   # ClickHouse 以 uid 101 运行
+   sudo mkdir -p /cpaas/data/clickhouse
+   sudo chown -R 101:101 /cpaas/data/clickhouse
+
+   # Kafka 以 uid 1001 运行；每个 Pod 一个目录，见下文
+   sudo mkdir -p /cpaas/data/kafka/broker-0 /cpaas/data/kafka/controller-3
+   sudo chown -R 1001:1001 /cpaas/data/kafka
+
+   # OpenSearch 以 uid 1000 运行
+   sudo mkdir -p /cpaas/data/opensearch
+   sudo chown -R 1000:1000 /cpaas/data/opensearch
+   ```
+
+7. 确定存储卷的供给方式：
+
+| 方式 | 适用场景 | 需要做什么 |
+| --- | --- | --- |
+| 静态本地卷 | 需要把每个 Pod 固定到指定节点，这也是基础设施节点方案通常采用的方式 | 创建一个不带 provisioner 的 StorageClass，并按预期的 Pod 数量预先创建 PV，每个 PV 通过 `nodeAffinity` 和 `local.path` 指向上面的目录 |
+| 动态供给 | 平台已提供块存储 provisioner | 创建 StorageClass，由 PVC 动态绑定；确认 provisioner 支持 `ReadWriteOnce` 块卷并满足上述吞吐要求 |
+
+使用静态本地卷时，请创建一个 StorageClass 并按每个 Pod 一个 PV 预先创建，同时**把每个 PV 预留给它自己的 PVC**。`local` 卷不能跟随 Pod 迁移：如果不做预留，某个 PVC 可能绑走为其他 Pod 或其他组件准备的卷；实例删除重建后，各 Pod 之间也可能互相绑错盘。用 `spec.claimRef` 预留之后，这个卷只会匹配它上面写明的那个 PVC。
+
+请为每个组件使用独立的 StorageClass。下面的示例创建 ClickHouse 那个，并为第一个 ClickHouse 副本预留一个卷。PV 数量等于你规划的 Pod 总数：ClickHouse 为 `shardsCount × replicasCount`，Kafka 为 `replicas + controller.replicas`，OpenSearch 为各节点池 `replicas` 之和。
+
+ClickHouse 和 OpenSearch 的 PVC 名称是确定的，因此可以在实例创建之前就把卷预留好：
+
+| 组件 | 副本 `<n>` 的 PVC 名称 |
+| --- | --- |
+| ClickHouse | `data-volumeclaim-template-chi-<chi-name>-<cluster-name>-<shard>-<n>-0` |
+| OpenSearch | `data-<cluster-name>-<pool-component>-<n>` |
+| Kafka | `data-<instance-name>-broker-<generated-hash>-<n>`，需要先创建实例再读取名称，见步骤 4 |
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cpaas-local-clickhouse
+  labels:
+    # 在项目命名空间中是必需的：没有这个授权，
+    # pvc-validator 准入 webhook 会拒绝所有使用该 StorageClass 的 PVC。
+    project.cpaas.io/ALL_ALL: "true"
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: false
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cpaas-clickhouse-0
+spec:
+  capacity:
+    storage: 200Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cpaas-local-clickhouse
+  claimRef:                                 # 该卷只留给下面这个 PVC
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: cpaas-system
+    name: data-volumeclaim-template-chi-cpaas-clickhouse-replicated-0-0-0
+  local:
+    path: /cpaas/data/clickhouse
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["<node-ip>"]
+```
+
+请把 YAML 保存为 `local-storage.yaml` 并应用：
+
+```bash
+kubectl apply -f local-storage.yaml
+```
+
+请为每个 Pod 重复 `PersistentVolume` 部分，`metadata.name` 和 `local.path` 各不相同，`values` 填该 Pod 所在节点的 IP。同一节点上跑多个同类 Pod 时，每个 Pod 用独立目录，例如 `/cpaas/data/clickhouse-0` 和 `/cpaas/data/clickhouse-1`，属主按步骤 6 设置。
+
+`local` 卷上的 `capacity.storage` 只是匹配用的元数据，不是配额：Pod 完全可以写满底层磁盘。请把它设成真实可用容量，并在存储侧同时配置保留策略。
+
+## 步骤 2：安装 Operator
+
+请从平台市场安装这三个 Operator。下面创建的存储和消息资源都位于 `cpaas-system`，因此每个 Operator 都必须能协调该命名空间中的资源。
+
+| Operator | Subscription 所在命名空间 | Operator 必须 watch 的命名空间 |
+| --- | --- | --- |
+| `clickhouse-operator` | `cpaas-system` | `cpaas-system` |
+| Alauda Kafka Operator（`strimzi-kafka-operator`） | `kafka-system` | 所有命名空间 |
+| `opensearch-operator`（仅目标存储为 OpenSearch 时） | `opensearch-operator` | 所有命名空间 |
+
+- 只安装缺失的 Operator。如果集群上已经装了某一个（例如由更早的版本装入），请沿用已有的，不要再装第二份：同一个 Operator 的两份实例会同时写 `cpaas-system` 下的同一批资源。此时改为检查它的 watch 范围，必要时放开。
+- 不要在 `cpaas-system` 中创建 OperatorGroup。平台已在其中创建了一个，再创建一个会导致平台拒绝该命名空间下的所有 Subscription，包括平台自己的。
+- `kafka-system` 和 `opensearch-operator` 的 OperatorGroup 必须不包含 `spec.targetNamespaces`。如果已经存在一个只作用于自身命名空间的 OperatorGroup，请删除该字段，并等待 Operator Pod 重启。
+
+  ```bash
+  kubectl -n kafka-system patch operatorgroup kafka-system \
+    --type=json -p='[{"op":"remove","path":"/spec/targetNamespaces"}]'
+  kubectl -n opensearch-operator patch operatorgroup opensearch-operator \
+    --type=json -p='[{"op":"remove","path":"/spec/targetNamespaces"}]'
+  ```
+
+继续之前请校验每个 Operator：
+
+```bash
+# ClickHouse
+kubectl get crd clickhouseinstallations.clickhouse.altinity.com
+kubectl -n cpaas-system get deploy clickhouse-operator
+
+# Kafka
+kubectl get crd rdskafkas.middleware.alauda.io
+kubectl -n kafka-system get deploy strimzi-cluster-operator
+
+# OpenSearch（仅当目标存储为 OpenSearch 时）
+kubectl get crd opensearchclusters.opensearch.opster.io
+kubectl -n opensearch-operator get deploy opensearch-operator-controller-manager
+```
+
+:::warning
+Operator 如果未 watch `cpaas-system`，会静默忽略下面的资源：没有 status、没有事件、也没有 Pod。继续之前请确认 Deployment 已就绪，且 Kafka 和 OpenSearch 的 OperatorGroup 覆盖所有命名空间。
+:::
+
+## 步骤 3：创建 ClickHouse 集群
+
+目标存储为 OpenSearch 时请跳过本步骤。
+
+### 3.1 创建密码 Secret
+
+实例定义了两个账号：用于管理的 `admin`，以及供日志组件使用的 `platform-logging`。两者的密码都来自 Secret，因此请在创建实例之前先把两个 Secret 建好。
+
+```bash
+kubectl -n cpaas-system create secret generic clickhouse-basic-auth \
+  --from-literal=password="$(openssl rand -hex 16)"
+kubectl -n cpaas-system create secret generic clickhouse-platform-logging-password \
+  --from-literal=password="$(openssl rand -hex 16)"
+```
+
+### 3.2 创建 Keeper 客户端 Service（三节点及以上）
+
+所有规格都需要 Keeper，单节点也一样，因为日志组件创建的是 `ReplicatedMergeTree` 表。单节点规格把 Keeper 运行在自己的 ClickHouse Pod 内，靠 3.3 中的 `keeper_server/*` 配置实现，因此单节点请跳过本步骤。
+
+三节点及以上时，由 ClickHouse Pod 自身组成 Keeper 仲裁集群：每个 ClickHouse Pod 同时也是一个 Keeper 成员。ClickHouse 通过一个 headless Service 访问该仲裁集群，该 Service 会选中本次安装中所有就绪的 Pod。
+
+请把 YAML 保存为 `cpaas-clickhouse-keeper-service.yaml` 并应用：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpaas-clickhouse-keeper
+  namespace: cpaas-system
+spec:
+  clusterIP: None
+  type: ClusterIP
+  ports:
+    - name: keeper
+      port: 9181
+      protocol: TCP
+      targetPort: 9181
+  selector:
+    clickhouse.altinity.com/chi: cpaas-clickhouse
+    clickhouse.altinity.com/namespace: cpaas-system
+    clickhouse.altinity.com/ready: "yes"
+    clickhouse.altinity.com/role: keeper
+```
+
+```bash
+kubectl apply -f cpaas-clickhouse-keeper-service.yaml
+```
+
+其中 `chi`、`namespace`、`ready` 三个标签由 Operator 打上，`role: keeper` 标签来自 3.3 的 pod template。
+
+### 3.3 创建 ClickHouseInstallation
+
+cluster 名称固定为 `replicated`，需与日志组件保持一致；`shardsCount` 和 `replicasCount` 按步骤 0 的规格设置。下面两份清单请按你选的规格二选一执行。
+
+请把 `<clickhouse-server-image>` 替换为平台 middleware 包发布的 ClickHouse server 镜像，例如 `registry.alauda.cn:60070/middleware/clickhouse-server:v25.8.16.34-61a7880e`。
+
+**单节点。** Keeper 通过 `keeper_server/*` 配置运行在 ClickHouse Pod 内。
+
+```yaml
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: cpaas-clickhouse
+  namespace: cpaas-system
+spec:
+  configuration:
+    users:
+      # 管理员密码来自上面创建的 Secret
+      admin/k8s_secret_password: cpaas-system/clickhouse-basic-auth/password
+      admin/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      admin/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+      # 日志组件使用的账号。与 admin 一样在这里声明，
+      # 因此它自带组件所需的全部权限，不需要额外的 GRANT 语句。
+      platform-logging/k8s_secret_password: cpaas-system/clickhouse-platform-logging-password/password
+      platform-logging/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      platform-logging/profile: default
+      platform-logging/quota: default
+      platform-logging/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+
+    profiles:
+      default/allow_nondeterministic_mutations: "1"
+      default/allow_unrestricted_reads_from_keeper: "1"
+      default/max_execution_time: 120
+      default/max_estimated_execution_time: 120
+
+    clusters:
+      - name: replicated                    # 连接 Secret 中需要复用该名称
+        templates:
+          podTemplate: pod-template
+          dataVolumeClaimTemplate: data-volumeclaim-template
+        layout:
+          shardsCount: 1                    # 取自规格：1、1、2 或 3
+          replicasCount: 1                  # 示例为单 Pod；三节点及以上请改为 3
+
+    settings:
+      default_database: observability       # 连接 Secret 中需要复用该名称
+      merge_tree/materialize_ttl_recalculate_only: "1"
+      # 自身可观测性系统表会无限增长，最终写满数据盘。
+      asynchronous_metric_log/database: system
+      asynchronous_metric_log/table: asynchronous_metric_log
+      asynchronous_metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      metric_log/database: system
+      metric_log/table: metric_log
+      metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      trace_log/database: system
+      trace_log/table: trace_log
+      trace_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      # 单节点规格使用同 Pod 内嵌 Keeper。三节点及以上请改用下面那份清单，
+      # 它会为每个 ClickHouse Pod 都运行一个 Keeper。
+      keeper_server/tcp_port: "9181"
+      keeper_server/server_id: "1"
+      keeper_server/log_storage_path: /var/lib/clickhouse/coordination/log
+      keeper_server/snapshot_storage_path: /var/lib/clickhouse/coordination/snapshots
+      keeper_server/coordination_settings/operation_timeout_ms: "10000"
+      keeper_server/coordination_settings/session_timeout_ms: "30000"
+      keeper_server/raft_configuration/server/id: "1"
+      keeper_server/raft_configuration/server/hostname: localhost
+      keeper_server/raft_configuration/server/port: "9234"
+
+    zookeeper:
+      nodes:
+        - host: localhost
+          port: 9181
+
+  defaults:
+    templates:
+      podTemplate: pod-template
+      dataVolumeClaimTemplate: data-volumeclaim-template
+      serviceTemplate: service-template
+
+  templates:
+    podTemplates:
+      - name: pod-template
+        podDistribution:
+          - scope: Shard
+            topologyKey: kubernetes.io/hostname
+            type: ShardAntiAffinity
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/infra: ""      # 步骤 1 中设置的标签
+          tolerations:
+            - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: clickhouse
+              image: <clickhouse-server-image>
+              ports:
+                - name: http
+                  containerPort: 8123
+                - name: client
+                  containerPort: 9000
+                - name: interserver
+                  containerPort: 9009
+                - name: keeper
+                  containerPort: 9181
+                - name: raft
+                  containerPort: 9234
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 4Gi
+                limits:
+                  cpu: "2"                          # 取自规格
+                  memory: 4Gi                       # 取自规格
+              volumeMounts:
+                - name: data-volumeclaim-template
+                  mountPath: /var/lib/clickhouse
+
+    serviceTemplates:
+      - name: service-template
+        spec:
+          ports:
+            - name: http
+              port: 8123
+            - name: tcp
+              port: 9000
+          type: ClusterIP
+
+    volumeClaimTemplates:
+      - name: data-volumeclaim-template
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 200Gi
+          storageClassName: <your-storage-class>    # 来自步骤 1
+```
+
+请把 YAML 保存为 `cpaas-clickhouse.yaml` 并应用：
+
+```bash
+kubectl apply -f cpaas-clickhouse.yaml
+```
+
+**三节点及以上。** 请改用下面这份清单，不要用上面那份。Keeper 运行在每一个 ClickHouse Pod 内，Pod 之间自行组成仲裁集群，因此整个实例仍然只是一个 `ClickHouseInstallation`。
+
+静态 Keeper 配置通过 cluster 的 `files` 注入，并用 `include_from` 引入生成出来的文件；与身份相关的部分（`server_id` 和成员列表）由 init 容器按 Pod 生成到内存 `emptyDir` 中。init 容器里的 `SHARDS_COUNT`、`REPLICAS_COUNT` 必须与 `layout.shardsCount`、`layout.replicasCount` 保持一致，否则成员列表不完整，仲裁永远组不起来。
+
+readiness 探针探测的是 Raft 端口，这是必需的：默认的 HTTP 探针要等 ClickHouse 开始提供服务才会成功，而 ClickHouse 又必须等 Keeper 仲裁集群就绪才能完成启动，于是 Operator 会一直等第一个副本，永远不创建其余副本。
+
+Keeper 的 `path` 位于 `/var/lib/clickhouse` 之下，也就是挂载的数据卷内，因此 Keeper 的日志与快照和 ClickHouse 数据一样保存在持久卷上。不要把它移到该挂载点之外：放在容器文件系统里的 Keeper 状态会在 Pod 每次重启时丢失。
+
+`wait-for-self-dns` init 容器会等待 Pod 能解析自己的 headless Service 名称。没有它时，如果某个 Pod 在自己的 DNS 记录发布之前启动，它的分布式 DDL worker 会基于一个解析不了的主机名完成初始化并且不再重试：`CREATE TABLE ... ON CLUSTER` 在其他副本上执行成功，而该副本会静默漏掉这条语句。
+
+```yaml
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: cpaas-clickhouse
+  namespace: cpaas-system
+spec:
+  configuration:
+    users:
+      # 管理员密码来自上面创建的 Secret
+      admin/k8s_secret_password: cpaas-system/clickhouse-basic-auth/password
+      admin/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      admin/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+      # 日志组件使用的账号。与 admin 一样在这里声明，
+      # 因此它自带组件所需的全部权限，不需要额外的 GRANT 语句。
+      platform-logging/k8s_secret_password: cpaas-system/clickhouse-platform-logging-password/password
+      platform-logging/networks/ip:
+        - "0.0.0.0/0"
+        - "::/0"
+      platform-logging/profile: default
+      platform-logging/quota: default
+      platform-logging/grants/query:
+        - GRANT ALL ON *.* WITH GRANT OPTION
+
+    profiles:
+      default/allow_nondeterministic_mutations: "1"
+      default/allow_unrestricted_reads_from_keeper: "1"
+      default/max_execution_time: 120
+      default/max_estimated_execution_time: 120
+
+    zookeeper:
+      nodes:
+        - host: cpaas-clickhouse-keeper        # 3.2 中创建的 Service
+          port: 9181
+
+    settings:
+      default_database: observability       # 连接 Secret 中需要复用该名称
+      merge_tree/materialize_ttl_recalculate_only: "1"
+      # 自身可观测性系统表会无限增长，最终写满数据盘。
+      asynchronous_metric_log/database: system
+      asynchronous_metric_log/table: asynchronous_metric_log
+      asynchronous_metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      metric_log/database: system
+      metric_log/table: metric_log
+      metric_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+      trace_log/database: system
+      trace_log/table: trace_log
+      trace_log/ttl: "event_date + INTERVAL 7 DAY DELETE"
+
+    clusters:
+      - name: replicated                    # 连接 Secret 中需要复用该名称
+        templates:
+          podTemplate: pod-template
+          dataVolumeClaimTemplate: data-volumeclaim-template
+        layout:
+          shardsCount: 1                    # 取自规格：1、2 或 3
+          replicasCount: 3                  # 三节点及以上为 3
+          shards:
+            - files:
+                keeper_config.xml: |
+                  <clickhouse>
+                      <include_from>/tmp/clickhouse/keeper_dynamic_configuration.xml</include_from>
+                      <keeper_server incl="keeper_server">
+                          <path>/var/lib/clickhouse/coordination</path>
+                          <tcp_port>9181</tcp_port>
+                          <four_letter_word_white_list>*</four_letter_word_white_list>
+                          <coordination_settings>
+                              <raft_logs_level>information</raft_logs_level>
+                          </coordination_settings>
+                      </keeper_server>
+                  </clickhouse>
+  defaults:
+    templates:
+      podTemplate: pod-template
+      dataVolumeClaimTemplate: data-volumeclaim-template
+      serviceTemplate: service-template
+  templates:
+    podTemplates:
+      - name: pod-template
+        podDistribution:
+          - scope: Shard
+            topologyKey: kubernetes.io/hostname
+            type: ShardAntiAffinity
+        metadata:
+          labels:
+            clickhouse.altinity.com/role: keeper   # 由 3.2 的 Service 选中
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/infra: ""      # 步骤 1 中设置的标签
+          tolerations:
+            - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: clickhouse
+              image: <clickhouse-server-image>
+              env:
+                - name: RAFT_PORT
+                  value: "9444"
+              ports:
+                - name: http
+                  containerPort: 8123
+                - name: client
+                  containerPort: 9000
+                - name: interserver
+                  containerPort: 9009
+                - name: ch-keeper
+                  containerPort: 9181
+                - name: raft
+                  containerPort: 9444
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 4Gi
+                limits:
+                  cpu: "2"                          # 取自规格
+                  memory: 4Gi                       # 取自规格
+              volumeMounts:
+                - name: data-volumeclaim-template
+                  mountPath: /var/lib/clickhouse
+                - name: keeper-dynamic-config
+                  mountPath: /tmp/clickhouse
+              readinessProbe:
+                tcpSocket:
+                  port: 9444
+                initialDelaySeconds: 10
+                timeoutSeconds: 5
+                periodSeconds: 10
+                failureThreshold: 3
+          initContainers:
+            - name: wait-for-self-dns
+              image: <clickhouse-server-image>
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  SELF="$(hostname -s).$(hostname -d)"
+                  MY_IP="$(hostname -i)"
+                  for i in $(seq 1 60); do
+                    RESOLVED=$(getent hosts "$SELF" 2>/dev/null | awk '{print $1}' | head -1)
+                    if [ "$RESOLVED" = "$MY_IP" ]; then
+                      echo "resolved $SELF to $MY_IP after ${i}s"
+                      exit 0
+                    fi
+                    sleep 2
+                  done
+                  echo "still unresolved after 120s, continuing"
+                  exit 0
+            - name: keeper-config-initializer
+              image: <clickhouse-server-image>
+              env:
+                - name: RAFT_PORT
+                  value: "9444"
+                - name: SHARDS_COUNT
+                  value: "1"                    # 与 layout.shardsCount 保持一致
+                - name: REPLICAS_COUNT
+                  value: "3"                    # 与 layout.replicasCount 保持一致
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  OUT="/tmp/config/keeper_dynamic_configuration.xml"
+                  HOST=$(hostname -s)
+                  DOMAIN=$(hostname -d)
+                  if [[ $HOST =~ (.*)-([0-9]+)-([0-9]+)-([0-9]+)$ ]]; then
+                      SHARD=${BASH_REMATCH[2]}
+                      REPLICA=${BASH_REMATCH[3]}
+                  else
+                      echo "Failed to parse shard/replica from hostname $HOST"; exit 1
+                  fi
+                  if [[ $DOMAIN =~ ^(.*)-([0-9]+)-([0-9]+)\.(.*)$ ]]; then
+                      DOMAIN_NAME=${BASH_REMATCH[1]}
+                      DOMAIN_SUFFIX=.${BASH_REMATCH[4]}
+                  else
+                      echo "Failed to parse domain $DOMAIN"; exit 1
+                  fi
+                  MY_ID=$((SHARD * REPLICAS_COUNT + REPLICA + 1))
+                  KEEPER_ID=1
+                  {
+                    echo "<clickhouse>"
+                    echo "  <keeper_server>"
+                    echo "    <server_id>${MY_ID}</server_id>"
+                    echo "    <raft_configuration>"
+                    for (( i=0; i<SHARDS_COUNT; i++ )); do
+                        for (( j=0; j<REPLICAS_COUNT; j++ )); do
+                            echo "      <server>"
+                            echo "        <id>${KEEPER_ID}</id>"
+                            echo "        <hostname>${DOMAIN_NAME}-${i}-${j}${DOMAIN_SUFFIX}</hostname>"
+                            echo "        <port>${RAFT_PORT}</port>"
+                            echo "      </server>"
+                            KEEPER_ID=$((KEEPER_ID + 1))
+                        done
+                    done
+                    echo "    </raft_configuration>"
+                    echo "  </keeper_server>"
+                    echo "</clickhouse>"
+                  } > "$OUT"
+                  echo "Keeper dynamic configuration generated for server_id=${MY_ID}"
+              volumeMounts:
+                - name: keeper-dynamic-config
+                  mountPath: /tmp/config
+          volumes:
+            - name: keeper-dynamic-config
+              emptyDir:
+                medium: Memory
+    serviceTemplates:
+      - name: service-template
+        spec:
+          ports:
+            - name: http
+              port: 8123
+            - name: tcp
+              port: 9000
+          type: ClusterIP
+    volumeClaimTemplates:
+      - name: data-volumeclaim-template
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 200Gi
+          storageClassName: <your-storage-class>    # 来自步骤 1
+```
+
+请把 YAML 保存为 `cpaas-clickhouse.yaml` 并应用：
+
+```bash
+kubectl apply -f cpaas-clickhouse.yaml
+```
+
+`default_database: observability` 会让 ClickHouse 在启动时创建 `observability` 库，这里不需要再建库。
+
+### 3.4 等待集群就绪
+
+```bash
+kubectl -n cpaas-system get clickhouseinstallation cpaas-clickhouse \
+  -o jsonpath='{.status.status}{"\n"}'        # 反复执行，直到变为：Completed
+
+kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse
+kubectl -n cpaas-system get pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+```
+
+所有 ClickHouse Pod 必须处于 `Running` 且就绪，且每个 PVC 都必须是 `Bound`。StorageClass 不存在或无法绑定时不会有任何 Pod，也不会有报错，因此不能只看 `ClickHouseInstallation` 的 status。
+
+三节点及以上请先确认 Keeper 仲裁集群再继续。Keeper 运行在 ClickHouse Pod 内，因此逐个副本检查一个 Pod：
+
+```bash
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-0-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-1-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-2-0 -- clickhouse-keeper-client -h 127.0.0.1 -p 9181 -q mntr | grep zk_server_state
+```
+
+三条命令的结果必须是 1 个 `leader`、2 个 `follower`。同时确认 ClickHouse 是通过 3.2 的 Service 访问仲裁集群的：
+
+```bash
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-replicated-0-0-0 -- \
+  clickhouse-client -q "SELECT host, port FROM system.zookeeper_connection FORMAT TSV"
+# 期望：cpaas-clickhouse-keeper	9181
+```
+
+### 3.5 读取日志账号密码
+
+该账号已在 3.3 应用的 `ClickHouseInstallation` 中声明，因此这里不需要创建账号，也没有 `GRANT` 语句要执行：它和 `admin` 一样是服务端配置用户，自带日志组件所需的权限。
+
+请读取它的密码，供步骤 6 记录连接信息。3.6 会复用 `CH_POD` 与 `LOG_PASSWORD` 变量，因此两步请在同一个 shell 中执行。
+
+```bash
+CH_POD="$(kubectl -n cpaas-system get pod \
+  -l clickhouse.altinity.com/chi=cpaas-clickhouse \
+  -o jsonpath='{.items[0].metadata.name}')"
+LOG_PASSWORD="$(kubectl -n cpaas-system get secret clickhouse-platform-logging-password \
+  -o jsonpath='{.data.password}' | base64 -d)"
+echo "platform-logging password: $LOG_PASSWORD"
+```
+
+### 3.6 校验
+
+请在同一个 shell 中执行（3.5 定义的 `$CH_POD` 和 `$LOG_PASSWORD` 还在）：
+
+```bash
+kubectl -n cpaas-system exec "$CH_POD" -- \
+  clickhouse-client --user platform-logging --password "$LOG_PASSWORD" \
+  --query "CREATE TABLE observability.__perm_check (a UInt8) ENGINE = Memory"
+
+kubectl -n cpaas-system exec "$CH_POD" -- \
+  clickhouse-client --user platform-logging --password "$LOG_PASSWORD" \
+  --query "DROP TABLE observability.__perm_check"
+```
+
+两条命令都必须成功，建表失败说明该账号无法管理表结构。
+
+记录以下信息：
+
+| 值 | 从哪里获取 |
+| --- | --- |
+| 连接地址 | 暴露 `8123` 的集群 Service，可用 `kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=cpaas-clickhouse` 查看 |
+| Cluster 名称 | `spec.configuration.clusters[].name` |
+| 数据库 | `spec.configuration.settings.default_database` |
+| 分片数 / 副本数 | `shardsCount` / `replicasCount` |
+| 用户名 / 密码 | 上面创建的账号 |
+
+## 步骤 4：创建 Kafka 服务
+
+### 4.1 创建 SASL 密码 Secret
+
+在 Alauda OS 节点或其他启用了 FIPS 的主机上，密码长度必须不少于 32 个字符。
+
+```bash
+kubectl -n cpaas-system create secret generic platform-logging-password \
+  --from-literal=password="$(openssl rand -hex 16)"
+```
+
+### 4.2 创建 broker 集群
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafka
+metadata:
+  name: cpaas-kafka
+  namespace: cpaas-system
+spec:
+  mode: KRaft
+  version: 4.2.0                       # Alauda Kafka Operator 支持的最低版本
+  replicas: 3
+  resources:
+    limits: { cpu: "2", memory: 4Gi }  # 取自规格
+    requests: { cpu: 500m, memory: 2Gi }
+  storage:
+    size: 200Gi
+    class: <your-storage-class>
+    deleteClaim: false
+  controller:
+    replicas: 3
+    roles: ["controller"]              # 必需：缺少时 node pool 会被拒绝
+    template:
+      pod:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的标签
+                      operator: Exists
+        tolerations:
+          - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+            operator: Exists
+            effect: NoSchedule
+    resources:
+      limits: { cpu: "1", memory: 2Gi }
+      requests: { cpu: 100m, memory: 512Mi }
+    storage:
+      size: 20Gi
+      class: <your-storage-class>
+      deleteClaim: false
+  kafka:
+    template:
+      pod:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的标签
+                      operator: Exists
+        tolerations:
+          - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+            operator: Exists
+            effect: NoSchedule
+    listeners:
+      plain:
+        authentication:
+          type: scram-sha-512
+      tls:
+        authentication:
+          type: scram-sha-512
+    authorization:
+      type: simple
+  config:
+    auto.create.topics.enable: "false"
+    default.replication.factor: "3"
+    min.insync.replicas: "2"
+    offsets.topic.replication.factor: "3"
+    transaction.state.log.replication.factor: "3"
+    transaction.state.log.min.isr: "2"
+    log.retention.hours: "48"
+    unclean.leader.election.enable: "false"
+    message.max.bytes: "10485760"
+    replica.fetch.max.bytes: "10485760"
+    socket.request.max.bytes: "104857600"
+  entityOperator:
+    topicOperator: {}                  # 必需：由它创建 4.5 中的 topic
+    userOperator: {}                   # 必需：由它创建 4.4 中的 SASL 用户
+```
+
+请把 YAML 保存为 `cpaas-kafka.yaml` 并应用：
+
+```bash
+kubectl apply -f cpaas-kafka.yaml
+```
+
+实例会立即创建自己的 PVC。在为其预留卷之前，这些 PVC 会一直处于 `Pending`：broker 的 PVC 名称里含有按实例生成的 hash，所以卷无法提前准备：
+
+```bash
+kubectl -n cpaas-system get pvc \
+  -o custom-columns='PVC:.metadata.name,STATUS:.status.phase,CLASS:.spec.storageClassName'
+```
+
+把这六个名称原样抄下来（三个 `...-broker-...`、三个 `...-controller-...`），并为每个 PVC 创建一个预绑定的卷。`capacity.storage` 填该 PVC 申请的容量，`local.path` 指向该 Pod 的目录，并用节点亲和把它钉在对应节点上：
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cpaas-kafka-broker-0
+spec:
+  capacity:
+    storage: 200Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cpaas-local-kafka
+  claimRef:                                 # 该卷只留给下面这个 PVC
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: cpaas-system
+    name: data-cpaas-kafka-broker-<generated-hash>-0
+  local:
+    path: /cpaas/data/kafka/broker-0
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["<node-ip>"]
+```
+
+请把 YAML 保存为 `cpaas-kafka-volumes.yaml`，为全部六个 PVC 重复 `PersistentVolume` 部分后应用。卷一旦存在，PVC 立即绑定，broker 与 controller 随之启动：
+
+```bash
+kubectl apply -f cpaas-kafka-volumes.yaml
+```
+
+以下配置不能省略：
+
+| 配置项 | 为什么必须设置 |
+| --- | --- |
+| `message.max.bytes: "10485760"` | 审计数据的批大小约为 1.1–1.5 MiB，Kafka 默认的 1 MiB 会拒绝所有审计批次。 |
+| `replica.fetch.max.bytes: "10485760"` | 必须不小于 `message.max.bytes`，否则副本同步会停滞。 |
+| `auto.create.topics.enable: "false"` | 避免拼错的 topic 名称被自动创建并静默接收数据。 |
+| `entityOperator.topicOperator` / `userOperator` | 缺少它们时，下一步中的 `RdsTopic` 和 `RdsKafkaUser` 不会生效到 broker。 |
+
+### 4.3 等待 broker 集群就绪
+
+```bash
+kubectl -n cpaas-system get rdsKafka cpaas-kafka \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\n"}{end}'
+kubectl -n cpaas-system get pod -l strimzi.io/cluster=cpaas-kafka
+```
+
+等待 `Ready` 条件变为 `True`，且所有 broker Pod 处于 `Running`。Kafka Operator 会自动施加硬反亲和，因此三个 broker 必须落在三个不同节点上：
+
+```bash
+kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
+  -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName'
+```
+
+必须出现三个不同的节点名：硬反亲和要求集群至少有 3 个可调度节点。
+
+确认必需配置已下发到 broker：
+
+```bash
+KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- \
+  grep -E "^message\.max\.bytes|^replica\.fetch\.max\.bytes" /tmp/strimzi.properties
+```
+
+两个值都必须是 `10485760`，否则不要继续。这些配置以静态配置形式写入 broker，`kafka-configs.sh --describe` 看不到它们。
+
+### 4.4 创建 SASL 用户及其 ACL
+
+日志组件使用同一个账号，需要访问三个 topic、消费组以及 broker 元数据。
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafkaUser
+metadata:
+  name: platform-logging
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: platform-logging-password
+          key: password
+  authorization:
+    type: simple
+    acls:
+      # 三个 topic
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_LOG_TOPIC, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_EVENT_TOPIC, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: topic, name: ALAUDA_AUDIT_TOPIC, patternType: literal }
+      # 日志链路使用的消费组
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_log, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_event, patternType: literal }
+      - host: "*"
+        operation: All
+        resource: { type: group, name: alauda_audit, patternType: literal }
+      # LogForward 使用的消费组前缀
+      - host: "*"
+        operation: All
+        resource: { type: group, name: "logforward-", patternType: prefix }
+      # 日志查询服务使用的消费组前缀
+      - host: "*"
+        operation: All
+        resource: { type: group, name: "razor-", patternType: prefix }
+      # broker 元数据
+      - host: "*"
+        operation: All
+        resource: { type: cluster, name: kafka-cluster, patternType: literal }
+```
+
+请把 YAML 保存为 `platform-logging-user.yaml` 并应用：
+
+```bash
+kubectl apply -f platform-logging-user.yaml
+```
+
+这九条都必须配置，`operation: All` 已覆盖这些条目所需的读和 describe 权限。请校验：
+
+```bash
+kubectl -n cpaas-system get rdskafkauser platform-logging \
+  -o jsonpath='{.status.phase}{"\n"}'        # 期望：Active
+kubectl -n cpaas-system get secret platform-logging
+```
+
+消费组名称使用下划线（`alauda_log`），而 topic 名称使用大写字母和下划线（`ALAUDA_LOG_TOPIC`）。
+
+### 4.5 创建三个 topic
+
+```yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-log-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_LOG_TOPIC          # broker 侧名称，必须与 ACL 和连接 Secret 一致
+  partitions: 30                       # 消费并发度的上限
+  replicas: 3
+  config:
+    retention.ms: "172800000"            # 48 小时
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-event-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_EVENT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-audit-topic
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_AUDIT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    segment.bytes: "1073741824"
+    min.insync.replicas: "2"
+    compression.type: producer
+    max.message.bytes: "10485760"
+```
+
+请把 YAML 保存为 `alauda-topics.yaml` 并应用：
+
+```bash
+kubectl apply -f alauda-topics.yaml
+```
+
+资源名必须是合法的 DNS 名称。`spec.topicName` 是 broker 侧名称，必须与上面的 ACL 条目一致。
+
+示例中的保留时间为 48 小时。只按时间保留并不能限制磁盘占用：一波流量峰值可能在保留窗口到期前就把 broker 卷写满。请按「保留窗口内的峰值速率」规划 broker 卷容量，或者给三个 topic 都加上 `retention.bytes`。`retention.bytes` 是按分区生效的，因此 broker 卷需要能容纳 `分区数 × retention.bytes`。
+
+### 4.6 端到端校验 Kafka 服务
+
+先在 broker Pod 内根据用户 Secret 生成客户端配置。broker 监听端口要求 SASL 认证，下面的命令都需要它。
+
+```bash
+KAFKA_BROKER_POD="$(kubectl -n cpaas-system get pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n cpaas-system exec -i "$KAFKA_BROKER_POD" -c kafka -- \
+  sh -c 'cat > /tmp/logging-client.properties' <<EOF
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=SCRAM-SHA-512
+sasl.jaas.config=$(kubectl -n cpaas-system get secret platform-logging \
+  -o jsonpath='{.data.sasl\.jaas\.config}' | base64 -d)
+EOF
+```
+
+确认 topic 已在 broker 上存在：
+
+```bash
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --command-config /tmp/logging-client.properties --list
+```
+
+然后用日志账号生产并消费一条记录。消费组必须是 ACL 允许的组之一，否则 console consumer 会随机生成一个组并被 broker 拒绝。
+
+```bash
+kubectl -n cpaas-system exec -i "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --command-config /tmp/logging-client.properties \
+  --topic ALAUDA_LOG_TOPIC <<< "kafka-check"
+
+kubectl -n cpaas-system exec "$KAFKA_BROKER_POD" -c kafka -- bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --command-config /tmp/logging-client.properties \
+  --topic ALAUDA_LOG_TOPIC --group alauda_log \
+  --from-beginning --max-messages 1 --timeout-ms 10000
+```
+
+记录以下信息：
+
+| 值 | 从哪里获取 |
+| --- | --- |
+| Bootstrap 地址 | 使用 TLS 的 SASL 为 `<cluster-name>-kafka-bootstrap.cpaas-system.svc:9093`，不使用 TLS 的 SASL 为 `:9092` |
+| Cluster 名称 | `RdsKafka` 资源的 `metadata.name` |
+| 用户名 / 密码 | `RdsKafkaUser` 的名称及其密码 |
+| Topic | `ALAUDA_LOG_TOPIC`、`ALAUDA_EVENT_TOPIC`、`ALAUDA_AUDIT_TOPIC` |
+| CA 证书 | 仅在用 `9093` 的 TLS 监听端口时需要。Kafka Operator 会把它放在 `cpaas-system` 下名称以 `-cluster-ca-cert` 结尾的 Secret 中 |
+
+## 步骤 5：创建 OpenSearch 集群
+
+目标存储为 ClickHouse 时请跳过本步骤。
+
+### 5.1 创建集群
+
+按步骤 0 的规格设置节点池。示例为 3 + 5：三个 master、五个 data。小规格只用一个节点池，`roles` 设为 `[cluster_manager, data]`，`replicas` 设为 3 或 5。
+
+```yaml
+apiVersion: opensearch.opster.io/v1
+kind: OpenSearchCluster
+metadata:
+  name: cpaas-opensearch
+  namespace: cpaas-system
+spec:
+  general:
+    serviceName: cpaas-opensearch
+    httpPort: 9200
+    version: 3.7.0
+  security:
+    tls:
+      http:
+        generate: true
+      transport:
+        generate: true
+        perNode: true
+  nodePools:
+    - component: masters
+      replicas: 3
+      diskSize: 100Gi
+      roles:
+        - cluster_manager
+      nodeSelector:
+        node-role.kubernetes.io/infra: ""      # 步骤 1 中设置的标签
+      tolerations:
+        - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+          operator: Exists
+          effect: NoSchedule
+      persistence:
+        pvc:
+          accessModes:
+            - ReadWriteOnce
+          storageClass: <your-storage-class>   # 来自步骤 1
+      resources:
+        limits:
+          cpu: "2"                             # 取自规格
+          memory: 4Gi                          # 取自规格
+        requests:
+          cpu: "1"
+          memory: 2Gi
+    - component: data
+      replicas: 5
+      diskSize: 800Gi
+      roles:
+        - data
+        - ingest
+      nodeSelector:
+        node-role.kubernetes.io/infra: ""      # 步骤 1 中设置的标签
+      tolerations:
+        - key: node-role.kubernetes.io/infra   # 步骤 1 中设置的污点
+          operator: Exists
+          effect: NoSchedule
+      persistence:
+        pvc:
+          accessModes:
+            - ReadWriteOnce
+          storageClass: <your-storage-class>   # 来自步骤 1
+      resources:
+        limits:
+          cpu: "8"                             # 取自规格
+          memory: 16Gi                         # 取自规格
+        requests:
+          cpu: "2"
+          memory: 8Gi
+  dashboards:
+    replicas: 0
+```
+
+请把 YAML 保存为 `cpaas-opensearch.yaml` 并应用：
+
+```bash
+kubectl apply -f cpaas-opensearch.yaml
+```
+
+等待集群健康：
+
+```bash
+kubectl -n cpaas-system get opensearchcluster cpaas-opensearch \
+  -o jsonpath='{.status.health}{"\n"}'       # 期望：green
+```
+
+节点启动和分片初始化的过程中，健康状态会先显示 `unknown`，随后是 `yellow`。请等到 `green`。
+
+后文的这些调用都使用管理员账号 `admin` 认证。该账号由 Operator 创建，凭据保存在 `<cluster-name>-admin-password` Secret 中，请从这里读取密码，填到后文所有 `<admin-password>` 的位置。默认账号密码是 `admin` / `admin`，也就是示例假定的取值：
+
+```bash
+OS_ADMIN_USER="$(kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
+  -o jsonpath='{.data.username}' | base64 -d)"
+OS_ADMIN_PASSWORD="$(kubectl -n cpaas-system get secret cpaas-opensearch-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d)"
+echo "$OS_ADMIN_USER / $OS_ADMIN_PASSWORD"
+```
+
+生产环境请先修改该密码，并且要和 Operator 侧保持一致，否则 Operator 自身的健康检查会失败；平台 OpenSearch 知识库里有完整改密流程（把新密码的 hash 写入 `internal_users.yml` 并生成 `securityconfig-secret`，同时创建匹配的 `admin-credentials-secret`，再更新集群）。日志账号的 `<password>` 请填不少于 32 个字符的值。
+
+
+### 5.2 可选：安装中文分词插件
+
+`analysis-ik` 是可选组件。不安装时使用 standard 分析器，中文不分词；安装后中文会分词。
+
+请在 `OpenSearchCluster` 的 spec 中配置该插件。节点每次启动时，operator 会把 `pluginsList` 中的每一项交给 `opensearch-plugin install` 执行，因此插件在 Pod 重启、节点替换后依然存在。手工进容器安装不算数：插件写在数据卷之外，Pod 一重启就没了。
+
+| 字段 | 作用 |
+| --- | --- |
+| `spec.general.pluginsList` | 在所有 OpenSearch 节点上安装插件 |
+| `spec.bootstrap.pluginsList` | 在负责组建集群的 bootstrap Pod 上安装插件。只要是在新建集群时就要启用插件，这个字段必须一起配置，否则集群初始化可能失败。 |
+
+如果希望在创建集群时就带上插件，请在 apply 5.1 的 `cpaas-opensearch.yaml` 之前把这两个字段加进去：
+
+```yaml
+spec:
+  general:
+    pluginsList:
+      - "https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"
+  bootstrap:
+    pluginsList:
+      - "https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"
+```
+
+如果集群已经建好且没装插件，改用下面的 patch 命令即可，operator 会滚动重启节点完成安装：
+
+```bash
+kubectl -n cpaas-system patch opensearchcluster cpaas-opensearch --type=merge -p '{"spec":{"general":{"pluginsList":["https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"]},"bootstrap":{"pluginsList":["https://release.infinilabs.com/analysis-ik/stable/opensearch-analysis-ik-3.7.0.zip"]}}}'
+```
+
+插件版本必须与 `spec.general.version` 一致。URL 返回 404 会导致所有节点无法启动。集群无法访问外网时，请先把 zip 放到内网服务器，并把 URL 换成内网地址。
+
+校验每个节点都已安装：
+
+```bash
+for p in $(kubectl -n cpaas-system get pod -l opster.io/opensearch-cluster=cpaas-opensearch -o jsonpath='{.items[*].metadata.name}'); do echo -n "$p: "; kubectl -n cpaas-system exec $p -c opensearch -- bin/opensearch-plugin list | grep -c '^analysis-ik'; done
+```
+
+每个节点都必须输出 `1`。随后确认分析器能对中文分词。请把 `<opensearch-endpoint>` 替换为集群 Service 地址，例如 `https://cpaas-opensearch.cpaas-system.svc:9200`：
+
+```bash
+curl -sk -u "admin:<admin-password>" -X POST "https://<opensearch-endpoint>/_analyze" \
+  -H 'Content-Type: application/json' \
+  -d '{"analyzer":"ik_smart","text":"自然语言处理技术"}'
+```
+
+返回结果必须包含多个词元，例如 `自然语言`、`处理`、`技术`。
+
+### 5.3 创建日志组件使用的账号
+
+该账号需要读写日志索引、创建日志组件使用的索引模板，并管理其生命周期策略。security 插件已启用，因此需要通过其 REST API 创建角色、用户和角色映射。这些调用同样使用管理员账号 `admin`，密码就是 5.1 中读到的那个。
+
+```bash
+OS="https://<opensearch-endpoint>"        # 集群 Service，例如 https://cpaas-opensearch.cpaas-system.svc:9200
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/roles/log_storage_writer" \
+  -H 'Content-Type: application/json' -d '{
+    "cluster_permissions": [
+      "cluster:monitor/*",
+      "cluster:admin/opendistro/ism/policy/*",
+      "indices:admin/index_template/put",
+      "indices:admin/index_template/get",
+      "indices:admin/template/put",
+      "indices:admin/template/get"
+    ],
+    "index_permissions": [{
+      "index_patterns": ["log-*", "event-*", "audit-*", "meter-*"],
+      "allowed_actions": [
+        "indices:admin/create",
+        "indices:admin/mapping/put",
+        "indices:data/write/*",
+        "indices:data/read/*"
+      ]
+    }]
+  }'
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/internalusers/platform-logging" \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"<password>","backend_roles":[]}'
+
+curl -sk -u "admin:<admin-password>" -X PUT "$OS/_plugins/_security/api/rolesmapping/log_storage_writer" \
+  -H 'Content-Type: application/json' -d '{"users":["platform-logging"]}'
+```
+
+模板和策略权限属于集群级权限。把 `indices:admin/index_template/put` 和 `indices:admin/template/put` 写在 `index_permissions` 下不会生效，日志组件随后会因无权限而无法创建索引模板。缺少角色映射时，账号可以认证但没有任何权限。
+
+用新账号校验：
+
+```bash
+curl -sk -u "platform-logging:<password>" -X PUT "$OS/_index_template/perm-check" \
+  -H 'Content-Type: application/json' \
+  -d '{"index_patterns":["log-perm-check-*"],"template":{"settings":{"number_of_shards":1}}}'
+
+curl -sk -u "platform-logging:<password>" -X POST "$OS/log-perm-check/_doc" \
+  -H 'Content-Type: application/json' -d '{"check":1}'
+
+curl -sk -u "platform-logging:<password>" "$OS/_index_template/perm-check"
+```
+
+三条命令都必须成功。出现 `security_exception` 且提示 `no permissions for [...]`，说明角色或角色映射不完整。最后用管理员账号清理：
+
+```bash
+curl -sk -u "admin:<admin-password>" -X DELETE "$OS/_index_template/perm-check"
+curl -sk -u "admin:<admin-password>" -X DELETE "$OS/log-perm-check"
+```
+
+记录以下信息：
+
+| 值 | 从哪里获取 |
+| --- | --- |
+| 连接地址 | Service 地址或负载均衡地址，例如 `https://<lb>:9200` |
+| 用户名 / 密码 | 上面创建的账号 |
+| CA 证书 | 仅在连接地址使用私有 CA 时需要。Operator 会把它创建在 `cpaas-system` 下的 Secret `cpaas-opensearch-ca` 中 |
+
+平台下发的索引模板为 1 分片 1 副本。如果你的高可用策略需要不同的取值，请下发一个优先级更高的可组合模板，并用 `GET /_index_template` 确认结果。已创建的索引会保持创建时的设置。
+
+## 步骤 6：记录连接信息
+
+请记录下表各项。
+
+| 值 | ClickHouse | OpenSearch | Kafka |
+| --- | --- | --- | --- |
+| 连接地址 | 必需 | 必需 | 必需 |
+| Cluster 名称 | 必需 | — | 必需 |
+| 数据库 | 必需 | — | — |
+| 分片数 / 副本数 | 必需 | — | — |
+| 用户名 | 必需 | 必需 | 必需 |
+| 密码 | 必需 | 必需 | 必需 |
+| Topic | — | — | 必需 |
+| CA 证书 | 连接地址使用私有 CA 时必需 | 连接地址使用私有 CA 时必需（用于历史数据迁移） | 连接地址使用私有 CA 时必需 |
+
+## 环境检查清单
+
+| 检查项 | 期望结果 |
+| --- | --- |
+| 节点和磁盘 | 已使用独占节点并打好标签与污点，已挂载 SSD，目录已按正确的属主创建，且清单中已容忍该污点 |
+| StorageClass | 已存在，并且能够为存储集群绑定存储卷 |
+| Operator | ClickHouse、Kafka 以及（目标为 OpenSearch 时）OpenSearch 的 Operator 已就绪，其 CRD 已存在，且都能 watch `cpaas-system` |
+| ClickHouse | `status.status` 为 `Completed`，所有 Pod 就绪，日志账号可以建表和删表；三节点及以上时 Keeper 仲裁集群为 1 个 leader、2 个 follower |
+| OpenSearch | 集群健康状态为 `green`，日志账号可以管理索引模板；启用插件时，每个节点都能看到 `analysis-ik` 且能对中文分词 |
+| Kafka broker | 集群就绪，`message.max.bytes` 和 `replica.fetch.max.bytes` 均为 `10485760` |
+| Kafka 用户和 ACL | `RdsKafkaUser` 为 `Active`，九条 ACL 均已配置 |
+| Kafka topic | broker 上已存在三个 topic，且分区数和保留时间符合预期 |
+| Kafka 连通性 | 已使用日志账号成功生产和消费一条记录 |
+| 信息记录 | 连接地址、cluster、数据库、拓扑、凭据、topic 和 CA 证书均已记录 |
+
+任何一项不通过，都必须在日志组件连接该存储之前修复。
