@@ -1,0 +1,129 @@
+---
+weight: 16
+---
+
+# Historical Data Migration
+
+This chapter migrates the historical log, event, and audit data that the legacy Elasticsearch storage plugin holds into the ClickHouse or OpenSearch target that the new data path uses. Run it as part of the upgrade; the upgrade chapter links to it at the point where it applies.
+
+## Supported scope
+
+| Item | Supported |
+| --- | --- |
+| Source | The PVCs of the legacy Elasticsearch storage plugin. Leave `source.pvcRefs` out and the operator discovers them while the legacy StatefulSet and its PVCs are still present; list them explicitly when discovery is no longer possible, for example after the plugin is uninstalled. |
+| Data | The indices selected by `source.indexScope`. It accepts exact index names and globs and must match at least one index; an empty list is rejected. |
+| Target | `clickhouse` or `opensearch`. `target.secretRef` uses the same connection Secret as the `PlatformLogForward`. |
+| Timing | The migration boundary is captured when you create the resource, and the copy runs after the legacy plugin is uninstalled. |
+| Concurrency | ClickHouse targets always run one job at a time. OpenSearch targets accept `options.maxConcurrentJobs: 2`; the default is `1`. |
+| Batch size | `options.batchSize` accepts `1..100000`; `options.syncIntervalSeconds` sets the minimum wait between batches. |
+
+:::warning
+Provide the source volumes in time. Discovery only works while the legacy StatefulSet and its PVCs are still present. If they are already gone, or if discovery fails, list the PVCs yourself in `source.pvcRefs` — the operator never guesses a source volume. Once the source PVCs are deleted, or their PVs are released and cleaned up, the historical data can no longer be migrated, so create the migration resource, or supply `pvcRefs`, before anything releases those volumes.
+:::
+
+## Before you start
+
+1. The new data path is `Ready` and its `PlatformLogForward` points at the target you migrate into. The migration image for this release is available, with its complete registry, tag, or digest (`spec.image` is required).
+2. **The migrated time range is still inside the retention of the target tables.** The migration does not widen, pause, or bypass the retention that the `PlatformLogForward` and razor already applied, so records older than the target TTL can be written and then removed by the normal merge. Confirm the range first, or raise the target retention and confirm the table definitions took effect, before you create this resource.
+
+## Step 1: Create the migration resource
+
+Create the `LegacyESMigration` **before** you uninstall the legacy plugin. Creating it earlier is what records the final source state and the source volumes; a resource created after the uninstall has to name the source volumes explicitly and cannot use that final capture.
+
+### Target OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LegacyESMigration
+metadata:
+  name: platform-es-history                               # Stable migration name, used by the commands below
+  namespace: cpaas-system
+spec:
+  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
+  source:
+    indexScope:                                           # Required, selects the historical indices to migrate
+      - "log-workload-*"
+      - "log-platform-*"
+      - "log-system-*"
+      - "log-kubernetes-*"
+      - "event-*"
+      - "audit-*"
+  target:
+    type: opensearch                                      # Must match the PlatformLogForward target
+    secretRef:
+      name: platform-default-os-conn                      # The same connection Secret as PlatformLogForward
+      namespace: cpaas-system
+  options:
+    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
+    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (no fixed wait for OpenSearch)
+    maxConcurrentJobs: 1                                  # Concurrent jobs; default 1, up to 2 for OpenSearch
+```
+
+### Target ClickHouse
+
+Change `target.type` to `clickhouse` and point the Secret at `platform-default-ch-conn`.
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LegacyESMigration
+metadata:
+  name: platform-es-history                               # Stable migration name, used by the commands below
+  namespace: cpaas-system
+spec:
+  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
+  source:
+    indexScope:                                           # Required, selects the historical indices to migrate
+      - "log-workload-*"
+      - "log-platform-*"
+      - "log-system-*"
+      - "log-kubernetes-*"
+      - "event-*"
+      - "audit-*"
+  target:
+    type: clickhouse                                      # Must match the PlatformLogForward target
+    secretRef:
+      name: platform-default-ch-conn                      # The same connection Secret as PlatformLogForward
+      namespace: cpaas-system
+  options:
+    batchSize: 250                                        # Documents written per batch, 1~100000; default 250
+    syncIntervalSeconds: 5                                # Minimum wait between batches; omit to use the default (1 second for ClickHouse)
+    maxConcurrentJobs: 1                                  # Concurrent jobs; ClickHouse is always serial (1)
+```
+
+Save the YAML as `legacy-es-migration.yaml` and apply it:
+
+```bash
+kubectl apply -f legacy-es-migration.yaml
+```
+
+## Step 2: Wait for the capture to finish
+
+The copy does not start until the legacy plugin is uninstalled, so the phase stops at `PrecaptureReady` for now:
+
+```bash
+kubectl -n cpaas-system get legacyesmigration platform-es-history -w
+```
+
+In this flow, data copy starts only after the legacy plugin is uninstalled, so the phase stays at `PrecaptureReady` until then. Continue to Step 3 only when the phase is `PrecaptureReady` (or `Succeeded` for an already completed migration). If the phase is `Blocked`, do not delete or recreate the migration resource; read the condition message and contact support.
+
+The new data path continues to receive log, event, and audit data while the migration runs. Keep the new data path and its target connection unchanged. If the migration does not complete, stop and contact support.
+
+Use the migration image provided for this ACP 4.4 Logging release. If the target data is complete but the migration stays in `Running`, stop and contact support; do not delete the migration resource or the source volumes.
+
+## Step 3: Verify the migration
+
+Once the legacy plugin is uninstalled, the worker copies the data. Watch the same resource until it succeeds:
+
+```bash
+kubectl -n cpaas-system get legacyesmigration platform-es-history \
+  -o jsonpath='{.status.phase}{"\n"}'        # wait for: Succeeded
+```
+
+If the phase is `Blocked`, do not delete or recreate the resource; read the condition message and contact support.
+
+Then confirm the migrated data in the target: run the same log, event, and audit queries you use in production and check that the historical range is present.
+
+## Retained volumes
+
+Keep the protected source volumes until the verification passes and the approved change window closes. `status.phase: Succeeded` is not by itself approval to release them.
+

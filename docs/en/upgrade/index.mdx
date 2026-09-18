@@ -1,0 +1,224 @@
+---
+weight: 15
+---
+
+# Upgrade
+
+This section explains how to upgrade **Alauda Container Platform Log Storage for Elasticsearch** in an existing ACP deployment.
+
+:::warning
+Do not uninstall the Elasticsearch storage plugin, stop the legacy data path, or delete its PVCs, PVs, or protection finalizers before this guide tells you to, and do not stop, scale, or delete the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads. Doing it earlier can make the historical data unavailable or invalidate the migration boundary.
+:::
+
+## Before you start
+
+1. The target ClickHouse or OpenSearch cluster and the new Kafka service are prepared as described in [Environment Preparation](../prepare/index.mdx), and their connection details are available.
+2. The legacy Elasticsearch, Kafka, ZooKeeper, lanaya, and Razor workloads are still running, and an approved change window is in place.
+3. To migrate historical data, the migration image for this release is available, with its complete registry, tag, or digest.
+4. The target matches what the `PlatformLogForward` will declare. Read the deployed CRs rather than this guide:
+
+   | Target | What must line up |
+   | --- | --- |
+   | ClickHouse | Set `externalStorage.shards` and `replicas` from the `ClickHouseInstallation` (`spec.configuration.clusters[].layout`), and set the Secret `cluster` value to the cluster name used by `ON CLUSTER`. A mismatch writes to the wrong replica set. |
+   | Kafka | Keep the Secret `topics.log` / `topics.event` / `topics.audit` equal to the deployed topic names and to the `KafkaUser` ACLs, and `kafkaClusterName` equal to the Kafka cluster name. The broker and topic maximum message size must accept the audit batches. |
+   | OpenSearch | Index shards and replicas are not controlled by the `PlatformLogForward`. The platform applies templates with 1 shard and 1 replica; apply a higher-priority template before cutover if production needs different values. |
+
+## Upgrade Flow at a Glance
+
+Use this order. Each gate must pass before the next step starts.
+
+| Step | Where | Action | Gate to continue |
+| --- | --- | --- | --- |
+| 1 | Workload cluster | Install the new data path: connection Secrets plus `PlatformLogForward` with the upgrade annotation | `Phase=Ready` and `LegacyESUpgradeCompleted` |
+| 2 | Workload cluster | If history is needed, create `LegacyESMigration` as described in [Historical Data Migration](../migration/index.mdx) | `PrecaptureReady` (or `Succeeded` on an existing run) |
+| 3 | Global and workload clusters | Run the controlled uninstall of the legacy plugin | `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` stay absent for 60 seconds and new log queries still pass |
+| 4 | Workload cluster | Observe the same `LegacyESMigration` until it succeeds | `Phase=Succeeded` and target queries pass |
+| 5 | Workload cluster | Keep the protected source volumes | Explicit approval before any cleanup |
+
+## Upgrade Procedure
+
+### Step 1: Install the new data path with the upgrade annotation
+
+The new data path is installed the same way as a fresh installation: create the connection Secrets for the target storage and for Kafka, then create one `PlatformLogForward`. Follow **Install Log Storage with External ClickHouse or OpenSearch** in [Installation](../install_log.mdx) for those manifests and the notes that come with them.
+
+**The annotation is the only difference.** Add `log.alauda.io/legacy-es-upgrade: "true"` to the `PlatformLogForward`, so the platform enters the legacy Elasticsearch upgrade flow instead of switching the log entry point directly:
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                            # Fixed cluster singleton name, do not change
+  annotations:
+    log.alauda.io/legacy-es-upgrade: "true"         # Fixed value, enters the legacy Elasticsearch upgrade flow
+spec:
+  installMode: Fresh                                # Always Fresh, do not change it to Adopt
+  # externalStorage and externalMessageQueue: as in Installation, pointing at the
+  # target storage and Kafka connection Secrets you created above
+```
+
+Keep `installMode: Fresh`; `Adopt` is not part of this flow.
+
+The new data path is not available immediately. The platform first creates it, then switches the log entry point, and finally waits for the data that queued up in the old cluster to be consumed; the time this takes depends on the backlog. Watch the status until it finishes, and press `Ctrl+C` to stop:
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+The `Phase` column reaches `Ready`, and the `Ready` column becomes `True`. To follow the progress or troubleshoot, read the status conditions:
+
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+Watch the `LegacyESUpgrade` line: when the reason becomes `LegacyESUpgradeCompleted`, the log entry point has switched to the new data path and the data queued in the old cluster has been consumed, so this step is complete. If the reason is `Blocked`, the `message` explains why.
+
+Once this step is complete, produce or locate new log, event, and audit records, and confirm that you can query them from the new target before you continue. Do not uninstall the old plugin while `LegacyESUpgrade` is incomplete.
+
+If the source cluster uses the legacy Kafka, do not stop or scale Kafka, ZooKeeper, or lanaya. The platform drains the queued data through the legacy path automatically and records `LegacyKafkaDrained` when the old consumer lag reaches zero; `LegacyESUpgradeCompleted` is the gate for this procedure.
+
+### Step 2: Create the migration resource if history is required
+
+Skip this step only when the approved upgrade plan confirms that the historical Elasticsearch data is not required, and record that decision. Do not delete the source PVCs or PVs just to skip migration.
+
+If the data is required, create the `LegacyESMigration` resource **before** you uninstall the legacy plugin. Creating it earlier is what records the final source state and the source volumes; a resource created after the uninstall has to name the source volumes explicitly and cannot use that final capture.
+
+The scope the migration supports, the requirement that the migrated time range still fits the target retention, the manifests, and the verification steps are all in [Historical Data Migration](../migration/index.mdx).
+
+### Step 3: Uninstall the legacy Elasticsearch storage plugin
+
+:::warning
+Run this step only when all of these conditions are true:
+
+- `PlatformLogForward/platform-default` is `Ready` and its `LegacyESUpgrade` condition has reason `LegacyESUpgradeCompleted`.
+- If historical migration is required, `LegacyESMigration/platform-es-history` is `PrecaptureReady` or `Succeeded`.
+- Confirm that the upgrade program has completed protection for the legacy Elasticsearch volumes (PVC/PV). Do not modify or remove this protection; if the platform reports a protection failure, stop and contact support.
+- If the source uses legacy Kafka, the platform has confirmed that all queued data is drained. Do not stop or scale Kafka, ZooKeeper, lanaya, or Elasticsearch to force this state.
+:::
+
+:::warning
+This sequence temporarily clears platform discovery fields for Alauda Container Platform Log Storage for Elasticsearch so the legacy plugin can be removed. Run it only in the approved change window, and do not modify or delete logagent or its dependencies.
+:::
+
+If the platform provides a supported plugin-uninstall action for this upgrade, follow the platform or support instructions first. If the action is rejected, or the platform team asks you to run the controlled procedure, use the sequence below.
+
+The two deletes must run back-to-back: do not wait for `ModuleInfo` to disappear, check `AppRelease`, or perform any other check between them.
+
+**On the global cluster: start the critical sequence**
+
+Set `CLUSTER` to the workload cluster name as registered in the global cluster, then run these commands:
+
+```bash
+set -euo pipefail
+
+CLUSTER=<workload-cluster-name>
+
+# 1. Resolve the target ModuleInfo. Stop if the result is ambiguous.
+MODULE_INFOS="$(kubectl get moduleplugin logcenter \
+  -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
+MODULE_COUNT="$(printf '%s\n' "$MODULE_INFOS" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [ "$MODULE_COUNT" -gt 1 ]; then
+  echo "More than one logcenter ModuleInfo exists for cluster $CLUSTER; stop and contact support." >&2
+  exit 1
+fi
+
+if [ "$MODULE_COUNT" -eq 1 ]; then
+  MODULE_INFO="$MODULE_INFOS"
+  MODULE_VERSION="$(kubectl get moduleinfo "$MODULE_INFO" -o jsonpath='{.spec.version}')"
+  MODULE_CONFIG="logcenter-${MODULE_VERSION}"
+
+  # 2. Record the current management objects before changing them.
+  kubectl get moduleinfo "$MODULE_INFO" -o yaml > moduleinfo-logcenter.backup.yaml
+  kubectl get moduleplugin logcenter -o yaml > moduleplugin-logcenter.backup.yaml
+  kubectl get moduleconfig "$MODULE_CONFIG" -o yaml > moduleconfig-logcenter.backup.yaml
+
+  # 3. Clear the discovery flags. This is also what bypasses the logagent dependency check.
+  kubectl patch moduleplugin logcenter --type=merge -p '{"spec":{"labelCluster":""}}'
+  kubectl patch moduleconfig "$MODULE_CONFIG" --type=merge -p '{"spec":{"labelCluster":""}}'
+
+  # 4. Return as soon as the delete request is accepted. Do not wait here.
+  kubectl delete moduleinfo "$MODULE_INFO" --ignore-not-found --wait=false
+else
+  echo "No logcenter ModuleInfo found for cluster $CLUSTER; continuing to verify the install record."
+fi
+```
+
+**On the workload cluster: finish the critical sequence**
+
+Switch the current kubectl context to the workload cluster immediately. Do not run any wait or verification first. Run:
+
+```bash
+# 5. Delete the per-cluster install record before it can recreate ModuleInfo.
+kubectl delete clusterplugininstance logcenter --ignore-not-found
+```
+
+**Wait for the old data path to be removed**
+
+Switch back to the global cluster and wait for `ModuleInfo` to disappear:
+
+```bash
+CLUSTER=<workload-cluster-name>
+MODULE_INFOS="$(kubectl get moduleplugin logcenter \
+  -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
+MODULE_INFO="$(printf '%s\n' "$MODULE_INFOS" | sed -n '1p')"
+
+if [ -n "$MODULE_INFO" ]; then
+  kubectl wait --for=delete "moduleinfo/$MODULE_INFO" --timeout=10m
+else
+  echo "No ModuleInfo remains for cluster $CLUSTER."
+fi
+```
+
+Switch to the workload cluster and wait for the legacy `AppRelease` to be removed:
+
+```bash
+kubectl -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
+```
+
+After these steps, wait 60 seconds and verify that the resources stayed gone. Each command must return no resource.
+
+**On the global cluster**
+
+```bash
+kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=<workload-cluster-name>' --ignore-not-found
+```
+
+**On the workload cluster**
+
+```bash
+kubectl get clusterplugininstance logcenter --ignore-not-found
+kubectl -n cpaas-system get apprelease logcenter --ignore-not-found
+kubectl -n cpaas-system get statefulset cpaas-elasticsearch --ignore-not-found
+```
+
+If `ClusterPluginInstance/logcenter` remains or reappears, delete it again and repeat the checks; until it is gone, the platform can recreate `ModuleInfo`. If `ModuleInfo` also reappears, remove `ClusterPluginInstance/logcenter` first, then delete the new `ModuleInfo` again. Do not restore the cleared discovery fields manually; verify only that `ModuleInfo`, `ClusterPluginInstance`, and `AppRelease` do not reappear. If the global-cluster block fails before `ModuleInfo` is deleted, do not run the workload-cluster block for that attempt: fix the cause and run the global sequence again.
+
+After the stability check passes, produce new log, event, and audit records and confirm that they can be queried from the new target. Do not continue to migration verification if the new data path is unhealthy.
+
+### Step 4: Retained volumes
+
+The protected legacy Elasticsearch PVCs and PVs are retained. Keep them until migration and target validation are complete. Do not remove protection annotations, delete PVCs or PVs, or remove finalizers. To release the volumes after validation, contact Alauda support or follow the separate approved cleanup procedure.
+
+Only the ES PVCs and PVs are retained by this upgrade. Legacy Kafka and ZooKeeper volumes are not part of the retention scope.
+
+Export or record the final PLF conditions, migration status, target query results, and retained PVC/PV names for the implementation handover. Do not remove protection annotations or delete these volumes as part of this upgrade.
+
+## Completion Checklist
+
+| Status | Expected |
+| --- | --- |
+| `PlatformLogForward/platform-default` | `Phase=Ready` and `LegacyESUpgradeCompleted` |
+| `LegacyESMigration/platform-es-history` (if created) | `Phase=Succeeded` |
+| New logging query | A new log, event, and audit record is returned by the new query path |
+| Legacy plugin removal | `ModuleInfo`, `ClusterPluginInstance/logcenter`, and `AppRelease/logcenter` are absent, and the old ES workload is gone |
+| Source volumes | Protected legacy ES PVCs and PVs remain present |
+
+If any status is not as expected, stop and contact Alauda support. Do not delete the migration resource, source volumes, or target data to work around a failure.
+
+## If a Step Is Blocked
+
+- The platform rejects the plugin removal with `moduleinfo is depended by ...`: stop, do not modify logagent, repeat the controlled sequence, and contact support if it still fails.
+- Migration is `Blocked`, `Failed`, or stays `Running`: do not delete the migration resource, Jobs, source volumes, or target data; contact support.
+- `ModuleInfo` or `ClusterPluginInstance` reappears: delete `ClusterPluginInstance` first, then delete the new `ModuleInfo`, and repeat the 60-second stability check.
+- `AppRelease/logcenter` does not disappear: do not remove finalizers; contact support.
+- New log queries fail after uninstall: stop and contact support. Do not delete the retained volumes.
