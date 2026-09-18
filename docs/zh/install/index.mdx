@@ -173,11 +173,31 @@ spec:
 
 `PlatformLogForward` 是集群级资源，不要添加 `metadata.namespace`；`secretRef` 内的 `namespace` 仍用于定位 `cpaas-system` 中的连接 Secret。CRD 默认 `aggregateVector.replicas: 3`、`razor.replicas: 2`，如果容量或部署规划要求不同副本数，请显式设置。这两个是日志组件自身的副本数，与 ClickHouse 规格无关：单节点 ClickHouse 也照常使用它们。
 
-将 YAML 保存为 `platform-log-forward.yaml` 并应用：
+将 YAML 保存为 `platform-log-forward.yaml`，然后确认日志 Operator 是否已经自动创建了这个资源：
+
+```bash
+kubectl get platformlogforward platform-default -o jsonpath='{.spec.installMode}{"\n"}'
+kubectl -n cpaas-system get apprelease logclickhouse
+```
+
+Operator 每次启动都会检查一次命名空间。只要发现 `ClickHouseInstallation/cpaas-clickhouse`、`RdsKafka/cpaas-kafka` 或 `Secret/clickhouse-basic-auth`，它就认为这是更早版本的 chart 装的，并自行创建 `PlatformLogForward/platform-default`，且 `installMode` 为 `Adopt`。`installMode` 不可修改，此时应用本文的清单会报 `installMode is immutable`。
+
+如果第一条命令输出 `Adopt`，且 `AppRelease/logclickhouse` 不存在，说明并没有从 chart 接管任何数据。请先删除该对象、再应用本文清单（一条命令内完成），然后把这几个连接 Secret 标记为自己的，避免 Operator 再次派生：
+
+```bash
+kubectl delete platformlogforward platform-default && kubectl apply -f platform-log-forward.yaml
+
+kubectl -n cpaas-system annotate secret platform-default-ch-conn platform-default-mq-conn \
+  log.alauda.io/derived-by=sre-managed --overwrite
+```
+
+资源不存在时，正常应用清单：
 
 ```bash
 kubectl apply -f platform-log-forward.yaml
 ```
+
+如果 `AppRelease/logclickhouse` 存在，请停止操作并改用迁移章节：该集群上已有 chart 安装的日志数据。
 
 ### 2.3 校验
 
@@ -267,11 +287,31 @@ spec:
 
 `PlatformLogForward` 是集群级资源，不要添加 `metadata.namespace`；`secretRef` 内的 `namespace` 仍用于定位 `cpaas-system` 中的连接 Secret。CRD 默认 `aggregateVector.replicas: 3`、`razor.replicas: 2`，如果容量或部署规划要求不同副本数，请显式设置。
 
-将 YAML 保存为 `platform-log-forward.yaml` 并应用：
+将 YAML 保存为 `platform-log-forward.yaml`，然后确认日志 Operator 是否已经自动创建了这个资源：
+
+```bash
+kubectl get platformlogforward platform-default -o jsonpath='{.spec.installMode}{"\n"}'
+kubectl -n cpaas-system get apprelease logclickhouse
+```
+
+Operator 每次启动都会检查一次命名空间。只要发现 `ClickHouseInstallation/cpaas-clickhouse`、`RdsKafka/cpaas-kafka` 或 `Secret/clickhouse-basic-auth`，它就认为这是更早版本的 chart 装的，并自行创建 `PlatformLogForward/platform-default`，且 `installMode` 为 `Adopt`。`installMode` 不可修改，此时应用本文的清单会报 `installMode is immutable`。
+
+如果第一条命令输出 `Adopt`，且 `AppRelease/logclickhouse` 不存在，说明并没有从 chart 接管任何数据。请先删除该对象、再应用本文清单（一条命令内完成），然后把这几个连接 Secret 标记为自己的，避免 Operator 再次派生：
+
+```bash
+kubectl delete platformlogforward platform-default && kubectl apply -f platform-log-forward.yaml
+
+kubectl -n cpaas-system annotate secret platform-default-os-conn platform-default-mq-conn \
+  log.alauda.io/derived-by=sre-managed --overwrite
+```
+
+资源不存在时，正常应用清单：
 
 ```bash
 kubectl apply -f platform-log-forward.yaml
 ```
+
+如果 `AppRelease/logclickhouse` 存在，请停止操作并改用迁移章节：该集群上已有 chart 安装的日志数据。
 
 ### 3.3 校验
 

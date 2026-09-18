@@ -135,6 +135,7 @@ spec:
 | Alauda Kafka Operator（`strimzi-kafka-operator`） | `kafka-system` | 所有命名空间 |
 | `opensearch-operator`（仅 OpenSearch） | `opensearch-operator` | 所有命名空间 |
 
+- 请先安装这些 Operator，再创建步骤 3 至 5 中的资源。`log-storage-operator` 每次启动都会检查一遍命名空间：名为 `cpaas-clickhouse` 的 `ClickHouseInstallation`、名为 `cpaas-kafka` 的 `RdsKafka`、名为 `clickhouse-basic-auth` 的 `Secret`，都会被它当作更早版本 chart 安装的部署。
 - 只安装缺失的 Operator。如果集群上已经装了某一个（例如由更早的版本装入），请沿用已有的，不要再装第二份：同一个 Operator 的两份实例会同时写 `cpaas-system` 下的同一批资源。此时改为检查它的 watch 范围，必要时放开。
 - 不要在 `cpaas-system` 中创建 OperatorGroup。平台已在其中创建了一个，再创建一个会导致平台拒绝该命名空间下的所有 Subscription，包括平台自己的。
 - `kafka-system` 和 `opensearch-operator` 的 OperatorGroup 必须不包含 `spec.targetNamespaces`。如果已经存在一个只作用于自身命名空间的 OperatorGroup，请删除该字段，并等待 Operator Pod 重启。

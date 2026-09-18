@@ -134,6 +134,7 @@ Install the operators from the platform marketplace. The `ClickHouseInstallation
 | Alauda Kafka operator (`strimzi-kafka-operator`) | `kafka-system` | All namespaces |
 | `opensearch-operator` (OpenSearch only) | `opensearch-operator` | All namespaces |
 
+- Install these operators before you create the resources in Steps 3 to 5. `log-storage-operator` inspects the namespace once at each start: it treats a `ClickHouseInstallation` named `cpaas-clickhouse`, an `RdsKafka` named `cpaas-kafka`, or a `Secret` named `clickhouse-basic-auth` as a deployment installed by an older chart.
 - Install only the operators that are missing. If one is already installed on the cluster, for example by an earlier release, keep it and do not install a second copy: two copies of the same operator write to the same `cpaas-system` resources. Check its watch scope instead and widen it if needed.
 - Do not create an OperatorGroup in `cpaas-system`. The platform already owns one there, and a second OperatorGroup makes the platform reject every Subscription in that namespace, including its own.
 - For `kafka-system` and `opensearch-operator`, the OperatorGroup must have no `spec.targetNamespaces`. If an OperatorGroup scoped to its own namespace already exists, remove the field and wait for the operator pod to restart.

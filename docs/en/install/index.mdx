@@ -175,11 +175,31 @@ A wrong value in a multi-shard or replicated deployment leaves part of the Click
 
 `PlatformLogForward` is cluster-scoped. Do not add `metadata.namespace` to it; the `namespace` fields inside `secretRef` still identify the connection Secrets in `cpaas-system`. The CRD defaults are `aggregateVector.replicas: 3` and `razor.replicas: 2`; set explicit values if your capacity or placement plan requires different replica counts. These are the replica counts of the logging components themselves, not of ClickHouse: a single-node ClickHouse still runs them as they are.
 
-Save the YAML as `platform-log-forward.yaml` and apply it:
+Save the YAML as `platform-log-forward.yaml`, then check whether the logging operator already created this resource on its own:
+
+```bash
+kubectl get platformlogforward platform-default -o jsonpath='{.spec.installMode}{"\n"}'
+kubectl -n cpaas-system get apprelease logclickhouse
+```
+
+The operator inspects the namespace once at each start. When it finds `ClickHouseInstallation/cpaas-clickhouse`, `RdsKafka/cpaas-kafka`, or `Secret/clickhouse-basic-auth` it assumes an older chart installed them and creates `PlatformLogForward/platform-default` itself with `installMode: Adopt`. `installMode` is immutable, so applying this manifest against that object fails with `installMode is immutable`.
+
+When the first command prints `Adopt` and `AppRelease/logclickhouse` does not exist, nothing was adopted from a chart. Delete the object and apply this manifest in one step, then mark the two connection Secrets as yours so the operator stops deriving them:
+
+```bash
+kubectl delete platformlogforward platform-default && kubectl apply -f platform-log-forward.yaml
+
+kubectl -n cpaas-system annotate secret platform-default-ch-conn platform-default-mq-conn \
+  log.alauda.io/derived-by=sre-managed --overwrite
+```
+
+Otherwise apply the manifest:
 
 ```bash
 kubectl apply -f platform-log-forward.yaml
 ```
+
+When `AppRelease/logclickhouse` exists, stop and use the migration chapter instead: that cluster holds chart-installed logging data.
 
 ### 2.3 Verify
 
@@ -271,11 +291,31 @@ spec:
 
 `PlatformLogForward` is cluster-scoped. Do not add `metadata.namespace` to it; the `namespace` fields inside `secretRef` still identify the connection Secrets in `cpaas-system`. The CRD defaults are `aggregateVector.replicas: 3` and `razor.replicas: 2`; set explicit values if your capacity or placement plan requires different replica counts.
 
-Save the YAML as `platform-log-forward.yaml` and apply it:
+Save the YAML as `platform-log-forward.yaml`, then check whether the logging operator already created this resource on its own:
+
+```bash
+kubectl get platformlogforward platform-default -o jsonpath='{.spec.installMode}{"\n"}'
+kubectl -n cpaas-system get apprelease logclickhouse
+```
+
+The operator inspects the namespace once at each start. When it finds `ClickHouseInstallation/cpaas-clickhouse`, `RdsKafka/cpaas-kafka`, or `Secret/clickhouse-basic-auth` it assumes an older chart installed them and creates `PlatformLogForward/platform-default` itself with `installMode: Adopt`. `installMode` is immutable, so applying this manifest against that object fails with `installMode is immutable`.
+
+When the first command prints `Adopt` and `AppRelease/logclickhouse` does not exist, nothing was adopted from a chart. Delete the object and apply this manifest in one step, then mark the connection Secrets as yours so the operator stops deriving them:
+
+```bash
+kubectl delete platformlogforward platform-default && kubectl apply -f platform-log-forward.yaml
+
+kubectl -n cpaas-system annotate secret platform-default-os-conn platform-default-mq-conn \
+  log.alauda.io/derived-by=sre-managed --overwrite
+```
+
+Otherwise apply the manifest:
 
 ```bash
 kubectl apply -f platform-log-forward.yaml
 ```
+
+When `AppRelease/logclickhouse` exists, stop and use the migration chapter instead: that cluster holds chart-installed logging data.
 
 ### 3.3 Verify
 
