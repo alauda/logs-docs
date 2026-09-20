@@ -1,122 +1,88 @@
 ---
 weight: 15
-sourceSHA: 937bc8eb61d1deab0bedea99d3237248087d3995447ea54692289f2dbaa3a2b4
+sourceSHA: 91717744712477d4ff3282e3d6e128fbe3fe40cf2bb167e0289b768c3da3e75f
 ---
 
 # 升级
 
-本文介绍如何升级现有 ACP 部署中的 **Alauda Container Platform Log Storage for Elasticsearch**。
+将现有 ACP 部署中的旧 Elasticsearch 日志存储插件升级为 ClickHouse 或 OpenSearch。
 
 :::warning
-在本文档明确要求之前，请勿卸载 Elasticsearch 存储插件、停止旧数据链路，也不要删除其 PVC、PV 或保护 finalizer;同时请勿停止、缩容或删除旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载。提前操作可能导致历史数据不可用，或破坏迁移边界。
+在本文档要求之前，请勿卸载旧插件、停止旧数据链路，或删除其 PVC、PV 和保护 finalizer。也不要停止或缩容旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载。
 :::
 
 ## 开始之前
 
-1. 目标 ClickHouse 或 OpenSearch 集群以及新的 Kafka 服务已按[环境准备](https://docs.alauda.cn/logging-service/4.3/prepare/index.html)准备好，连接信息可用。
-2. 旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载仍在运行，且已安排好变更窗口。
-3. 如需迁移历史数据，本版本的迁移镜像可用，并含完整的 registry、tag 或 digest。
-4. 目标端要与 `PlatformLogForward` 将要声明的取值一致。请以环境中实际部署的 CR 为准，而不是本文档：
+安装新数据链路前，在业务集群执行以下检查：
 
-   | 目标 | 必须对齐的项 |
-   | --- | --- |
-   | ClickHouse | `externalStorage.shards` 与 `replicas` 按 `ClickHouseInstallation`（`spec.configuration.clusters[].layout`）填写;Secret 的 `cluster` 取 `ON CLUSTER` 使用的集群名。不一致会把数据写到错误的副本集。 |
-   | Kafka | Secret 的 `topics.log` / `topics.event` / `topics.audit` 必须与实际 topic 名及 `KafkaUser` 的 ACL 一致，`kafkaClusterName` 与 Kafka 集群名一致;broker 与 topic 的最大消息大小必须能容纳审计批次。 |
-   | OpenSearch | 索引的分片与副本不由 `PlatformLogForward` 控制。平台下发的是 1 分片 1 副本的模板;如果生产需要不同取值，请在切换前下发更高优先级的模板。 |
+```bash
+kubectl -n cpaas-system get deploy log-storage-operator-controller-manager
+kubectl -n cpaas-system get apprelease logcenter
+kubectl -n cpaas-system get statefulset cpaas-elasticsearch cpaas-elasticsearch-master --ignore-not-found
+```
 
-## 升级流程概览
+`AppRelease/logcenter` 是进入旧 Elasticsearch 升级流程的触发条件。如果不存在，请停止；仅添加 annotation 不会进入该流程。
 
-请按以下顺序执行。每步的卡点通过后才能进入下一步。
+## 步骤 1：安装新数据链路
 
-| 步骤 | 执行位置 | 操作 | 继续执行的条件 |
-| --- | --- | --- | --- |
-| 1 | 业务集群 | 安装新数据链路：连接 Secret + 带升级 annotation 的 `PlatformLogForward` | `Phase=Ready` 且 `LegacyESUpgradeCompleted` |
-| 2 | 业务集群 | 如需历史数据，按[历史数据迁移](https://docs.alauda.cn/logging-service/4.3/migration/index.html)创建 `LegacyESMigration` | `PrecaptureReady`（已有迁移时为 `Succeeded`） |
-| 3 | global 集群与业务集群 | 执行旧插件的受控卸载 | 60 秒内 `ModuleInfo`、`ClusterPluginInstance`、`AppRelease` 均未出现，且新日志查询正常 |
-| 4 | 业务集群 | 观察同一个 `LegacyESMigration` | `Phase=Succeeded` 且目标端查询通过 |
-| 5 | 业务集群 | 保留受保护的源端存储卷 | 清理前需获得明确批准 |
+按[安装](../install/index.mdx)创建连接 Secret，并为 ClickHouse 或 OpenSearch 创建 `PlatformLogForward`。
 
-## 升级步骤
-
-### 步骤 1：带着升级 annotation 安装新数据链路
-
-新数据链路的安装方式与全新安装完全相同：先创建目标存储和 Kafka 的连接 Secret，再创建一个 `PlatformLogForward`。相关清单与说明见[安装](https://docs.alauda.cn/logging-service/4.3/install/index.html)中的「外部 ClickHouse 或 OpenSearch 的日志存储安装」章节。
-
-**唯一的区别是 annotation。** 请在 `PlatformLogForward` 上添加 `log.alauda.io/legacy-es-upgrade: "true"`，让平台进入旧 Elasticsearch 升级流程，而不是直接切换日志入口：
+升级与全新安装的唯一区别，是在 `PlatformLogForward` 上添加以下 annotation：
 
 ```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: PlatformLogForward
 metadata:
-  name: platform-default                            # 集群内固定的单例名称，请勿修改
   annotations:
-    log.alauda.io/legacy-es-upgrade: "true"         # 固定值，进入旧 Elasticsearch 升级流程
-spec:
-  installMode: Fresh                                # 始终为 Fresh，请勿改为 Adopt
-  # externalStorage 与 externalMessageQueue：同「安装」章节，
-  # 指向上面创建的目标存储与 Kafka 连接 Secret
+    log.alauda.io/legacy-es-upgrade: "true"
 ```
 
 请保持 `installMode: Fresh`，`Adopt` 不属于本流程。
 
-新数据链路不会立即就绪。平台会先创建链路，然后切换日志入口，最后等待旧集群中排队的数据被消费完；耗时取决于积压量。请观察状态直到完成，按 `Ctrl+C` 结束：
+等待 `PlatformLogForward/platform-default` 进入 `Ready`，且 `LegacyESUpgrade` condition 的 reason 为 `LegacyESUpgradeCompleted`：
 
 ```bash
 kubectl get platformlogforward platform-default -w
 ```
 
-`Phase` 列变为 `Ready`，同时 `Ready` 列变为 `True`。只有看到 `Ready` 后才能继续。
-
-如需跟踪进度或排查问题，可以查看状态 conditions：
+查看状态或排查问题：
 
 ```bash
 kubectl get platformlogforward platform-default \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-请关注 `LegacyESUpgrade` 这一行：当 reason 变为 `LegacyESUpgradeCompleted` 时，说明日志入口已切换到新数据链路，且旧集群中排队的数据已消费完，本步骤完成。如果 reason 为 `Blocked`，`message` 会说明原因。
+等待旧 Kafka 中残留数据消费完；旧消费组 lag 归零后，平台会记录 `LegacyKafkaDrained`。继续前，确认新的日志、事件和审计数据可从新存储查询到。
 
-本步骤完成后，请生成或找到新的日志、事件和审计记录，确认可以从新目标端查询到，然后再继续。`LegacyESUpgrade` 未完成前，请勿卸载旧插件。
+查看排空状态（`True/LagZero` 表示已排空）：
 
-如果源端集群使用旧 Kafka，请勿停止或缩容 Kafka、ZooKeeper 或 lanaya。平台会自动通过旧链路排空排队数据，并在旧消费组 lag 归零时记录 `LegacyKafkaDrained`；`LegacyESUpgradeCompleted` 是本流程的卡点。
+```bash
+kubectl -n cpaas-system get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[?(@.type=="LegacyKafkaDrained")]}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
 
-### 步骤 2：如需历史数据，创建迁移资源
-
-只有在已批准的升级方案确认**不需要**历史 Elasticsearch 数据时才可跳过本步骤，并请记录该决定。不要为了跳过迁移而删除源端 PVC 或 PV。
-
-如果需要这些数据，请在卸载旧插件**之前**创建 `LegacyESMigration`。提前创建才会记录最终源状态与源端存储卷;卸载之后再创建，必须显式指定源卷，无法使用最终快照。
-
-迁移的支持范围、迁移时间范围必须落在目标保留期内的要求、清单与校验步骤，全部见[历史数据迁移](https://docs.alauda.cn/logging-service/4.3/migration/index.html)。
-
-### 步骤 3：卸载旧 Elasticsearch 存储插件
+## 步骤 2：卸载旧 Elasticsearch 插件
 
 :::warning
-只有在以下条件全部满足时才能执行本步骤：
+执行本步骤前，确认以下条件全部满足：
 
-- `PlatformLogForward/platform-default` 为 `Ready`，且其 `LegacyESUpgrade` condition 的 reason 为 `LegacyESUpgradeCompleted`。
-- 如需历史迁移，`LegacyESMigration/platform-es-history` 为 `PrecaptureReady` 或 `Succeeded`。
-- 请确认升级程序已完成旧 Elasticsearch 存储卷（PVC/PV）的保护。请勿修改或移除该保护；如果平台报告保护失败，请停止并联系支持。
-- 如果源端使用旧 Kafka，平台已确认所有排队数据均已排空。请勿通过停止或缩容 Kafka、ZooKeeper、lanaya 或 Elasticsearch 来强制达到该状态。
+- `PlatformLogForward/platform-default` 为 `Ready`，且 `LegacyESUpgrade` condition 的 reason 为 `LegacyESUpgradeCompleted`。
+- 旧 Elasticsearch PVC/PV 已完成保护，且保护未被修改。
+- `PlatformLogForward` 已存在 condition `LegacyKafkaDrained`。
+
+PVC/PV 保护必须通过；任何失败都必须停止并联系 Alauda 支持。请勿修改或删除 logagent 及其依赖。
 :::
 
-:::warning
-本流程会临时清理 Alauda Container Platform Log Storage for Elasticsearch 的平台发现字段，以便卸载旧插件。请仅在批准的变更窗口内执行，并请勿修改或删除 logagent 及其依赖。
-:::
+按顺序连续执行以下两次删除，中间不要等待 `ModuleInfo` 消失、检查 `AppRelease` 或执行其他检查。
 
-如果平台提供了本次升级支持的插件卸载操作，请先按平台或支持人员的说明执行。如果该操作被拒绝，或平台团队要求执行受控流程，请使用下面的步骤。
-
-两次删除必须连续执行：中间不要等待 `ModuleInfo` 消失、不要检查 `AppRelease`，也不要执行其他检查。
-
-**在 global 集群：开始关键步骤**
+**在 global 集群执行**
 
 将 `CLUSTER` 设置为业务集群在 global 集群中注册的名称，然后执行：
 
 ```bash
 set -euo pipefail
 
-CLUSTER=<workload-cluster-name>
+CLUSTER="<workload-cluster-name>"   # global 集群中注册的业务集群名称
 
-# 1. 解析目标 ModuleInfo。结果不唯一时停止。
+# 1. 解析要操作的 ModuleInfo。结果不唯一必须停止。
 MODULE_INFOS="$(kubectl get moduleplugin logcenter \
   -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
 MODULE_COUNT="$(printf '%s\n' "$MODULE_INFOS" | sed '/^$/d' | wc -l | tr -d ' ')"
@@ -135,7 +101,7 @@ if [ "$MODULE_COUNT" -eq 1 ]; then
   kubectl get moduleplugin logcenter -o yaml > moduleplugin-logcenter.backup.yaml
   kubectl get moduleconfig "$MODULE_CONFIG" -o yaml > moduleconfig-logcenter.backup.yaml
 
-  # 3. 清理发现标记，这一步同时绕过 logagent 的依赖检查。
+  # 3. 清理发现标记，绕过 logagent 的依赖检查。
   kubectl patch moduleplugin logcenter --type=merge -p '{"spec":{"labelCluster":""}}'
   kubectl patch moduleconfig "$MODULE_CONFIG" --type=merge -p '{"spec":{"labelCluster":""}}'
 
@@ -146,9 +112,9 @@ else
 fi
 ```
 
-**在业务集群：完成关键步骤**
+**在业务集群执行**
 
-立即把 kubectl context 切换到业务集群，不要先执行任何等待或校验。执行：
+立即把 kubectl context 切换到业务集群。不要先执行等待或校验。
 
 ```bash
 # 5. 删除单集群安装记录，避免其重新创建 ModuleInfo。
@@ -157,10 +123,10 @@ kubectl delete clusterplugininstance logcenter --ignore-not-found
 
 **等待旧数据链路移除**
 
-切回 global 集群，等待 `ModuleInfo` 消失：
+切回 global 集群执行：
 
 ```bash
-CLUSTER=<workload-cluster-name>
+CLUSTER="<workload-cluster-name>"   # global 集群中注册的业务集群名称
 MODULE_INFOS="$(kubectl get moduleplugin logcenter \
   -o jsonpath="{range .status.installed[?(@.cluster==\"$CLUSTER\")]}{.name}{'\n'}{end}" | sed '/^$/d')"
 MODULE_INFO="$(printf '%s\n' "$MODULE_INFOS" | sed -n '1p')"
@@ -172,21 +138,21 @@ else
 fi
 ```
 
-切换到业务集群，等待旧 `AppRelease` 被删除：
+切回业务集群，等待旧 `AppRelease` 被删除：
 
 ```bash
 kubectl -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
 ```
 
-完成这些步骤后，等待 60 秒并确认这些资源没有重新出现。每条命令都不应返回资源。
+等待 60 秒后，确认以下资源没有重新出现。
 
-**在 global 集群**
+**在 global 集群执行**
 
 ```bash
 kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=<workload-cluster-name>' --ignore-not-found
 ```
 
-**在业务集群**
+**在业务集群执行**
 
 ```bash
 kubectl get clusterplugininstance logcenter --ignore-not-found
@@ -194,34 +160,26 @@ kubectl -n cpaas-system get apprelease logcenter --ignore-not-found
 kubectl -n cpaas-system get statefulset cpaas-elasticsearch --ignore-not-found
 ```
 
-如果 `ClusterPluginInstance/logcenter` 仍然存在或重新出现，请再次删除并重复检查；只要它存在，平台就可能重新创建 `ModuleInfo`。如果 `ModuleInfo` 也重新出现，请先删除 `ClusterPluginInstance/logcenter`，再删除新的 `ModuleInfo`。请勿手动恢复被清理的发现字段；只需确认 `ModuleInfo`、`ClusterPluginInstance` 和 `AppRelease` 不再出现。如果 global 集群的步骤在删除 `ModuleInfo` 之前失败，请勿执行本次的业务集群步骤：先修复原因，再重新执行 global 集群步骤。
+同时确认以下稳定入口资源仍然存在：
 
-稳定性检查通过后，生成新的日志、事件和审计记录，并确认可以从新目标端查询到。如果新数据链路不健康，请勿继续迁移校验。
+```bash
+kubectl -n cpaas-system get service razor
+kubectl -n cpaas-system get ingress razor
+```
 
-### 步骤 4：保留的存储卷
+:::tip
+资源重新出现时的处理方式：
 
-受保护的旧 Elasticsearch PVC 和 PV 会被保留。请在迁移和目标端校验完成前保留它们。请勿移除保护注解、删除 PVC/PV 或移除 finalizer。校验完成后如需释放这些存储卷，请联系 Alauda 支持或按照单独的、已批准的清理流程执行。
+- `ClusterPluginInstance/logcenter` 重新出现时，先删除它，再删除新的 `ModuleInfo`，并重复 60 秒检查。
+- 不要手动恢复被清理的发现字段。
+- `AppRelease/logcenter` 必须删除；请勿移除 finalizer，并联系 Alauda 支持。
+- global 集群流程在删除 `ModuleInfo` 之前失败时，修复原因并重新执行 global 集群流程；本次不要执行业务集群流程。
+:::
 
-本次升级只保留 ES 的 PVC 和 PV。旧 Kafka 和 ZooKeeper 的存储卷不在保留范围内。
+## 步骤 3：保留源端存储卷
 
-请导出或记录最终的 PLF conditions、迁移状态、目标端查询结果以及保留的 PVC/PV 名称，用于实施交接。请勿在本次升级中移除保护注解或删除这些存储卷。
+在新存储校验完成、且清理获得批准之前，请保留受保护的旧 Elasticsearch PVC 和 PV。请勿移除保护注解或 finalizer，也不要删除这些 PVC 和 PV。
 
-## 完成检查清单
+本次升级只保留 Elasticsearch 的 PVC 和 PV。旧 Kafka 和 ZooKeeper 的存储卷不在保留范围内。
 
-| 状态 | 期望 |
-| --- | --- |
-| `PlatformLogForward/platform-default` | `Phase=Ready` 且 `LegacyESUpgradeCompleted` |
-| `LegacyESMigration/platform-es-history`（如已创建） | `Phase=Succeeded` |
-| 新日志查询 | 新的日志、事件和审计记录可以通过新查询链路返回 |
-| 旧插件卸载 | `ModuleInfo`、`ClusterPluginInstance/logcenter`、`AppRelease/logcenter` 均不存在，旧 ES 工作负载已消失 |
-| 源端存储卷 | 受保护的旧 ES PVC 和 PV 仍然存在 |
-
-如果任何状态不符合预期，请停止并联系 Alauda 支持。请勿通过删除迁移资源、源端存储卷或目标端数据来绕过故障。
-
-## 步骤受阻时
-
-- 平台以 `moduleinfo is depended by ...` 拒绝卸载插件：请停止，不要修改 logagent，重新执行受控流程；如果仍然失败，请联系支持。
-- 迁移为 `Blocked`、`Failed` 或一直停留在 `Running`：请勿删除迁移资源、Job、源端存储卷或目标端数据；请联系支持。
-- `ModuleInfo` 或 `ClusterPluginInstance` 重新出现：请先删除 `ClusterPluginInstance`，再删除新的 `ModuleInfo`，并重复 60 秒稳定性检查。
-- `AppRelease/logcenter` 未消失：请勿移除 finalizer；请联系支持。
-- 卸载后新日志查询失败：请停止并联系支持。请勿删除保留的存储卷。
+如需迁移历史数据，请参见[历史数据迁移](../migration/index.mdx)。

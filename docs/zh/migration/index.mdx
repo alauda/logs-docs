@@ -1,37 +1,23 @@
 ---
 weight: 16
-sourceSHA: ec0c45131648e842846c190ed191d1ca5089a33021d8263ca0a7a3433d3a780d
+sourceSHA: d9bc7d6bbecafc28770f4cc3b5976c88b2d43070cd9bd0d885eefd94e69a05f4
 ---
 
 # 历史数据迁移
 
-本章把旧 Elasticsearch 存储插件中的历史日志、事件与审计数据迁移到新数据链路使用的 ClickHouse 或 OpenSearch 目标端。它属于升级流程的一部分，升级章节会在适用位置链接到本章。
+将旧 Elasticsearch PVC 中的历史日志、事件和审计数据，迁移到新数据链路使用的 ClickHouse 或 OpenSearch。
 
-## 支持范围
-
-| 项 | 支持情况 |
-| --- | --- |
-| 源 | 旧 Elasticsearch 存储插件的 PVC。不填写 `source.pvcRefs` 时，只要旧 StatefulSet 及其 PVC 还在，Operator 会自动发现;已经无法发现时（例如旧插件已卸载）必须显式列出。 |
-| 数据 | 由 `source.indexScope` 选中的索引，支持精确索引名与 glob，必须至少命中一个索引;空列表会被拒绝。 |
-| 目标 | `clickhouse` 或 `opensearch`。`target.secretRef` 复用与 `PlatformLogForward` 相同的连接 Secret。 |
-| 时机 | 创建资源时抓取迁移边界，拷贝在旧插件卸载之后执行。 |
-| 并发 | ClickHouse 目标始终单任务执行;OpenSearch 目标可设置 `options.maxConcurrentJobs: 2`，默认为 `1`。 |
-| 批次 | `options.batchSize` 取值 `1..100000`;`options.syncIntervalSeconds` 控制批次之间的最小等待。 |
+可在卸载旧插件之前或之后创建 `LegacyESMigration`。卸载后创建时必须显式填写 `source.pvcRefs`。迁移读取源端 PVC，不依赖旧 Elasticsearch 工作负载保持运行。
 
 :::warning
-请在源卷被释放或删除之前及时提供源卷。自动发现只在旧 StatefulSet 及其 PVC 仍然存在时有效;如果它们已经不存在,或者发现失败,请在 `source.pvcRefs` 中自行列出这些 PVC —— Operator 不会猜测源卷。一旦源端 PVC 被删除、或其 PV 被释放并清理,历史数据就无法再迁移,因此请在相关卷被释放之前创建迁移资源或提供 `pvcRefs`。
+源端 PVC 和 PV 必须仍然存在。源端 PVC 删除、或 PV 释放并清理后，历史数据将无法迁移。
 :::
 
-## 开始之前
-
-1. 新数据链路为 `Ready`，其 `PlatformLogForward` 指向你要迁移到的目标端;本版本的迁移镜像可用，并含完整的 registry、tag 或 digest（`spec.image` 为必填）。
-2. **迁移的时间范围必须仍在目标表的保留期内。** 迁移不会放宽、暂停或绕过 `PlatformLogForward` 与 razor 已生效的保留策略，因此早于目标 TTL 的记录可能写入后又被正常 merge 删除。请在创建该资源之前确认时间范围，或先上调目标保留期并确认表定义已生效。
+创建资源前，确保新数据链路为 `Ready`、本版本迁移镜像可用，且要迁移的时间范围仍在目标表的保留期内。`source.indexScope` 支持精确索引名和 glob，且必须至少命中一个索引。
 
 ## 步骤 1：创建迁移资源
 
-请在卸载旧插件**之前**创建 `LegacyESMigration`。提前创建才会记录最终源状态与源端存储卷;卸载之后再创建，必须显式指定源卷，无法使用最终快照。
-
-### 目标 OpenSearch
+### 1.1 ClickHouse
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
@@ -42,6 +28,9 @@ metadata:
 spec:
   image: <migration-worker-image>                         # 必填；本版本提供的迁移镜像，需包含 registry 和 tag 或 digest
   source:
+    # pvcRefs:                                            # 卸载后创建时必填；列出全部旧 Elasticsearch PVC
+    #   - <legacy-es-pvc-0>
+    #   - <legacy-es-pvc-1>
     indexScope:                                           # 必填，选择要迁移的历史索引
       - "log-workload-*"
       - "log-platform-*"
@@ -50,38 +39,7 @@ spec:
       - "event-*"
       - "audit-*"
   target:
-    type: opensearch                                      # 必须与 PlatformLogForward 的目标一致
-    secretRef:
-      name: platform-default-os-conn                      # 与 PlatformLogForward 使用同一个连接 Secret
-      namespace: cpaas-system
-  options:
-    batchSize: 250                                        # 每批写入的文档数，1~100000；默认 250
-    syncIntervalSeconds: 5                                # 每批之间的最小等待时间；不填则使用默认值（OpenSearch 无固定等待）
-    maxConcurrentJobs: 1                                  # 并发任务数；默认 1，OpenSearch 最多 2
-```
-
-### 目标 ClickHouse
-
-请把 `target.type` 改为 `clickhouse`，并把 Secret 指向 `platform-default-ch-conn`。
-
-```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: LegacyESMigration
-metadata:
-  name: platform-es-history                               # 固定的迁移名称，后续命令使用
-  namespace: cpaas-system
-spec:
-  image: <migration-worker-image>                         # 必填；本版本提供的迁移镜像，需包含 registry 和 tag 或 digest
-  source:
-    indexScope:                                           # 必填，选择要迁移的历史索引
-      - "log-workload-*"
-      - "log-platform-*"
-      - "log-system-*"
-      - "log-kubernetes-*"
-      - "event-*"
-      - "audit-*"
-  target:
-    type: clickhouse                                      # 必须与 PlatformLogForward 的目标一致
+    type: clickhouse                                      # 必须与 PlatformLogForward 一致
     secretRef:
       name: platform-default-ch-conn                      # 与 PlatformLogForward 使用同一个连接 Secret
       namespace: cpaas-system
@@ -91,39 +49,79 @@ spec:
     maxConcurrentJobs: 1                                  # 并发任务数；ClickHouse 始终串行（1）
 ```
 
-请把 YAML 保存为 `legacy-es-migration.yaml` 并应用：
+保存为 `legacy-es-migration.yaml` 并应用：
 
 ```bash
 kubectl apply -f legacy-es-migration.yaml
 ```
 
-## 步骤 2：等待抓取完成
+### 1.2 OpenSearch
 
-拷贝要等到旧插件卸载之后才开始，因此这一步的 phase 会先停在 `PrecaptureReady`：
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LegacyESMigration
+metadata:
+  name: platform-es-history                               # 固定的迁移名称，后续命令使用
+  namespace: cpaas-system
+spec:
+  image: <migration-worker-image>                         # 必填；本版本提供的迁移镜像，需包含 registry 和 tag 或 digest
+  source:
+    # pvcRefs:                                            # 卸载后创建时必填；列出全部旧 Elasticsearch PVC
+    #   - <legacy-es-pvc-0>
+    #   - <legacy-es-pvc-1>
+    indexScope:                                           # 必填，选择要迁移的历史索引
+      - "log-workload-*"
+      - "log-platform-*"
+      - "log-system-*"
+      - "log-kubernetes-*"
+      - "event-*"
+      - "audit-*"
+  target:
+    type: opensearch                                      # 必须与 PlatformLogForward 一致
+    secretRef:
+      name: platform-default-os-conn                      # 与 PlatformLogForward 使用同一个连接 Secret
+      namespace: cpaas-system
+  options:
+    batchSize: 250                                        # 每批写入的文档数，1~100000；默认 250
+    syncIntervalSeconds: 5                                # 每批之间的最小等待时间；不填则使用默认值（OpenSearch 无固定等待）
+    maxConcurrentJobs: 1                                  # 并发任务数；默认 1，OpenSearch 最多 2
+```
+
+保存为 `legacy-es-migration.yaml` 并应用：
+
+```bash
+kubectl apply -f legacy-es-migration.yaml
+```
+
+## 步骤 2：等待 PrecaptureReady
+
+观察资源状态：
 
 ```bash
 kubectl -n cpaas-system get legacyesmigration platform-es-history -w
 ```
 
-在本流程中，只有旧插件卸载之后才会开始复制数据，因此在此之前 phase 会一直停留在 `PrecaptureReady`。只有 phase 为 `PrecaptureReady`（已完成的迁移为 `Succeeded`）时才继续步骤 4。如果 phase 为 `Blocked`，请勿删除或重建迁移资源；请阅读 condition message 并联系支持。
+等待资源进入 `PrecaptureReady`。此时尚未开始复制数据。
 
-迁移过程中新数据链路会持续接收日志、事件和审计数据。请保持新数据链路及其目标连接不变。如果迁移无法完成，请停止并联系支持。
+如果旧插件尚未卸载，返回[升级文档](../upgrade/index.mdx)的步骤 2 卸载旧插件。如果旧插件已卸载，继续下一步。
 
-请使用本 ACP 4.4 日志版本提供的迁移镜像。如果目标数据已经完整但迁移一直停留在 `Running`，请停止并联系支持；请勿删除迁移资源或源端存储卷。
+:::warning
+如果 phase 为 `Blocked` 或 `Failed`，请勿删除或重建迁移资源、Job、源端存储卷或新存储数据；请阅读 condition message 并联系 Alauda 支持。
+:::
 
-## 步骤 3：校验迁移
+## 步骤 3：等待迁移成功
 
-旧插件卸载后，worker 会开始拷贝数据。观察同一个资源直到成功：
+旧插件卸载后，worker 开始复制数据。观察同一个资源，直到 phase 为 `Succeeded`：
 
 ```bash
 kubectl -n cpaas-system get legacyesmigration platform-es-history \
-  -o jsonpath='{.status.phase}{"\n"}'        # 期望：Succeeded
+  -o jsonpath='{.status.phase}{"\n"}'
 ```
 
-如果 phase 为 `Blocked`，请勿删除或重建该资源;请阅读 condition message 并联系支持。
+迁移运行期间，请勿修改 `PlatformLogForward` 或其连接 Secret。
 
-随后在目标端确认迁移后的数据：用与生产相同的日志、事件与审计查询，确认历史时间范围的数据存在。
+## 步骤 4：校验迁移
 
-## 保留的存储卷
+在 ClickHouse 或 OpenSearch 中执行与生产环境相同的日志、事件和审计查询，确认历史时间范围的数据存在。
 
-在校验通过、且变更窗口关闭之前，请保留受保护的源端存储卷。`status.phase: Succeeded` 本身不等于可以释放它们。
+在校验完成、且清理获得批准之前，请保留受保护的旧 Elasticsearch PVC 和 PV。`Phase=Succeeded` 不代表可以释放这些存储卷。
