@@ -19,7 +19,7 @@ Use `LogForward` when you need to:
 ## Prerequisites
 
 - ACP 4.4 or later.
-- The storage cluster the tenant lives on has **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch** installed and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
+- The storage cluster the tenant lives on has **Alauda Container Platform Log Storage Management** installed and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
 - The tenant has permission to create resources in the target namespace.
 - The external destination is reachable from every pod in `cpaas-system` on the storage cluster.
 
@@ -133,7 +133,7 @@ Common failure modes:
 
 - One `LogForward` produces at most one Vector Deployment. Multiple `LogForward` resources in the same namespace are independent.
 - The generated Vector reads from the same Kafka topics that the platform's `aggregate-vector` consumes. It uses its own consumer group so it does not interfere with the platform's ingest.
-- Uninstalling **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch** stops the operator; any active `LogForward` deployments are removed as part of the storage plugin uninstall.
+- Uninstalling **Alauda Container Platform Log Storage Management** stops the operator; any active `LogForward` deployments are removed as part of the storage plugin uninstall.
 - `LogForward` is not intended as a replacement for the platform's storage pipeline. Removing the storage plugin removes log query on the console; `LogForward` alone does not restore that.
 
 ## Related Topics

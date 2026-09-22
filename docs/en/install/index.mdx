@@ -16,16 +16,15 @@ At the end, the ACP console can query the collected data in **Operations Center*
 
 ## What you install
 
-ACP 4.4 exposes the stack as four cluster plugins. Install only the plugins that match your topology.
+ACP 4.4 exposes the stack as three cluster plugins. Install only the plugins that match your topology.
 
 | Plugin | Where to install | Purpose |
 | --- | --- | --- |
-| **Alauda Container Platform Log Storage for ClickHouse** | Every cluster that stores logs into ClickHouse | Deploys `log-storage-operator` and the ClickHouse-side data path (aggregate-vector, Razor, schema-migrations). |
-| **Alauda Container Platform Log Storage for OpenSearch** | Every cluster that stores logs into OpenSearch | Same operator + data path against an OpenSearch backend. Introduced in ACP 4.4. |
+| **Alauda Container Platform Log Storage Management** | Every cluster that stores logs | Deploys `log-storage-operator`, which watches `PlatformLogForward` and builds the storage-side data path (aggregate-vector, Razor, schema-migrations) against either ClickHouse or OpenSearch. The backend choice lives in the PLF, not in the plugin. |
 | **Alauda Container Platform Log Collector** | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
 | **Alauda Container Platform Log Essentials** | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
 
-The two Log Storage plugins are mutually exclusive on the same cluster. A single storage cluster serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
+A single storage cluster picks ClickHouse **or** OpenSearch as its backend and serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
 
 For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component Selection Guide](../architecture/component_suggestion.mdx).
 
@@ -178,17 +177,12 @@ If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on e
 
 ### 1.2 Install the Log Storage plugin
 
-The plugin installs `log-storage-operator` on the storage cluster. The operator watches `PlatformLogForward` (which you create in Section 1.4) and builds the aggregate-vector, Razor, and schema-migrations resources against your external backend.
-
-Install one plugin per storage cluster:
-
-- **Alauda Container Platform Log Storage for ClickHouse** — for a ClickHouse backend.
-- **Alauda Container Platform Log Storage for OpenSearch** — for an OpenSearch backend.
+**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One plugin covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the plugin install form.
 
 #### Console
 
 1. Navigate to **Marketplace** > **Cluster Plugins** and select the storage cluster.
-2. Find the plugin that matches your backend and click **Install** in its row.
+2. Find **Alauda Container Platform Log Storage Management** and click **Install** in its row.
 3. Accept the defaults. Optionally set the node selector and tolerations to pin `log-storage-operator` to infra nodes.
 4. Click **Install**.
 
@@ -614,7 +608,7 @@ Uninstall in the reverse of the install order:
 
 1. On every collector cluster, uninstall **Alauda Container Platform Log Collector**. Wait for the DaemonSet pods to be removed.
 2. On every storage cluster, delete `PlatformLogForward/platform-default` and wait for it to be gone. `log-storage-operator` cleans up its derived resources through finalizer processing.
-3. On every storage cluster, uninstall the storage plugin (**for ClickHouse** or **for OpenSearch**).
+3. On every storage cluster, uninstall **Alauda Container Platform Log Storage Management**.
 4. On the `global` cluster, uninstall **Alauda Container Platform Log Essentials**.
 
 The external ClickHouse (or OpenSearch) cluster and the external Kafka cluster are outside the plugin lifecycle and remain untouched by uninstall. Delete their CRs by hand when you no longer need the data.

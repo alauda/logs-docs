@@ -12,7 +12,7 @@ Project overrides currently apply to the **ClickHouse** storage backend with hot
 
 Confirm the target storage cluster:
 
-1. Uses **Alauda Container Platform Log Storage for ClickHouse**.
+1. Uses **Alauda Container Platform Log Storage Management** with `PlatformLogForward.spec.externalStorage.type: clickhouse`.
 2. Has hot / cold tiering enabled on `PlatformLogForward`; see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
 3. Is queried by the account you plan to use to edit the target project on the `global` cluster.
 

@@ -45,7 +45,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 ### log-storage-operator
 
 **Positioning**: Kubernetes operator that runs the storage-side data path
-**Description**: Installed by **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch**. Watches `PlatformLogForward` and derives everything the storage side needs: the `aggregate-vector` Deployment, the `razor` Deployment, the one-shot `schema-migrations` Job, RBAC, and side resources (Feature/log-center, log policy ConfigMaps). SRE builds the external ClickHouse / OpenSearch / Kafka cluster; the operator only consumes their endpoints through the connection Secrets.
+**Description**: Installed by **Alauda Container Platform Log Storage Management** (one plugin, covers both ClickHouse and OpenSearch backends). Watches `PlatformLogForward` and derives everything the storage side needs: the `aggregate-vector` Deployment, the `razor` Deployment, the one-shot `schema-migrations` Job, RBAC, and side resources (Feature/log-center, log policy ConfigMaps). SRE builds the external ClickHouse / OpenSearch / Kafka cluster; the operator only consumes their endpoints through the connection Secrets. The backend choice lives in `PlatformLogForward.spec.externalStorage.type`, not in the plugin install form.
 
 ### Razor
 

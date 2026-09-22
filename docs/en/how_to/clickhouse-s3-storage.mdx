@@ -4,7 +4,7 @@ weight: 15
 
 # How to Use S3 Storage with ClickHouse
 
-This guide explains how to configure **Alauda Container Platform Log Storage for ClickHouse** to keep cold log data on an S3-compatible object store.
+This guide explains how to configure **Alauda Container Platform Log Storage Management** with a ClickHouse backend to keep cold log data on an S3-compatible object store.
 
 In ACP 4.4 the S3-related knobs live on the `PlatformLogForward` (PLF) CR, not on the plugin install form. Enable them by editing PLF fields on the storage cluster; the change takes effect after `log-storage-operator` reconciles.
 
@@ -18,7 +18,7 @@ It is unrelated to the [log archive](./log_archive.mdx) workflow, which exports 
 
 Confirm the target storage cluster:
 
-1. Has **Alauda Container Platform Log Storage for ClickHouse** installed (see [Installation](../install/index.mdx)).
+1. Has **Alauda Container Platform Log Storage Management** installed with `PlatformLogForward.spec.externalStorage.type: clickhouse` (see [Installation](../install/index.mdx)).
 2. Has `PlatformLogForward/platform-default` in `Ready` state.
 3. Has an S3-compatible endpoint reachable from every pod in `cpaas-system`.
 
