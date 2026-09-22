@@ -4,30 +4,31 @@ weight: 25
 
 # How to Set the Retention Time of Cold Data for a Project
 
-This guide explains how to configure a project-level cold data retention policy when ClickHouse cold storage is enabled through the **Cold and Hot Separate** switch.
+Use project labels to override the platform-default retention for logs that belong to a specific project.
+
+Project overrides currently apply to the **ClickHouse** storage backend with hot / cold tiering enabled. Behavior on OpenSearch is limited (see the note at the end).
 
 ## Before You Begin
 
-Make sure the following conditions are met:
+Confirm the target storage cluster:
 
-1. The cluster uses **Alauda Container Platform Log Storage for ClickHouse**.
-2. **Cold and Hot Separate** is enabled for the ClickHouse storage plugin.
-3. A cold data S3 Secret has already been configured for the ClickHouse storage plugin.
-4. You have permission to edit the target project in the `global` cluster.
+1. Uses **Alauda Container Platform Log Storage for ClickHouse**.
+2. Has hot / cold tiering enabled on `PlatformLogForward`; see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
+3. Is queried by the account you plan to use to edit the target project on the `global` cluster.
 
 ## About Project-Level Retention Settings
 
-Project-level settings override the default retention behavior for logs that belong to the specified project.
+Project labels override the PLF-level `ttl` (hot) and `coldTTL` (cold) values for records tagged with that project's name.
 
 Use the following labels on the `Project` resource:
 
 | Label | Description |
 | --- | --- |
-| `cpaas.io/project.hotDataRetentionDays` | Retention time of hot data kept in active ClickHouse storage. |
-| `cpaas.io/project.coldDataRetentionDays` | Retention time of cold data after it is transferred to S3 cold storage. |
-| `cpaas.io/project.logPolicyEnabled` | Enables the project-level log policy. |
+| `cpaas.io/project.hotDataRetentionDays` | Retention time of hot data kept in active ClickHouse storage, in days. |
+| `cpaas.io/project.coldDataRetentionDays` | Retention time of cold data after it is transferred to S3 cold storage, in days. Set to `0` to keep indefinitely. |
+| `cpaas.io/project.logPolicyEnabled` | Enables the project-level log policy. Set to `true`. |
 
-Legacy labels still exist in some environments, but new configurations should use the labels above.
+Legacy labels still exist in some environments (`cpaas.io/project.esIndicesKeepDays`, `cpaas.io/project.esPolicyEnabled`), but new configurations should use the labels above.
 
 ## Edit the Project Resource
 
@@ -51,10 +52,12 @@ Legacy labels still exist in some environments, but new configurations should us
        cpaas.io/project.logPolicyEnabled: 'true'
    ```
 
+The change reaches the storage cluster within a minute through the platform's cross-cluster policy sync.
+
 ## Label Behavior
 
 - `cpaas.io/project.hotDataRetentionDays`
-  Controls how long the project's hot data remains in active ClickHouse storage before it is moved or deleted according to the storage policy.
+  Controls how long the project's hot data remains in active ClickHouse storage before it is moved (with tiering enabled) or deleted (with tiering disabled).
 - `cpaas.io/project.coldDataRetentionDays`
   Controls how long the project's cold data is retained after it has been transferred to S3.
 - `cpaas.io/project.logPolicyEnabled`
@@ -62,11 +65,17 @@ Legacy labels still exist in some environments, but new configurations should us
 
 ## Version Notes
 
-- In ACP 4.2 environments, some old and new labels may coexist because of compatibility handling.
-- In ACP 4.3 and later environments, use the new labels as the source of truth.
+- ACP 4.2 environments may have old and new labels coexisting for compatibility.
+- ACP 4.3 and later, including ACP 4.4, use the new labels as the source of truth.
 - If your environment still contains legacy labels such as `cpaas.io/project.esIndicesKeepDays` or `cpaas.io/project.esPolicyEnabled`, prefer the new labels for new configurations.
+
+:::warning
+On the **OpenSearch** storage backend, ACP 4.4 project-level retention overrides are limited to hot-index deletion and follow OpenSearch ISM policy behavior. The `coldDataRetentionDays` label does not apply because OpenSearch tiered storage is provisioned outside the platform. Use platform-default retention on OpenSearch, or apply your own ISM policy on the OpenSearch cluster to enforce longer or shorter retention on specific indices.
+:::
+
+<!-- verify against live testing: OpenSearch project-level retention behavior in ACP 4.4 has known gaps; confirm the exact behavior on a running v4.4 OpenSearch cluster and refine the warning above. -->
 
 ## Related Topics
 
-- For plugin-side cold storage configuration, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
-- For ClickHouse installation parameters, see [Installation](../install_log.mdx).
+- [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx) — plugin-side cold storage configuration.
+- [Installation](../install/index.mdx) — the PLF creation flow.

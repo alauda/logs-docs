@@ -14,8 +14,11 @@ This guide explains the planning considerations for running Logging storage plug
 
 ## Where to Configure Placement
 
-- For **Alauda Container Platform Log Storage for Elasticsearch**, configure placement through `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` and `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` in [Installation](../install_log.mdx).
-- For **Alauda Container Platform Log Storage for ClickHouse**, configure placement through **Advanced Configuration** in the console or through `spec.config.components.nodeSelector` and `spec.config.components.tolerations` in [Installation](../install_log.mdx).
+In ACP 4.4, the storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
+
+- For **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch**, use the **Advanced Configuration** section of the plugin install form to set the node selector and tolerations. See [Installation](../install/index.mdx).
+- For **Alauda Container Platform Log Collector** (a DaemonSet), use the plugin install form on the collector cluster; the same **Advanced Configuration** section applies.
+- For **Alauda Container Platform Log Storage for Elasticsearch** (legacy), configure placement through `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` and `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` in the ACP 4.3 documentation for that plugin.
 
 Do not patch the generated StatefulSets, Deployments, or ClickHouseInstallation resources as the standard way to place Logging storage workloads on infra nodes.
 
@@ -26,7 +29,7 @@ Do not patch the generated StatefulSets, Deployments, or ClickHouseInstallation 
 3. Make sure the selected infra nodes can satisfy both the scheduling rules and the storage placement constraints.
 
 :::info
-On Alauda OS nodes, local storage paths are under `/var/cpaas`, for example `/var/cpaas/data/clickhouse` or `/var/cpaas/data/elasticsearch`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Plan the infra nodes so that the `/var/cpaas` path is backed by a persistent disk that survives node re-provisioning, and expect `pv.spec.local.path` on those nodes to reference the `/var/cpaas` path instead of the `/cpaas` paths shown in the examples below. For the per-plugin parameters, see [Installation](../install_log.mdx).
+On Alauda OS nodes, local storage paths are under `/var/cpaas`, for example `/var/cpaas/data/clickhouse` or `/var/cpaas/data/nevermore`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Plan the infra nodes so that the `/var/cpaas` path is backed by a persistent disk that survives node re-provisioning, and expect `pv.spec.local.path` on those nodes to reference the `/var/cpaas` path instead of the `/cpaas` paths shown in the examples below. For the per-plugin parameters, see [Installation](../install/index.mdx).
 :::
 
 ## Check Local PVs and nodeAffinity
@@ -66,15 +69,17 @@ Then Elasticsearch data is pinned to node `192.168.135.243`. Ensure that node is
 
 The same principle applies to any Logging storage component that uses node-bound local storage.
 
-## Historical Kafka and ZooKeeper Nodes
+## Historical Kafka and Zookeeper Nodes
 
-Due to historical reasons, ensure Kafka and ZooKeeper nodes are also labeled/tainted as infra:
+Kafka in ACP 4.4 runs in KRaft mode and does not deploy Zookeeper. On clusters upgraded from an earlier release, however, historical Kafka and Zookeeper node labels may still be in use. Ensure any historically labeled Kafka or Zookeeper nodes are also included in the infra node group:
 
 ```bash
 kubectl get nodes -l kafka=true
 kubectl get nodes -l zk=true
-# Add the listed nodes into infra nodes as above
+# Add the listed nodes into infra nodes as above.
 ```
+
+Newly provisioned ACP 4.4 clusters only need the `kafka` label; the `zk` label is not used.
 
 ## Troubleshooting
 
