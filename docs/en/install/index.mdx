@@ -490,9 +490,13 @@ kind: PlatformLogForward
 metadata:
   name: platform-default                            # fixed singleton name; do not change
 spec:
-  # No `output.type` here on purpose. The PLF admission webhook accepts the
-  # Fresh-OS and Adopt-OS branches with `output` omitted; ClickHouse still
-  # requires `output.type: clickhouse` because those paths are provisioning-driven.
+  # No `output.type` on OpenSearch — `externalStorage.type` is the source of
+  # truth for backend routing (added in pt L, 2026-08). The ClickHouse branch
+  # predates that refactor and its admission + provisioning paths still read
+  # `output.type: clickhouse`; the OpenSearch branch was added after and never
+  # inherited that legacy field. Setting `output.type: clickhouse` on an
+  # OpenSearch PLF is accepted but ignored — the scenario is still routed
+  # by `externalStorage.type`.
   externalStorage:
     type: opensearch
     secretRef:
