@@ -58,7 +58,7 @@ Kafka buffers records between the collector and the storage backend. Both ClickH
 
 If you already run a Kafka cluster, provision the account, topics, and ACLs on it and continue to Section 1.1.2.
 
-**Using Alauda Container Platform Kafka.** ACP ships its own Kafka product (Alauda Kafka Operator, delivered as a separate cluster plugin). For the full install, tuning, and operations guide, see the [Alauda Container Platform Kafka documentation](https://docs.alauda.io/kafka/).
+**Using Alauda Container Platform Kafka.** ACP ships its own Kafka product (Alauda Kafka Operator, delivered as a separate cluster plugin). Follow the Alauda Container Platform Kafka product documentation for its full install, tuning, and operations guide.
 
 A minimal set of CRs to bring a Kafka cluster up for logging looks like:
 
@@ -157,9 +157,8 @@ Pick one backend per storage cluster. See [Log Component Selection Guide](../arc
 
 For component sizing at each profile, see [Log Component Capacity Planning](../architecture/capacity_planning.mdx).
 
-If you already run a ClickHouse cluster, ensure the database and the logging account are provisioned on it. To build a cluster from scratch, see the [Alauda Container Platform ClickHouse documentation](https://docs.alauda.io/clickhouse/).
+If you already run a ClickHouse cluster, ensure the database and the logging account are provisioned on it. To build a cluster from scratch, follow the Alauda Container Platform ClickHouse product documentation.
 
-{/* verify against live console: confirm the docs.alauda.io/clickhouse/ URL exists; if the product is delivered under a different site name, update. */}
 
 ##### OpenSearch
 
@@ -171,9 +170,8 @@ If you already run a ClickHouse cluster, ensure the database and the logging acc
 | Analyzer plugin | `analysis-ik` (an OpenSearch 3.7.0-compatible build) installed on every OpenSearch node. **Required.** The query path defaults to the `ik_smart` analyzer; without the plugin, every keyword or Chinese-content query returns HTTP 400 and the console log page is unusable. |
 | Account | One account with cluster-manage and log-index manage permission. ACP baseline default: `platform-logging`. |
 
-If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, see the [Alauda Container Platform OpenSearch documentation](https://docs.alauda.io/opensearch/).
+If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, follow the Alauda Container Platform OpenSearch product documentation.
 
-{/* verify against live console: confirm the docs.alauda.io/opensearch/ URL exists. */}
 
 ### 1.2 Install the Log Storage operator
 
