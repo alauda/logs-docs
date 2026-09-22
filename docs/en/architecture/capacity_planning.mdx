@@ -5,89 +5,149 @@ sourceSHA: 1ea5bd086713119521d7155e1631651a355f522a94422d718f79a2230c841ade
 
 # Log Component Capacity Planning
 
-The log storage component is responsible for storing logs, events, and audit data collected by the log collection component from one or more clusters in the platform. Therefore, you need to assess your log scale in advance and plan the resources needed for the log storage component according to the guidelines in this document.
+The log storage components hold logs, events, and audit records collected from one or more clusters. Estimate your log scale before install and size the storage cluster using the profiles below.
 
 :::warning
 
-- The following data represents standard figures obtained from tests conducted under laboratory conditions, intended for your reference when planning resources. You must ensure that the actual resources you plan exceed the testing resources described below, and that the log scale does not exceed the corresponding log scale.
-- The disk configuration for the data below is: `6000 iops`, `250MB/s read and write speed`, `SSD independent mounting`. If your actual storage resources are weaker than the testing resources, please refer to larger scale configuration information and provide more CPU and memory resources as needed.
+- The tables in this chapter are laboratory reference numbers. Provision more resources than the reference numbers, and do not push the collected volume above the profile's throughput.
+- Disk baseline for the tables: `6000 iops`, `250 MB/s` sequential read and write, SSD, independently mounted. Weaker disks require a larger profile than the table suggests and additional CPU + memory headroom.
+- ACP 4.4 uses Kafka in KRaft mode. No Zookeeper is deployed; the tables in earlier releases had a separate Zookeeper row that no longer applies.
+- Older ACP releases ran the Elasticsearch backend with a separate `Lanaya` consumer between Kafka and Elasticsearch. In ACP 4.4 the recommended backends (ClickHouse and OpenSearch) do not use Lanaya; the ingest role belongs to `aggregate-vector`.
 
 :::
 
-## Elasticsearch
+<!-- verify against live testing: numbers below are extrapolated from the ACP 4.3 published profiles for the ClickHouse path, adjusted for the v4.4 topology (Vector sidecar removed, aggregate-vector added). Rerun the standard ingest benchmark on a v4.4 build and update the throughput figures before the release. -->
 
-### Small Scale 3 Nodes - Total Logs: 6300/s
+## Common components
 
-| Component       | Replicas | CPU Limit | Memory Limit |
-| ---------------- | -------- | --------- | ------------ |
-| Elasticsearch    | 3        | 2C        | 4G           |
-| Kafka            | 3        | 2C        | 4G           |
-| Zookeeper        | 3        | 2C        | 4G           |
-| Lanaya           | 2        | 2C        | 4G           |
-| Razor            | 2        | 1C        | 2G           |
+All backends share these components:
 
-### Small Scale 5 Nodes - Total Logs: 9900/s
+| Component | Where it runs |
+| --- | --- |
+| `nevermore` | DaemonSet on every collector node. CPU / memory sized by the number of active containers on the node, not by cluster throughput. |
+| Razor | Deployment on the storage cluster. |
+| `aggregate-vector` | Deployment on the storage cluster (ClickHouse and OpenSearch paths). |
+| Kafka | Broker cluster on or near the storage cluster. |
 
-| Component       | Replicas | CPU Limit | Memory Limit |
-| ---------------- | -------- | --------- | ------------ |
-| Elasticsearch    | 5        | 2C        | 4G           |
-| Kafka            | 3        | 2C        | 4G           |
-| Zookeeper        | 3        | 2C        | 4G           |
-| Lanaya           | 2        | 2C        | 4G           |
-| Razor            | 2        | 1C        | 2G           |
+## ClickHouse profiles
 
-### Large Scale 3+5 Nodes - Total Logs: 25000/s
+The ClickHouse backend is the recommended choice for high throughput and cost-sensitive retention.
 
-| Component                      | Replicas | CPU Limit | Memory Limit |
-| ------------------------------- | -------- | --------- | ------------ |
-| Elasticsearch - {/* cspell: ignore master */} Master          | 3        | 2C        | 4G           |
-| Elasticsearch - Data            | 5        | 8C        | 16G          |
-| Kafka                           | 3        | 2C        | 4G           |
-| Zookeeper                       | 3        | 2C        | 4G           |
-| Lanaya                          | 2        | 2C        | 4G           |
-| Razor                           | 2        | 1C        | 2G           |
+### Single node — evaluation only, up to ~18,000 logs/s
 
-### Large Scale 3+7 Nodes - Total Logs: 30000/s
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| ClickHouse | 1 | 2C | 4G | 1 shard × 1 replica |
+| Kafka broker | 1 | 2C | 4G | Single broker, no HA |
+| Razor | 1 | 1C | 1G | |
+| aggregate-vector | 1 | 2C | 4G | |
 
-| Component                      | Replicas | CPU Limit | Memory Limit |
-| ------------------------------- | -------- | --------- | ------------ |
-| Elasticsearch - {/* cspell: ignore master */} Master          | 3        | 2C        | 4G           |
-| Elasticsearch - Data            | 7        | 8C        | 16G          |
-| Kafka                           | 3        | 2C        | 4G           |
-| Zookeeper                       | 3        | 2C        | 4G           |
-| Lanaya                          | 2        | 2C        | 4G           |
-| Razor                           | 2        | 1C        | 2G           |
+### Three nodes — up to ~20,000 logs/s
 
-## ClickHouse
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| ClickHouse | 3 | 2C | 4G | 1 shard × 3 replicas |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 1G | |
+| aggregate-vector | 2 | 2C | 4G | |
 
-### Single Node - Total Logs: 18000/s
+### Six nodes — up to ~40,000 logs/s
 
-| Component    | Replicas | CPU Limit | Memory Limit | Remarks      |
-| ------------ | -------- | --------- | ------------ | ------------ |
-| ClickHouse   | 1        | 2C        | 4G           | 1 replica 1 shard |
-| Razor        | 1        | 1C        | 1G           | -            |
-| Vector       | 1        | 2C        | 4G           | -            |
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| ClickHouse | 6 | 4C | 8G | 2 shards × 3 replicas |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 1G | |
+| aggregate-vector | 2 | 4C | 8G | |
 
-### Three Nodes - Total Logs: 20000/s
+### Nine nodes — up to ~69,000 logs/s
 
-| Component    | Replicas | CPU Limit | Memory Limit | Remarks      |
-| ------------ | -------- | --------- | ------------ | ------------ |
-| ClickHouse   | 3        | 2C        | 4G           | 3 replicas 1 shard |
-| Razor        | 2        | 1C        | 1G           | -            |
-| Vector       | 2        | 2C        | 4G           | -            |
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| ClickHouse | 9 | 4C | 8G | 3 shards × 3 replicas |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 1G | |
+| aggregate-vector | 2 | 4C | 8G | |
 
-### Six Nodes - Total Logs: 40000/s
+## OpenSearch profiles
 
-| Component    | Replicas | CPU Limit | Memory Limit | Remarks      |
-| ------------ | -------- | --------- | ------------ | ------------ |
-| ClickHouse   | 3        | 4C        | 8G           | 3 replicas 2 shards |
-| Razor        | 2        | 1C        | 1G           | -            |
-| Vector       | 2        | 4C        | 8G           | -            |
+The OpenSearch backend is the recommended choice when Lucene-style search experience matters more than raw ingest throughput.
 
-### Nine Nodes - Total Logs: 69000/s
+<!-- verify against live testing: OpenSearch throughput numbers below are engineering estimates from the ACP 4.3 Elasticsearch baseline; rerun the standard ingest benchmark on a v4.4 OpenSearch 3.7.0 cluster and replace before the release. -->
 
-| Component    | Replicas | CPU Limit | Memory Limit | Remarks      |
-| ------------ | -------- | --------- | ------------ | ------------ |
-| ClickHouse   | 9        | 4C        | 8G           | 3 replicas 3 shards |
-| Razor        | 2        | 1C        | 1G           | -            |
-| Vector       | 2        | 4C        | 8G           | -            |
+### Small — three data nodes, up to ~9,000 logs/s
+
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| OpenSearch data | 3 | 2C | 4G | |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 2G | |
+| aggregate-vector | 2 | 2C | 4G | |
+
+### Medium — three master, five data nodes, up to ~25,000 logs/s
+
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| OpenSearch master | 3 | 2C | 4G | Dedicated master |
+| OpenSearch data | 5 | 8C | 16G | Heap capped at 30 GB on any node ≥ 60 GB memory (compressed-oops boundary) |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 2G | |
+| aggregate-vector | 2 | 2C | 4G | |
+
+### Large — three master, seven data nodes, up to ~30,000 logs/s
+
+| Component | Replicas | CPU limit | Memory limit | Notes |
+| --- | --- | --- | --- | --- |
+| OpenSearch master | 3 | 2C | 4G | Dedicated master |
+| OpenSearch data | 7 | 8C | 16G | See heap note above |
+| Kafka broker | 3 | 2C | 4G | |
+| Razor | 2 | 1C | 2G | |
+| aggregate-vector | 2 | 2C | 4G | |
+
+## Elasticsearch profiles (legacy)
+
+The Elasticsearch backend remains available for existing customers. The classic ACP 4.3 pipeline (Filebeat → Kafka → Lanaya → Elasticsearch) is unchanged; the sizing tables below are reproduced for reference.
+
+### Small — three nodes, up to ~6,300 logs/s
+
+| Component | Replicas | CPU limit | Memory limit |
+| --- | --- | --- | --- |
+| Elasticsearch | 3 | 2C | 4G |
+| Kafka | 3 | 2C | 4G |
+| Lanaya | 2 | 2C | 4G |
+| Razor | 2 | 1C | 2G |
+
+### Small — five nodes, up to ~9,900 logs/s
+
+| Component | Replicas | CPU limit | Memory limit |
+| --- | --- | --- | --- |
+| Elasticsearch | 5 | 2C | 4G |
+| Kafka | 3 | 2C | 4G |
+| Lanaya | 2 | 2C | 4G |
+| Razor | 2 | 1C | 2G |
+
+### Large — three master, five data nodes, up to ~25,000 logs/s
+
+| Component | Replicas | CPU limit | Memory limit |
+| --- | --- | --- | --- |
+| Elasticsearch master | 3 | 2C | 4G |
+| Elasticsearch data | 5 | 8C | 16G |
+| Kafka | 3 | 2C | 4G |
+| Lanaya | 2 | 2C | 4G |
+| Razor | 2 | 1C | 2G |
+
+### Large — three master, seven data nodes, up to ~30,000 logs/s
+
+| Component | Replicas | CPU limit | Memory limit |
+| --- | --- | --- | --- |
+| Elasticsearch master | 3 | 2C | 4G |
+| Elasticsearch data | 7 | 8C | 16G |
+| Kafka | 3 | 2C | 4G |
+| Lanaya | 2 | 2C | 4G |
+| Razor | 2 | 1C | 2G |
+
+## Sizing notes
+
+- Set `PlatformLogForward.spec.aggregateVector.replicas` and `spec.razor.replicas` to match the profile you deploy. The CRD defaults (`3` and `2`) suit the medium and large profiles; drop them to `1` on a single-node evaluation cluster.
+- Raise `spec.razor.resources.limits.cpu` above the profile default when the collector-side buffer grows during traffic bursts and Razor CPU sits at its limit. See [How to size Razor for burst traffic](../how_to/index.mdx) once that page is published.
+- Kafka broker sizing is separate from the storage backend sizing. Follow the [Alauda Container Platform Kafka capacity guide](https://docs.alauda.io/kafka/) for broker-side numbers.
