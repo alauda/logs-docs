@@ -49,7 +49,7 @@ Kafka buffers records between the collector and the storage backend. Both ClickH
 
 | Item | Requirement |
 | --- | --- |
-| Version | Kafka 3.7 or later (baseline: 3.7.0). |
+| Version | Kafka 3.7 or later (baseline: 4.2.0). |
 | Authentication | SASL/SCRAM-SHA-512 (recommended), SASL/SCRAM-SHA-256, or SASL/PLAIN. |
 | TLS | Optional. When enabled, the SASL listener runs over TLS. |
 | Topics | Three topics must exist before the storage operator runs: `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`. |
@@ -60,10 +60,16 @@ If you already run a Kafka cluster, provision the account, topics, and ACLs on i
 
 **Using Alauda Container Platform Kafka.** ACP ships its own Kafka product (Alauda Kafka Operator, delivered as a separate cluster plugin). For the full install, tuning, and operations guide, see the [Alauda Container Platform Kafka documentation](https://docs.alauda.io/kafka).
 
-A minimal set of CRs to bring a Kafka cluster up for logging looks like:
+A minimal set of CRs to bring a Kafka cluster up for logging looks like the following. The kinds shown use the Alauda strimzi fork (`middleware.alauda.io/v1`, `RdsKafka` / `RdsKafkaUser` / `RdsTopic`), which is the recommended path on ACP. Upstream strimzi (`kafka.strimzi.io/v1beta2`, `Kafka` / `KafkaUser` / `KafkaTopic`) also works — the operator does not care which fork you use, only that the mq-conn Secret and the broker-side ACL / topics line up.
+
+The authoritative reference for this section is `log-storage-operator/config/samples/quickstart_external_ch_kafka.yaml`; the snippets below are trimmed for the doc.
 
 ```yaml
-# 1. SASL password Secret. Alauda OS nodes require at least 32 characters.
+# 1. SASL password Secret. On MicroOS / FIPS hosts the password MUST be
+# at least 32 characters; below that, the broker rejects the KafkaUser with
+# UnacceptableCredential. Generate with one of:
+#   openssl rand -base64 24 | tr -d '\n'   # 32 chars base64
+#   openssl rand -hex 16                   # 32 chars hex
 apiVersion: v1
 kind: Secret
 metadata:
@@ -73,58 +79,146 @@ type: Opaque
 stringData:
   password: "<generate a strong password of at least 32 characters>"
 ---
-# 2. The Kafka cluster itself.
+# 2. The Kafka cluster. Listener authentication is SCRAM-SHA-512.
+# The five `config` values below are MANDATORY for logging — the broker
+# defaults are too small for the audit-ingest batch size and will silently
+# drop audit batches otherwise. See the Kafka product docs for the rest of
+# the spec.
 apiVersion: middleware.alauda.io/v1
 kind: RdsKafka
 metadata:
   name: cpaas-kafka
   namespace: cpaas-system
 spec:
-  # See the Kafka product docs for the full spec; the key knobs are broker
-  # replicas, listener authentication, and the two broker limits above.
-  ...
+  kafka:
+    version: 4.2.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+        authentication:
+          type: scram-sha-512
+    config:
+      # MANDATORY. Broker default 1 MiB is too small for K8s audit batches
+      # (~1.1-1.5 MiB decompressed) and rejects all audit ingest. Value
+      # aligns with razor producer max.request.size (10 MiB).
+      message.max.bytes: 10485760
+      # MANDATORY. Must be >= message.max.bytes or replica sync stalls.
+      replica.fetch.max.bytes: 10485760
+      # MANDATORY. Supports an 8 MiB batch envelope plus SASL overhead.
+      socket.request.max.bytes: 104857600
+      # MANDATORY. Prevents ghost topics when razor / aggregate-vector are
+      # temporarily misconfigured.
+      auto.create.topics.enable: "false"
+      # MANDATORY. Prevents silent data loss on broker crash.
+      unclean.leader.election.enable: "false"
+    authorization:
+      type: simple
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
 ---
-# 3. The SASL account.
+# 3. The SASL account. The nine ACL rules below are ALL required — the
+# storage operator's preflight check reports each missing rule by name
+# and refuses to roll out until they are in place.
 apiVersion: middleware.alauda.io/v1
 kind: RdsKafkaUser
 metadata:
   name: platform-logging
   namespace: cpaas-system
+  labels:
+    strimzi.io/cluster: cpaas-kafka
 spec:
   authentication:
     type: scram-sha-512
-    passwordSecret:
-      secretName: platform-logging-password
-      passwordKey: password
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: platform-logging-password
+          key: password
   authorization:
     type: simple
     acls:
-      # Grant Read+Write+Create+Delete+Describe on the three topics
+      # (a) All permissions on the three topics.
       - resource: {type: topic, name: ALAUDA_LOG_TOPIC,   patternType: literal}
-        operations: [Read, Write, Create, Delete, Describe]
+        operation: All
+        host: "*"
       - resource: {type: topic, name: ALAUDA_EVENT_TOPIC, patternType: literal}
-        operations: [Read, Write, Create, Delete, Describe]
+        operation: All
+        host: "*"
       - resource: {type: topic, name: ALAUDA_AUDIT_TOPIC, patternType: literal}
-        operations: [Read, Write, Create, Delete, Describe]
-      # Grant Read+Describe on the three consumer groups
+        operation: All
+        host: "*"
+      # (b) Read on the three aggregate-vector consumer groups.
       - resource: {type: group, name: alauda_log,   patternType: literal}
-        operations: [Read, Describe]
+        operation: Read
+        host: "*"
       - resource: {type: group, name: alauda_event, patternType: literal}
-        operations: [Read, Describe]
+        operation: Read
+        host: "*"
       - resource: {type: group, name: alauda_audit, patternType: literal}
-        operations: [Read, Describe]
+        operation: Read
+        host: "*"
+      # (c) Read on the razor and LogForward consumer-group prefixes.
+      # Without these, razor and LogForward tenants get silent
+      # GroupAuthorizationFailed and drop to 0 throughput.
+      - resource: {type: group, name: razor-,      patternType: prefix}
+        operation: Read
+        host: "*"
+      - resource: {type: group, name: logforward-, patternType: prefix}
+        operation: Read
+        host: "*"
+      # (d) DescribeConfigs on the cluster (used by the preflight check).
+      - resource: {type: cluster, name: kafka-cluster, patternType: literal}
+        operation: DescribeConfigs
+        host: "*"
 ---
-# 4. The three topics. Repeat for event and audit.
+# 4. The three topics. `spec.topicName` must match the values you put in
+# the Kafka connection Secret in Section 1.3 and the ACL literal names
+# in step 3. Set `replicas` to `1` for a single-node evaluation cluster
+# and `3` for a production three-broker cluster.
 apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
 metadata:
-  name: alauda-log-topic                 # DNS-safe name of the CR
+  name: alauda-log-topic                 # DNS-safe CR name
+  labels:
+    strimzi.io/cluster: cpaas-kafka
 spec:
   topicName: ALAUDA_LOG_TOPIC            # broker-side topic name (uppercase)
   partitions: 30
   replicas: 3
   config:
-    retention.ms: "86400000"             # 1 day
+    retention.ms: "172800000"            # 48 hours
+    max.message.bytes: "10485760"        # MANDATORY, must match broker
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-event-topic
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_EVENT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-audit-topic
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_AUDIT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    max.message.bytes: "10485760"
 ```
 
 :::info Two names, one topic
@@ -372,7 +466,6 @@ kind: PlatformLogForward
 metadata:
   name: platform-default                            # fixed singleton name; do not change
 spec:
-  installMode: Fresh                                # Fresh install
   output:
     type: clickhouse                                # required for ClickHouse
   externalStorage:
@@ -397,7 +490,6 @@ kind: PlatformLogForward
 metadata:
   name: platform-default                            # fixed singleton name; do not change
 spec:
-  installMode: Fresh                                # Fresh install
   externalStorage:
     type: opensearch
     secretRef:
