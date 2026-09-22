@@ -6,7 +6,7 @@ weight: 14
 
 This chapter installs the logging stack. The stack has three parts and installs in this order:
 
-1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the matching storage plugin and hand the endpoints to it. This runs on every storage cluster.
+1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the Log Storage operator and hand the endpoints to it. This runs on every storage cluster.
 2. **Log Collector** — install the collector plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
 3. **Log Essentials** — install once on the `global` cluster; publishes the query APIs used by the console.
 
@@ -16,13 +16,13 @@ At the end, the ACP console can query the collected data in **Operations Center*
 
 ## What you install
 
-The stack ships as three cluster plugins. Install only the plugins that match your topology.
+The stack ships as three cluster components — two plugins (Log Essentials and Log Collector) and one operator (Log Storage Management). Install only the components that match your topology.
 
-| Plugin | Where to install | Purpose |
-| --- | --- | --- |
-| **Alauda Container Platform Log Storage Management** | Every cluster that stores logs | Deploys `log-storage-operator`, which watches `PlatformLogForward` and builds the storage-side data path (aggregate-vector, Razor, schema-migrations) against either ClickHouse or OpenSearch. The backend choice lives in the PLF, not in the plugin. |
-| **Alauda Container Platform Log Collector** | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
-| **Alauda Container Platform Log Essentials** | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
+| Component | Kind | Where to install | Purpose |
+| --- | --- | --- | --- |
+| **Alauda Container Platform Log Storage Management** | Operator | Every cluster that stores logs | Deploys `log-storage-operator`, which watches `PlatformLogForward` and builds the storage-side data path (aggregate-vector, Razor, schema-migrations) against either ClickHouse or OpenSearch. The backend choice lives in the PLF, not in the operator install form. |
+| **Alauda Container Platform Log Collector** | Plugin | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
+| **Alauda Container Platform Log Essentials** | Plugin | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
 
 A single storage cluster picks ClickHouse **or** OpenSearch as its backend and serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
 
@@ -41,7 +41,7 @@ Do this on every cluster that will store logs.
 
 ### 1.1 Prepare the external components
 
-The storage side depends on two external systems: a **Kafka** cluster (mandatory) and a **ClickHouse** or **OpenSearch** cluster (choose one). Prepare them before installing the Log Storage plugin.
+The storage side depends on two external systems: a **Kafka** cluster (mandatory) and a **ClickHouse** or **OpenSearch** cluster (choose one). Prepare them before installing the Log Storage operator.
 
 #### 1.1.1 Kafka
 
@@ -52,7 +52,7 @@ Kafka buffers records between the collector and the storage backend. Both ClickH
 | Version | Kafka 3.7 or later (baseline: 3.7.0). |
 | Authentication | SASL/SCRAM-SHA-512 (recommended), SASL/SCRAM-SHA-256, or SASL/PLAIN. |
 | TLS | Optional. When enabled, the SASL listener runs over TLS. |
-| Topics | Three topics must exist before the storage plugin runs: `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`. |
+| Topics | Three topics must exist before the storage operator runs: `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`. |
 | Account ACLs | One SASL account with `Read`, `Write`, `Create`, `Delete`, `Describe` on all three topics, and `Read`, `Describe` on the three consumer groups `alauda_log`, `alauda_event`, `alauda_audit`. |
 | Broker config | `message.max.bytes` and `replica.fetch.max.bytes` at least `10 MiB` so audit batches that occasionally exceed 1 MiB are not rejected. |
 
@@ -128,7 +128,7 @@ spec:
 ```
 
 :::info Two names, one topic
-The CR's `metadata.name` is a DNS-safe kebab-case name (`alauda-log-topic`) and `spec.topicName` is the actual name the broker exposes (`ALAUDA_LOG_TOPIC`, uppercase with underscores). Alauda Container Platform Log Collector and the storage plugin always read the broker-side name, so the values you paste into the Kafka connection Secret in Section 1.3 must match `spec.topicName`, not `metadata.name`.
+The CR's `metadata.name` is a DNS-safe kebab-case name (`alauda-log-topic`) and `spec.topicName` is the actual name the broker exposes (`ALAUDA_LOG_TOPIC`, uppercase with underscores). Alauda Container Platform Log Collector and the storage operator always read the broker-side name, so the values you paste into the Kafka connection Secret in Section 1.3 must match `spec.topicName`, not `metadata.name`.
 :::
 
 #### 1.1.2 ClickHouse or OpenSearch
@@ -143,7 +143,7 @@ Pick one backend per storage cluster. See [Log Component Selection Guide](../arc
 | Operator | ClickHouse Operator (altinity/clickhouse-operator v0.20 or later) installed cluster-wide. |
 | Endpoint | HTTP on `:8123` or HTTPS on `:8443`. |
 | Cluster name | Must match `spec.configuration.clusters[0].name` on the `ClickHouseInstallation` and the name the platform uses with `ON CLUSTER`. ACP baseline default: `replicated`. |
-| Database | ACP baseline default: `observability`. Must exist before installing the storage plugin. |
+| Database | ACP baseline default: `observability`. Must exist before installing the storage operator. |
 | Account | One account with full DDL/DML permission on the target database. ACP baseline default: `platform-logging`. |
 
 **Cluster topology.** Choose one of the profiles below and use the same shards / replicas values when you fill in `PlatformLogForward` in Section 1.4. Setting the `PlatformLogForward` values lower silently leaves shards or replicas unused; setting them higher makes the data path try to reach nodes that do not exist.
@@ -175,9 +175,9 @@ If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on e
 
 {/* verify against live console: confirm the docs.alauda.io/opensearch/ URL exists. */}
 
-### 1.2 Install the Log Storage plugin
+### 1.2 Install the Log Storage operator
 
-**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One plugin covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the plugin install form.
+**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the operator install form.
 
 #### Console
 
@@ -471,7 +471,7 @@ Install this plugin on every cluster whose logs, events, or audit records must b
 
 | Parameter | Value |
 | --- | --- |
-| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. Do not select the legacy **ClickHouse** or **ElasticSearch** options — those are for the deprecated chart-installed storage plugins. |
+| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. Do not select the legacy **ClickHouse** or **ElasticSearch** options — those are for the deprecated chart-installed storage stacks. |
 | **Storage Cluster Name** | Enter the name of the cluster where `PlatformLogForward/platform-default` is `Ready`. When the collector and the storage are the same cluster, enter that cluster's name. This field is a plain text input in the Standard branch. |
 | **Storage Path** | Absolute path for the collector's local working data. Default `/cpaas/data/nevermore`. On Alauda OS nodes use `/var/cpaas/data/nevermore`. **Cannot be changed after installation.** |
 | **Mount Paths** | Optional. Absolute host paths containing log files the collector must read. |

@@ -13,7 +13,7 @@ The Logging module has three responsibilities:
 2. **Log storage** — persist those records into a scalable backend (ClickHouse or OpenSearch, recommended; Elasticsearch retained for legacy).
 3. **Log query and visualization** — serve queries from the ACP console over the stored data.
 
-These responsibilities are split across three cluster plugins (see [Installation](../install/index.mdx)) that talk to two external systems that the SRE prepares before install: a Kafka cluster and either a ClickHouse or an OpenSearch cluster. **Alauda Container Platform Log Storage Management** is a single plugin that covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR.
+These responsibilities are split across three cluster components — two plugins (Log Essentials, Log Collector) and one operator (Log Storage Management) — that talk to two external systems the SRE prepares before install: a Kafka cluster and either a ClickHouse or an OpenSearch cluster. See [Installation](../install/index.mdx). The Log Storage Management operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR.
 
 ```mermaid
 flowchart LR

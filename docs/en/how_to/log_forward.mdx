@@ -4,14 +4,14 @@ weight: 35
 
 # How to Forward Logs to an External System with LogForward
 
-The **`LogForward`** custom resource is a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage plugin.
+The **`LogForward`** custom resource is a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage operator.
 
 Each `LogForward` describes an input filter (namespace, workload, log type) and one or more output sinks. `log-storage-operator` renders the CR into a dedicated Vector Deployment that runs alongside the platform's storage-side data path.
 
 Use `LogForward` when you need to:
 
 - Ship a subset of application logs to a corporate SIEM (syslog to Splunk or ArcSight, HTTP to a log intake gateway, Kafka to a separate analytics pipeline).
-- Give a tenant self-service control over their own forwarding without touching the platform's storage plugin.
+- Give a tenant self-service control over their own forwarding without touching the platform's storage operator.
 - Fan out the same stream to more than one destination (for example, keep logs in the platform for query and ship a copy to a compliance archive).
 
 `LogForward` is separate from and does not replace the platform's storage pipeline. Records still land in the storage cluster's ClickHouse or OpenSearch as usual; `LogForward` produces an additional copy.
@@ -132,10 +132,10 @@ Common failure modes:
 
 - One `LogForward` produces at most one Vector Deployment. Multiple `LogForward` resources in the same namespace are independent.
 - The generated Vector reads from the same Kafka topics that the platform's `aggregate-vector` consumes. It uses its own consumer group so it does not interfere with the platform's ingest.
-- Uninstalling **Alauda Container Platform Log Storage Management** stops the operator; any active `LogForward` deployments are removed as part of the storage plugin uninstall.
-- `LogForward` is not intended as a replacement for the platform's storage pipeline. Removing the storage plugin removes log query on the console; `LogForward` alone does not restore that.
+- Uninstalling **Alauda Container Platform Log Storage Management** stops the operator; any active `LogForward` deployments are removed as part of the storage operator uninstall.
+- `LogForward` is not intended as a replacement for the platform's storage pipeline. Removing the storage operator removes log query on the console; `LogForward` alone does not restore that.
 
 ## Related Topics
 
-- [Installation](../install/index.mdx) — how to install the storage plugin that publishes the `LogForward` CRD.
+- [Installation](../install/index.mdx) — how to install the storage operator that publishes the `LogForward` CRD.
 - [How to Archive Logs to Third-Party Storage](./log_archive.mdx) — the older `razor consumer --database-type=file` archive workflow, intended for NFS / S3 archival rather than real-time forwarding.

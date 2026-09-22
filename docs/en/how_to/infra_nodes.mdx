@@ -4,7 +4,7 @@ weight: 30
 
 # Planning Infra Nodes for Logging Storage
 
-This guide explains the planning considerations for running Logging storage plugins on dedicated Kubernetes infra nodes.
+This guide explains the planning considerations for running Logging storage components on dedicated Kubernetes infra nodes.
 
 ## Objectives
 
@@ -16,7 +16,7 @@ This guide explains the planning considerations for running Logging storage plug
 
 The storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
 
-- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), use the **Advanced Configuration** section of the plugin install form to set the node selector and tolerations. See [Installation](../install/index.mdx).
+- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), use the **Advanced Configuration** section of the operator install form to set the node selector and tolerations. See [Installation](../install/index.mdx).
 - For **Alauda Container Platform Log Collector** (a DaemonSet), use the plugin install form on the collector cluster; the same **Advanced Configuration** section applies.
 - For **Alauda Container Platform Log Storage for Elasticsearch** (legacy), configure placement through `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` and `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` in the ACP 4.3 documentation for that plugin.
 

@@ -11,7 +11,7 @@ When installing the Logging module you pick one storage backend per storage clus
 - **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters.
 - **Elasticsearch** (legacy chart-based **Alauda Container Platform Log Storage for Elasticsearch**) — retained for existing customers upgrading from ACP 4.2 or 4.3; not the recommended choice for a fresh install.
 
-For ClickHouse and OpenSearch the plugin is the same — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`. Elasticsearch remains its own legacy chart.
+For ClickHouse and OpenSearch the operator is the same — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`. Elasticsearch remains its own legacy chart-based plugin.
 
 This page compares them so you can pick one before you install.
 
