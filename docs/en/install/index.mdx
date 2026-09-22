@@ -490,6 +490,9 @@ kind: PlatformLogForward
 metadata:
   name: platform-default                            # fixed singleton name; do not change
 spec:
+  # No `output.type` here on purpose. The PLF admission webhook accepts the
+  # Fresh-OS and Adopt-OS branches with `output` omitted; ClickHouse still
+  # requires `output.type: clickhouse` because those paths are provisioning-driven.
   externalStorage:
     type: opensearch
     secretRef:
