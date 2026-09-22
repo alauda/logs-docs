@@ -14,7 +14,7 @@ This guide explains the planning considerations for running Logging storage plug
 
 ## Where to Configure Placement
 
-In ACP 4.4, the storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
+The storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
 
 - For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), use the **Advanced Configuration** section of the plugin install form to set the node selector and tolerations. See [Installation](../install/index.mdx).
 - For **Alauda Container Platform Log Collector** (a DaemonSet), use the plugin install form on the collector cluster; the same **Advanced Configuration** section applies.
@@ -71,7 +71,7 @@ The same principle applies to any Logging storage component that uses node-bound
 
 ## Historical Kafka and Zookeeper Nodes
 
-Kafka in ACP 4.4 runs in KRaft mode and does not deploy Zookeeper. On clusters upgraded from an earlier release, however, historical Kafka and Zookeeper node labels may still be in use. Ensure any historically labeled Kafka or Zookeeper nodes are also included in the infra node group:
+Kafka runs in KRaft mode and does not deploy Zookeeper. On clusters upgraded from an earlier release, however, historical Kafka and Zookeeper node labels may still be in use. Ensure any historically labeled Kafka or Zookeeper nodes are also included in the infra node group:
 
 ```bash
 kubectl get nodes -l kafka=true
@@ -79,7 +79,7 @@ kubectl get nodes -l zk=true
 # Add the listed nodes into infra nodes as above.
 ```
 
-Newly provisioned ACP 4.4 clusters only need the `kafka` label; the `zk` label is not used.
+Newly provisioned clusters only need the `kafka` label; the `zk` label is not used.
 
 ## Troubleshooting
 

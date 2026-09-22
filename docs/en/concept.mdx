@@ -23,7 +23,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 ### Kafka
 
 **Positioning**: Distributed message queue
-**Description**: The buffering layer between the collector and the storage backend. Kafka receives records from Razor and holds them until `aggregate-vector` consumes them. This decouples spikes on the ingest side from the write throughput of the storage backend and lets the collector keep advancing while the backend recovers. ACP 4.4 uses Kafka in KRaft mode; no Zookeeper is required.
+**Description**: The buffering layer between the collector and the storage backend. Kafka receives records from Razor and holds them until `aggregate-vector` consumes them. This decouples spikes on the ingest side from the write throughput of the storage backend and lets the collector keep advancing while the backend recovers. Kafka runs in KRaft mode; no Zookeeper is required.
 
 ### ClickHouse
 
@@ -33,7 +33,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 ### OpenSearch
 
 **Positioning**: Distributed search and analytics engine
-**Description**: An open-source distributed search engine and analytics suite forked from Elasticsearch, using an inverted index for near-real-time keyword search over log data. Introduced as a first-class storage backend in ACP 4.4. Recommended when the search experience (Lucene-style DSL, keyword highlighting, faceted queries) matters more than raw ingest throughput.
+**Description**: An open-source distributed search engine and analytics suite forked from Elasticsearch, using an inverted index for near-real-time keyword search over log data. Recommended when the search experience (Lucene-style DSL, keyword highlighting, faceted queries) matters more than raw ingest throughput.
 
 ### Elasticsearch
 
@@ -50,7 +50,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 ### Razor
 
 **Positioning**: Log ingest and authentication service
-**Description**: The storage-side HTTP endpoint that `nevermore` pushes to. Razor authenticates every request against the platform, then produces the records into Kafka. Deployed as a stateless Deployment in ACP 4.4 (was a StatefulSet with a Vector sidecar in earlier releases). Also serves as the query proxy that reads from ClickHouse for the platform's log query APIs.
+**Description**: The storage-side HTTP endpoint that `nevermore` pushes to. Razor authenticates every request against the platform, then produces the records into Kafka. Deployed as a stateless Deployment (was a StatefulSet with a Vector sidecar in earlier releases). Also serves as the query proxy that reads from ClickHouse for the platform's log query APIs.
 
 ### aggregate-vector
 
@@ -82,7 +82,7 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 - **Ingest & Buffering**: `nevermore` pushes to Razor over HTTP; Razor authenticates and produces into Kafka.
 - **Storage**: `aggregate-vector` consumes from Kafka and writes into ClickHouse or OpenSearch.
 
-The Kafka buffer is mandatory in ACP 4.4 for both backends; the direct-write and buffer-mode split from earlier releases no longer applies.
+The Kafka buffer is mandatory for both backends; the direct-write and buffer-mode split from earlier releases no longer applies.
 
 ### Index (OpenSearch / Elasticsearch)
 

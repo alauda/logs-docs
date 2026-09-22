@@ -11,12 +11,12 @@ The log storage components hold logs, events, and audit records collected from o
 
 - The tables in this chapter are laboratory reference numbers. Provision more resources than the reference numbers, and do not push the collected volume above the profile's throughput.
 - Disk baseline for the tables: `6000 iops`, `250 MB/s` sequential read and write, SSD, independently mounted. Weaker disks require a larger profile than the table suggests and additional CPU + memory headroom.
-- ACP 4.4 uses Kafka in KRaft mode. No Zookeeper is deployed; the tables in earlier releases had a separate Zookeeper row that no longer applies.
-- Older ACP releases ran the Elasticsearch backend with a separate `Lanaya` consumer between Kafka and Elasticsearch. In ACP 4.4 the recommended backends (ClickHouse and OpenSearch) do not use Lanaya; the ingest role belongs to `aggregate-vector`.
+- Kafka runs in KRaft mode. No Zookeeper is deployed; the tables in earlier releases had a separate Zookeeper row that no longer applies.
+- Older ACP releases ran the Elasticsearch backend with a separate `Lanaya` consumer between Kafka and Elasticsearch. The recommended backends (ClickHouse and OpenSearch) do not use Lanaya; the ingest role belongs to `aggregate-vector`.
 
 :::
 
-{/* verify against live testing: numbers below are extrapolated from the ACP 4.3 published profiles for the ClickHouse path, adjusted for the v4.4 topology (Vector sidecar removed, aggregate-vector added). Rerun the standard ingest benchmark on a v4.4 build and update the throughput figures before the release. */}
+{/* verify against live testing: numbers below are extrapolated from the ACP 4.3 published profiles for the ClickHouse path, adjusted for the current topology (Vector sidecar removed, aggregate-vector added). Rerun the standard ingest benchmark and update the throughput figures before the release. */}
 
 ## Common components
 
@@ -73,7 +73,7 @@ The ClickHouse backend is the recommended choice for high throughput and cost-se
 
 The OpenSearch backend is the recommended choice when Lucene-style search experience matters more than raw ingest throughput.
 
-{/* verify against live testing: OpenSearch throughput numbers below are engineering estimates from the ACP 4.3 Elasticsearch baseline; rerun the standard ingest benchmark on a v4.4 OpenSearch 3.7.0 cluster and replace before the release. */}
+{/* verify against live testing: OpenSearch throughput numbers below are engineering estimates from the ACP 4.3 Elasticsearch baseline; rerun the standard ingest benchmark on an OpenSearch 3.7.0 cluster and replace before the release. */}
 
 ### Small — three data nodes, up to ~9,000 logs/s
 

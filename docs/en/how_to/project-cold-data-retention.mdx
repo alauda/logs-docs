@@ -70,10 +70,10 @@ The change reaches the storage cluster within a minute through the platform's cr
 - If your environment still contains legacy labels such as `cpaas.io/project.esIndicesKeepDays` or `cpaas.io/project.esPolicyEnabled`, prefer the new labels for new configurations.
 
 :::warning
-On the **OpenSearch** storage backend, ACP 4.4 project-level retention overrides are limited to hot-index deletion and follow OpenSearch ISM policy behavior. The `coldDataRetentionDays` label does not apply because OpenSearch tiered storage is provisioned outside the platform. Use platform-default retention on OpenSearch, or apply your own ISM policy on the OpenSearch cluster to enforce longer or shorter retention on specific indices.
+On the **OpenSearch** storage backend, project-level retention overrides are limited to hot-index deletion and follow OpenSearch ISM policy behavior. The `coldDataRetentionDays` label does not apply because OpenSearch tiered storage is provisioned outside the platform. Use platform-default retention on OpenSearch, or apply your own ISM policy on the OpenSearch cluster to enforce longer or shorter retention on specific indices.
 :::
 
-{/* verify against live testing: OpenSearch project-level retention behavior in ACP 4.4 has known gaps; confirm the exact behavior on a running v4.4 OpenSearch cluster and refine the warning above. */}
+{/* verify against live testing: OpenSearch project-level retention behavior has known gaps; confirm the exact behavior on a running OpenSearch cluster and refine the warning above. */}
 
 ## Related Topics
 

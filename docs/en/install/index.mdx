@@ -4,7 +4,7 @@ weight: 14
 
 # Installation
 
-This chapter installs the ACP 4.4 logging stack. The stack has three parts and installs in this order:
+This chapter installs the logging stack. The stack has three parts and installs in this order:
 
 1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the matching storage plugin and hand the endpoints to it. This runs on every storage cluster.
 2. **Log Collector** — install the collector plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
@@ -12,11 +12,11 @@ This chapter installs the ACP 4.4 logging stack. The stack has three parts and i
 
 At the end, the ACP console can query the collected data in **Operations Center** > **Logs**.
 
-{/* verify against live console: menu label may be "Operations Center" or "Ops Center"; confirm on a running ACP 4.4 build. */}
+{/* verify against live console: menu label may be "Operations Center" or "Ops Center"; confirm on a running build. */}
 
 ## What you install
 
-ACP 4.4 exposes the stack as three cluster plugins. Install only the plugins that match your topology.
+The stack ships as three cluster plugins. Install only the plugins that match your topology.
 
 | Plugin | Where to install | Purpose |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ Kafka buffers records between the collector and the storage backend. Both ClickH
 
 | Item | Requirement |
 | --- | --- |
-| Version | Kafka 3.7 or later (ACP 4.4 baseline: 3.7.0). |
+| Version | Kafka 3.7 or later (baseline: 3.7.0). |
 | Authentication | SASL/SCRAM-SHA-512 (recommended), SASL/SCRAM-SHA-256, or SASL/PLAIN. |
 | TLS | Optional. When enabled, the SASL listener runs over TLS. |
 | Topics | Three topics must exist before the storage plugin runs: `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`. |
@@ -139,7 +139,7 @@ Pick one backend per storage cluster. See [Log Component Selection Guide](../arc
 
 | Item | Requirement |
 | --- | --- |
-| Version | ClickHouse 24.x or later (ACP 4.4 baseline: 25.8). |
+| Version | ClickHouse 24.x or later (baseline: 25.8). |
 | Operator | ClickHouse Operator (altinity/clickhouse-operator v0.20 or later) installed cluster-wide. |
 | Endpoint | HTTP on `:8123` or HTTPS on `:8443`. |
 | Cluster name | Must match `spec.configuration.clusters[0].name` on the `ClickHouseInstallation` and the name the platform uses with `ON CLUSTER`. ACP baseline default: `replicated`. |
@@ -165,7 +165,7 @@ If you already run a ClickHouse cluster, ensure the database and the logging acc
 
 | Item | Requirement |
 | --- | --- |
-| Version | OpenSearch 3.7.0 (ACP 4.4 tested version). |
+| Version | OpenSearch 3.7.0 (tested version). |
 | Operator | opensearch-project/opensearch-operator installed cluster-wide. |
 | Endpoint | HTTPS on `:9200` (HTTP is supported but not recommended). |
 | Analyzer plugin | `analysis-ik` (an OpenSearch 3.7.0-compatible build) installed on every OpenSearch node. **Required.** The query path defaults to the `ik_smart` analyzer; without the plugin, every keyword or Chinese-content query returns HTTP 400 and the console log page is unusable. |
@@ -471,7 +471,7 @@ Install this plugin on every cluster whose logs, events, or audit records must b
 
 | Parameter | Value |
 | --- | --- |
-| **Log Center Plugin** | Set to **Standard**. This is the ACP 4.4 data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. Do not select the legacy **ClickHouse** or **ElasticSearch** options — those are for the deprecated chart-installed storage plugins. |
+| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. Do not select the legacy **ClickHouse** or **ElasticSearch** options — those are for the deprecated chart-installed storage plugins. |
 | **Storage Cluster Name** | Enter the name of the cluster where `PlatformLogForward/platform-default` is `Ready`. When the collector and the storage are the same cluster, enter that cluster's name. This field is a plain text input in the Standard branch. |
 | **Storage Path** | Absolute path for the collector's local working data. Default `/cpaas/data/nevermore`. On Alauda OS nodes use `/var/cpaas/data/nevermore`. **Cannot be changed after installation.** |
 | **Mount Paths** | Optional. Absolute host paths containing log files the collector must read. |
@@ -540,7 +540,7 @@ Every collector cluster's row must show `STATUS=Running`.
 
 ## 3. Install Log Essentials
 
-**Run on the `global` cluster.** Install once per platform. The install flow is unchanged from ACP 4.3.
+**Run on the `global` cluster.** Install once per platform. The install flow is unchanged from earlier releases.
 
 ### Console
 

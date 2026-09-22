@@ -4,7 +4,7 @@ weight: 35
 
 # How to Forward Logs to an External System with LogForward
 
-ACP 4.4 introduces the **`LogForward`** custom resource: a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage plugin.
+The **`LogForward`** custom resource is a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage plugin.
 
 Each `LogForward` describes an input filter (namespace, workload, log type) and one or more output sinks. `log-storage-operator` renders the CR into a dedicated Vector Deployment that runs alongside the platform's storage-side data path.
 
@@ -18,7 +18,6 @@ Use `LogForward` when you need to:
 
 ## Prerequisites
 
-- ACP 4.4 or later.
 - The storage cluster the tenant lives on has **Alauda Container Platform Log Storage Management** installed and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
 - The tenant has permission to create resources in the target namespace.
 - The external destination is reachable from every pod in `cpaas-system` on the storage cluster.

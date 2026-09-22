@@ -12,7 +12,6 @@ Every field is optional. Fields you do not set follow the platform-default basel
 
 ## Before You Begin
 
-- ACP 4.4 or later.
 - **Alauda Container Platform Log Storage Management** installed on the storage cluster, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
 - You edit `PlatformLogForward` with `kubectl edit platformlogforward platform-default`.
 
@@ -50,7 +49,7 @@ Set under `spec.aggregateVector.sinks.clickhouse`.
 
 Notes:
 
-- The Vector `buffer.type` is always `memory` in ACP 4.4 and is not tunable. Kafka is the durable buffer; a second on-disk buffer inside Vector would duplicate durability without extra safety. When the memory buffer fills, Vector back-pressures the Kafka source and records stay on the broker; a Vector restart replays them from the last committed offset.
+- The Vector `buffer.type` is always `memory` and is not tunable. Kafka is the durable buffer; a second on-disk buffer inside Vector would duplicate durability without extra safety. When the memory buffer fills, Vector back-pressures the Kafka source and records stay on the broker; a Vector restart replays them from the last committed offset.
 - `requestConcurrency` accepts three forms: the strings `"adaptive"` or `"fixed"`, or a positive integer written as a string (for example `"4"`). The platform renders quoted strings as quoted strings and integer strings as bare integers in the Vector configuration.
 
 ## OpenSearch sink knobs
@@ -70,7 +69,7 @@ Set under `spec.aggregateVector.sinks.opensearch`. The same knobs apply to the l
 
 Notes:
 
-- The Vector `buffer.type` is `memory` and `buffer.when_full` is `block` in ACP 4.4; neither is tunable. See the ClickHouse sink notes for the reasoning.
+- The Vector `buffer.type` is `memory` and `buffer.when_full` is `block`; neither is tunable. See the ClickHouse sink notes for the reasoning.
 - `compression: gzip`, `bulk.action: create`, and `api_version: v8` are fixed by the platform because they express the invariants of the OpenSearch write path (compression saves 3–5× on the wire; `create` + document `_id` keeps retries idempotent; `v8` avoids the removed `_type` field that OpenSearch 3.7 rejects). These are not exposed as knobs.
 
 ## Example — ClickHouse

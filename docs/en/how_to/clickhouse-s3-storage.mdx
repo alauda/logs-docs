@@ -6,7 +6,7 @@ weight: 15
 
 This guide explains how to configure **Alauda Container Platform Log Storage Management** with a ClickHouse backend to keep cold log data on an S3-compatible object store.
 
-In ACP 4.4 the S3-related knobs live on the `PlatformLogForward` (PLF) CR, not on the plugin install form. Enable them by editing PLF fields on the storage cluster; the change takes effect after `log-storage-operator` reconciles.
+The S3-related knobs live on the `PlatformLogForward` (PLF) CR, not on the plugin install form. Enable them by editing PLF fields on the storage cluster; the change takes effect after `log-storage-operator` reconciles.
 
 :::info
 This guide describes ACP-managed **hot / cold tiered storage** for ClickHouse. Records stay on local disk while active and move to S3 once the hot TTL elapses, remaining queryable through the platform.

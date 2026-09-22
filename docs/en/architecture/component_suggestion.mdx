@@ -5,10 +5,10 @@ sourceSHA: 3ec0c250be447bd6f28860f61de04ddf0a6e4e69186767f8bbc8d209917d284c
 
 # Log Component Selection Guide
 
-When installing the Logging module in ACP 4.4 you pick one storage backend per storage cluster. Three backends are available:
+When installing the Logging module you pick one storage backend per storage cluster. Three backends are available:
 
 - **ClickHouse** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended for high throughput and cost-sensitive retention.
-- **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters. Introduced in ACP 4.4.
+- **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters.
 - **Elasticsearch** (legacy chart-based **Alauda Container Platform Log Storage for Elasticsearch**) — retained for existing customers upgrading from ACP 4.2 or 4.3; not the recommended choice for a fresh install.
 
 For ClickHouse and OpenSearch the plugin is the same — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`. Elasticsearch remains its own legacy chart.
@@ -36,7 +36,7 @@ A distributed search engine forked from Elasticsearch. Inverted-index search ove
 
 ### Elasticsearch
 
-The original Lucene backend used before ACP 4.4. Same trade-offs as OpenSearch on the ingest side; retained for customers who cannot yet move.
+The original Lucene backend used in earlier releases. Same trade-offs as OpenSearch on the ingest side; retained for customers who cannot yet move.
 
 ## Feature comparison
 

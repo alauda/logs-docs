@@ -8,7 +8,7 @@ sourceSHA: de8684967169dd8cf37f798e6022c102cb552424cb291405a007fe5776c9d337
 :::warning ACP 4.4 note
 This guide covers the **Alauda Container Platform Log Storage for Elasticsearch** (legacy) plugin only. It uses the chart install-form field `elasticsearch.address` and the paired `basicAuthSecretName`, which are Elasticsearch-plugin conventions retained from earlier releases.
 
-If you are on the recommended ACP 4.4 backends (ClickHouse or OpenSearch), external interfacing is the **default** install path, not an opt-in. Every storage cluster reaches an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets. Follow [Installation](../install/index.mdx) and skip this guide.
+If you are on the recommended backends (ClickHouse or OpenSearch), external interfacing is the **default** install path, not an opt-in. Every storage cluster reaches an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets. Follow [Installation](../install/index.mdx) and skip this guide.
 :::
 
 You can interface with external Elasticsearch or Kafka clusters by writing YAML configurations. Depending on your business requirements, you can choose to interface with only the external Elasticsearch cluster (while installing Kafka in the current cluster), or you can interface with both the external Elasticsearch and Kafka clusters simultaneously.
