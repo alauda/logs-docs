@@ -150,4 +150,4 @@ The Elasticsearch backend remains available for existing customers. The classic 
 
 - Set `PlatformLogForward.spec.aggregateVector.replicas` and `spec.razor.replicas` to match the profile you deploy. The CRD defaults (`3` and `2`) suit the medium and large profiles; drop them to `1` on a single-node evaluation cluster.
 - Raise `spec.razor.resources.limits.cpu` above the profile default when the collector-side buffer grows during traffic bursts and Razor CPU sits at its limit. See [How to size Razor for burst traffic](../how_to/index.mdx) once that page is published.
-- Kafka broker sizing is separate from the storage backend sizing. Follow the Alauda Container Platform Kafka capacity guide for broker-side numbers.
+- Kafka broker sizing is separate from the storage backend sizing. Follow the [Alauda Container Platform Kafka capacity guide](https://docs.alauda.io/kafka) for broker-side numbers.
