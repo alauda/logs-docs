@@ -12,7 +12,7 @@ This chapter installs the ACP 4.4 logging stack. The stack has three parts and i
 
 At the end, the ACP console can query the collected data in **Operations Center** > **Logs**.
 
-<!-- verify against live console: menu label may be "Operations Center" or "Ops Center"; confirm on a running ACP 4.4 build. -->
+{/* verify against live console: menu label may be "Operations Center" or "Ops Center"; confirm on a running ACP 4.4 build. */}
 
 ## What you install
 
@@ -31,7 +31,7 @@ For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component S
 
 :::warning
 
-- **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow [Upgrade](../upgrade/index.mdx) and [Migration](../migration/index.mdx) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
+- **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow the ACP 4.4 upgrade and migration documentation (delivered separately) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
 - **Alauda Container Platform Log Storage for Elasticsearch** is retained for existing customers but is no longer the recommended backend for a fresh install. Choose ClickHouse or OpenSearch. If you must install Elasticsearch, follow the ACP 4.3 documentation for that plugin.
 
 :::
@@ -160,7 +160,7 @@ For component sizing at each profile, see [Log Component Capacity Planning](../a
 
 If you already run a ClickHouse cluster, ensure the database and the logging account are provisioned on it. To build a cluster from scratch, see the [Alauda Container Platform ClickHouse documentation](https://docs.alauda.io/clickhouse/).
 
-<!-- verify against live console: confirm the docs.alauda.io/clickhouse/ URL exists; if the product is delivered under a different site name, update. -->
+{/* verify against live console: confirm the docs.alauda.io/clickhouse/ URL exists; if the product is delivered under a different site name, update. */}
 
 ##### OpenSearch
 
@@ -174,7 +174,7 @@ If you already run a ClickHouse cluster, ensure the database and the logging acc
 
 If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, see the [Alauda Container Platform OpenSearch documentation](https://docs.alauda.io/opensearch/).
 
-<!-- verify against live console: confirm the docs.alauda.io/opensearch/ URL exists. -->
+{/* verify against live console: confirm the docs.alauda.io/opensearch/ URL exists. */}
 
 ### 1.2 Install the Log Storage plugin
 
@@ -192,7 +192,7 @@ Install one plugin per storage cluster:
 3. Accept the defaults. Optionally set the node selector and tolerations to pin `log-storage-operator` to infra nodes.
 4. Click **Install**.
 
-<!-- verify against live console: confirm the plugin install form does not require connection details (endpoint, credentials) — those are supplied later as PlatformLogForward + connection Secrets, not as install form fields. -->
+{/* verify against live console: confirm the plugin install form does not require connection details (endpoint, credentials) — those are supplied later as PlatformLogForward + connection Secrets, not as install form fields. */}
 
 #### Verify
 
@@ -462,7 +462,7 @@ kubectl -n cpaas-system annotate secret platform-default-mq-conn platform-defaul
 
 For OpenSearch, replace `platform-default-ch-conn` with `platform-default-os-conn`.
 
-If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` exists, or PVCs from a previous ACP release are still bound), stop here and follow [Migration](../migration/index.mdx) instead.
+If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` exists, or PVCs from a previous ACP release are still bound), stop here and follow the ACP 4.4 migration documentation (delivered separately) instead.
 :::
 
 ## 2. Install Log Collector
@@ -483,7 +483,7 @@ Install this plugin on every cluster whose logs, events, or audit records must b
 | **Mount Paths** | Optional. Absolute host paths containing log files the collector must read. |
 | **Audit**, **Event**, **Kubernetes**, **Platform**, **System**, **Workload** | Log types to collect. Defaults enable **Audit**, **Event**, **System**, and **Workload**. |
 
-<!-- verify against live console: the "Log Center Plugin" field and its "Standard" option are the v4.4 additions that route through log-storage-operator. Confirm the exact label wording on a live install; also confirm that the legacy "ClickHouse" and "ElasticSearch" options are still displayed alongside "Standard". -->
+{/* verify against live console: the "Log Center Plugin" field and its "Standard" option are the v4.4 additions that route through log-storage-operator. Confirm the exact label wording on a live install; also confirm that the legacy "ClickHouse" and "ElasticSearch" options are still displayed alongside "Standard". */}
 
 4. Optional. Expand the advanced form to pin the collector to specific nodes with a node selector and tolerations.
 5. Click **Install**.
@@ -523,7 +523,7 @@ spec:
       type: Standard                                # v4.4 data path via log-storage-operator
 ```
 
-<!-- verify against live console: the `crossClusterDependency.logstorage` key and the `storage.type: Standard` enum are the v4.4 replacements for the v4.3 `logcenter` / `logclickhouse` + `storage.type: ElasticSearch` / `ClickHouse` pair. Confirm the exact key names on a v4.4 build. -->
+{/* verify against live console: the `crossClusterDependency.logstorage` key and the `storage.type: Standard` enum are the v4.4 replacements for the v4.3 `logcenter` / `logclickhouse` + `storage.type: ElasticSearch` / `ClickHouse` pair. Confirm the exact key names on a v4.4 build. */}
 
 Key fields:
 
@@ -604,7 +604,7 @@ After every plugin is `Running`, verify that new records actually flow from a co
 
 3. Log in to the ACP console, open **Operations Center** > **Logs** > **Log Query Analysis**, pick the storage cluster in the top-of-page cluster picker, and query for **Workload Logs** from a namespace that is actively producing logs. Recent records must appear.
 
-<!-- verify against live console: confirm the exact menu path and the cluster picker label. -->
+{/* verify against live console: confirm the exact menu path and the cluster picker label. */}
 
 If no records arrive within ten minutes, before changing configuration, work through the layers in order: collector `ModuleInfo` status → `PlatformLogForward` conditions → Kafka topic activity → backend ingest.
 

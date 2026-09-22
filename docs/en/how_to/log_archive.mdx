@@ -20,7 +20,7 @@ The archive workflow below launches a standalone `razor consumer --database-type
 
 - The example Razor image tag (`v3.16.0-beta.3.g3df8e987`) is stale. Read the current image tag from the running `deployment/razor` on the storage cluster before you copy the example.
 - The example uses `serviceAccount: lanaya`. On ACP 4.4 ClickHouse or OpenSearch clusters there is no `lanaya` ServiceAccount; use the current archive ServiceAccount that ships with the storage plugin, or create your own SA with `pods/exec`, `secrets/get`, and access to the archive `hostPath`.
-- The example mounts `kafka-basic-auth` from the ACP 4.3 chart layout. In ACP 4.4 the Kafka credentials live in `platform-default-mq-conn` (see [Installation §1.3.1](../install/index.mdx#131-kafka-secret)). Either mount `platform-default-mq-conn` and adjust the razor consumer flags to read SASL from those keys, or copy the credentials into a Secret with the layout the example expects.
+- The example mounts `kafka-basic-auth` from the ACP 4.3 chart layout. In ACP 4.4 the Kafka credentials live in `platform-default-mq-conn` (see the Kafka connection Secret section of [Installation](../install/index.mdx)). Either mount `platform-default-mq-conn` and adjust the razor consumer flags to read SASL from those keys, or copy the credentials into a Secret with the layout the example expects.
 
 For a v4.4-verified archive workflow, please contact support. The pattern below still works on the Elasticsearch (legacy) backend as documented.
 :::

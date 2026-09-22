@@ -16,7 +16,7 @@ The log storage components hold logs, events, and audit records collected from o
 
 :::
 
-<!-- verify against live testing: numbers below are extrapolated from the ACP 4.3 published profiles for the ClickHouse path, adjusted for the v4.4 topology (Vector sidecar removed, aggregate-vector added). Rerun the standard ingest benchmark on a v4.4 build and update the throughput figures before the release. -->
+{/* verify against live testing: numbers below are extrapolated from the ACP 4.3 published profiles for the ClickHouse path, adjusted for the v4.4 topology (Vector sidecar removed, aggregate-vector added). Rerun the standard ingest benchmark on a v4.4 build and update the throughput figures before the release. */}
 
 ## Common components
 
@@ -73,7 +73,7 @@ The ClickHouse backend is the recommended choice for high throughput and cost-se
 
 The OpenSearch backend is the recommended choice when Lucene-style search experience matters more than raw ingest throughput.
 
-<!-- verify against live testing: OpenSearch throughput numbers below are engineering estimates from the ACP 4.3 Elasticsearch baseline; rerun the standard ingest benchmark on a v4.4 OpenSearch 3.7.0 cluster and replace before the release. -->
+{/* verify against live testing: OpenSearch throughput numbers below are engineering estimates from the ACP 4.3 Elasticsearch baseline; rerun the standard ingest benchmark on a v4.4 OpenSearch 3.7.0 cluster and replace before the release. */}
 
 ### Small — three data nodes, up to ~9,000 logs/s
 

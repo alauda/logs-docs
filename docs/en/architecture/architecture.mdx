@@ -66,7 +66,7 @@ In ACP 4.4 Razor is a stateless Deployment. Earlier releases ran it as a Statefu
 
 Kafka buffers records between Razor and the storage backend. Both ClickHouse and OpenSearch backends require it. ACP 4.4 uses Kafka in KRaft mode, so no Zookeeper is deployed.
 
-The SRE owns the Kafka cluster, the SASL account, the three topics, and their ACLs. `log-storage-operator` verifies that all four are present before it lets `aggregate-vector` and `Razor` roll out. See [Installation §1.1.1](../install/index.mdx#111-kafka) for the exact requirements.
+The SRE owns the Kafka cluster, the SASL account, the three topics, and their ACLs. `log-storage-operator` verifies that all four are present before it lets `aggregate-vector` and `Razor` roll out. See the Kafka prerequisites in [Installation](../install/index.mdx) for the exact requirements.
 
 ## Log Storage
 
@@ -74,7 +74,7 @@ The SRE owns the Kafka cluster, the SASL account, the three topics, and their AC
 
 `aggregate-vector` is a Vector Deployment that consumes from the three Kafka topics, applies Vector Remap Language (VRL) transforms to reshape records for the chosen backend, and writes into ClickHouse or OpenSearch. It replaces the per-pod Vector sidecar used in ACP 4.3 for ClickHouse and takes over the ingest role that Lanaya used to play for Elasticsearch.
 
-The VRL transforms and sink parameters are derived by `log-storage-operator` from the `PlatformLogForward` spec. Operators can tune batching, retry, and backpressure knobs through the PLF or through user-managed overrides; see [Environment Preparation](../prepare/index.mdx) for the SRE-facing configuration surface.
+The VRL transforms and sink parameters are derived by `log-storage-operator` from the `PlatformLogForward` spec. Operators can tune batching, retry, and backpressure knobs through the PLF; see [How to Tune the aggregate-vector Sink](../how_to/aggvec-sink-tuning.mdx) for the tuning surface and [How to Override the aggregate-vector Configuration](../how_to/vector-cm-override.mdx) for the escape hatch when a needed field is not on the CR.
 
 ### ClickHouse
 
@@ -86,7 +86,7 @@ When `PlatformLogForward.spec.externalStorage.type` is `opensearch`, `aggregate-
 
 ### Elasticsearch (legacy)
 
-The Elasticsearch storage plugin remains available for existing customers. Its pipeline (Filebeat → Kafka → Lanaya → Elasticsearch) is unchanged; do not mix a Fresh `PlatformLogForward` on top of it. See [Upgrade](../upgrade/index.mdx) and [Migration](../migration/index.mdx) if you plan to move an Elasticsearch installation onto ClickHouse or OpenSearch.
+The Elasticsearch storage plugin remains available for existing customers. Its pipeline (Filebeat → Kafka → Lanaya → Elasticsearch) is unchanged; do not mix a Fresh `PlatformLogForward` on top of it. See the ACP 4.4 upgrade and migration documentation (delivered separately) if you plan to move an Elasticsearch installation onto ClickHouse or OpenSearch.
 
 ## Log Visualization
 
