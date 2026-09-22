@@ -15,6 +15,16 @@ This document describes the log export or archive solution that transfers logs o
 If you want ClickHouse to use S3 as its native log data storage or cold data storage, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx) and [Installation](../install/index.mdx).
 :::
 
+:::warning ACP 4.4 caveat
+The archive workflow below launches a standalone `razor consumer --database-type=file` Deployment that reads the platform's Kafka topics and writes to NFS or S3. The example manifests were captured against ACP 4.3 and still describe the intended pattern, but several details drift on ACP 4.4:
+
+- The example Razor image tag (`v3.16.0-beta.3.g3df8e987`) is stale. Read the current image tag from the running `deployment/razor` on the storage cluster before you copy the example.
+- The example uses `serviceAccount: lanaya`. On ACP 4.4 ClickHouse or OpenSearch clusters there is no `lanaya` ServiceAccount; use the current archive ServiceAccount that ships with the storage plugin, or create your own SA with `pods/exec`, `secrets/get`, and access to the archive `hostPath`.
+- The example mounts `kafka-basic-auth` from the ACP 4.3 chart layout. In ACP 4.4 the Kafka credentials live in `platform-default-mq-conn` (see [Installation §1.3.1](../install/index.mdx#131-kafka-secret)). Either mount `platform-default-mq-conn` and adjust the razor consumer flags to read SASL from those keys, or copy the credentials into a Secret with the layout the example expects.
+
+For a v4.4-verified archive workflow, please contact support. The pattern below still works on the Elasticsearch (legacy) backend as documented.
+:::
+
 :::info
 On Alauda OS nodes, the host directory that the log export Deployment mounts must be under `/var/cpaas`, for example `/var/cpaas/data/logarchive`. These nodes are immutable and `/cpaas`, the layout of the traditional operating system, is not writable there. Change only `spec.template.spec.volumes[].hostPath.path` in the examples below; the `mountPath` values and the `output.path` value in the `log-exporter-config` ConfigMap are paths inside the container and stay unchanged.
 :::

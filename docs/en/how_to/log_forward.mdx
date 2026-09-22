@@ -1,0 +1,142 @@
+---
+weight: 35
+---
+
+# How to Forward Logs to an External System with LogForward
+
+ACP 4.4 introduces the **`LogForward`** custom resource: a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage plugin.
+
+Each `LogForward` describes an input filter (namespace, workload, log type) and one or more output sinks. `log-storage-operator` renders the CR into a dedicated Vector Deployment that runs alongside the platform's storage-side data path.
+
+Use `LogForward` when you need to:
+
+- Ship a subset of application logs to a corporate SIEM (syslog to Splunk or ArcSight, HTTP to a log intake gateway, Kafka to a separate analytics pipeline).
+- Give a tenant self-service control over their own forwarding without touching the platform's storage plugin.
+- Fan out the same stream to more than one destination (for example, keep logs in the platform for query and ship a copy to a compliance archive).
+
+`LogForward` is separate from and does not replace the platform's storage pipeline. Records still land in the storage cluster's ClickHouse or OpenSearch as usual; `LogForward` produces an additional copy.
+
+## Prerequisites
+
+- ACP 4.4 or later.
+- The storage cluster the tenant lives on has **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch** installed and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
+- The tenant has permission to create resources in the target namespace.
+- The external destination is reachable from every pod in `cpaas-system` on the storage cluster.
+
+## Common Recipes
+
+The examples below sit in the tenant's namespace on the **storage cluster** and are applied with `kubectl apply -f`. Each example describes one output sink; combine sinks in one `spec.outputs` list to fan out.
+
+### Forward workload logs from a namespace to a syslog collector
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: security-workload-syslog
+  namespace: security
+spec:
+  input:
+    logType: workload                       # workload / system / kubernetes / platform / audit / event
+    namespaces:
+      - security                             # tenants can only reference namespaces they own
+  outputs:
+    - name: siem-syslog
+      type: syslog
+      syslog:
+        endpoint: syslog.example.com:514
+        protocol: tcp                        # tcp | udp
+        appName: acp-logs
+        facility: local1
+        severity: informational
+```
+
+<!-- verify against live console: syslog facility / severity enum values need confirming on the CRD; the values above are conventional but may differ from the operator's schema. -->
+
+### Forward audit records to an HTTP intake
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: compliance-audit-http
+  namespace: compliance
+spec:
+  input:
+    logType: audit
+  outputs:
+    - name: audit-intake
+      type: http
+      http:
+        endpoint: https://intake.example.com/logs
+        method: POST
+        contentType: application/json
+        authSecretRef:
+          name: audit-intake-basic
+          namespace: compliance             # Secret keys: username, password
+```
+
+### Forward workload logs to a second Kafka cluster
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: analytics-workload-kafka
+  namespace: analytics
+spec:
+  input:
+    logType: workload
+    workloads:
+      - kind: Deployment
+        name: web-frontend
+      - kind: Deployment
+        name: web-backend
+  outputs:
+    - name: analytics-kafka
+      type: kafka
+      kafka:
+        bootstrap: kafka.analytics.svc:9092
+        topic: web-logs
+        authSecretRef:
+          name: analytics-kafka-sasl
+          namespace: analytics              # Secret keys: username, password, mechanism
+```
+
+<!-- verify against live console: the `input.workloads[]` structure (kind + name) needs confirming against the CRD schema; earlier drafts used a single `workload` string. -->
+
+## Verify
+
+After you apply a `LogForward`, `log-storage-operator` builds a dedicated Vector Deployment for it in the storage cluster's `cpaas-system` namespace. Watch the resource until it reports `Ready=True`:
+
+```bash
+kubectl -n <namespace> get logforward <name> -w
+```
+
+Read the conditions if it does not go Ready:
+
+```bash
+kubectl -n <namespace> get logforward <name> \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+Common failure modes:
+
+| Condition reason | Meaning |
+| --- | --- |
+| `EmptyPredicate` | `spec.input` matches nothing (for example, a namespace that does not exist, or a workload selector with no matches). Fix the filter. |
+| `SinkAuthFailed` | The output's `authSecretRef` is missing keys, or the credentials are wrong. Check the Secret. |
+| `SinkUnreachable` | The output endpoint cannot be reached from `cpaas-system`. Check DNS and network policy. |
+| `VectorSilentExit` | The generated Vector process exited without an error. Usually a config validation issue that Vector surfaces on stdout; read the Deployment's pod logs. |
+
+## Limits and Notes
+
+- One `LogForward` produces at most one Vector Deployment. Multiple `LogForward` resources in the same namespace are independent.
+- The generated Vector reads from the same Kafka topics that the platform's `aggregate-vector` consumes. It uses its own consumer group so it does not interfere with the platform's ingest.
+- Uninstalling **Alauda Container Platform Log Storage for ClickHouse** or **for OpenSearch** stops the operator; any active `LogForward` deployments are removed as part of the storage plugin uninstall.
+- `LogForward` is not intended as a replacement for the platform's storage pipeline. Removing the storage plugin removes log query on the console; `LogForward` alone does not restore that.
+
+## Related Topics
+
+- [Installation](../install/index.mdx) — how to install the storage plugin that publishes the `LogForward` CRD.
+- [How to Archive Logs to Third-Party Storage](./log_archive.mdx) — the older `razor consumer --database-type=file` archive workflow, intended for NFS / S3 archival rather than real-time forwarding.
