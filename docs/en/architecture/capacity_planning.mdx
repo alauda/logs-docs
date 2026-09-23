@@ -13,6 +13,7 @@ The log storage components hold logs, events, and audit records collected from o
 - Disk baseline for the tables: `6000 iops`, `250 MB/s` sequential read and write, SSD, independently mounted. Weaker disks require a larger profile than the table suggests and additional CPU + memory headroom.
 - Kafka runs in KRaft mode. No Zookeeper is deployed; the tables in earlier releases had a separate Zookeeper row that no longer applies.
 - Older ACP releases ran the Elasticsearch backend with a separate `Lanaya` consumer between Kafka and Elasticsearch. The recommended backends (ClickHouse and OpenSearch) do not use Lanaya; the ingest role belongs to `aggregate-vector`.
+- In ACP 4.4 the storage backend (ClickHouse or OpenSearch) and the Kafka cluster are user-owned external endpoints; the sizes below assume the storage cluster and the Kafka cluster are sized against the same profile. If your Kafka is shared with other workloads, size the shared cluster to the sum of every consumer's `Kafka broker` row.
 
 :::
 
