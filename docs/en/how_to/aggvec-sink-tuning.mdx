@@ -17,6 +17,10 @@ Every field is optional. Fields you do not set follow the platform-default basel
 
 ## When to Tune
 
+:::warning Knob scope follows the backend
+The `clickhouse` block under `spec.aggregateVector.sinks` is only rendered when `PlatformLogForward.spec.externalStorage.type` is `clickhouse`. The `opensearch` block is only rendered when the type is `opensearch`. Setting a knob for the other backend on a running cluster is a silent no-op — the values sit in the CR but never reach Vector. Verify the backend with `kubectl get platformlogforward platform-default -o jsonpath='{.spec.externalStorage.type}'` before you edit.
+:::
+
 Reach for these knobs when you observe **one specific symptom** in production. Do not preemptively change defaults.
 
 | Symptom | Sink | Field(s) to consider |

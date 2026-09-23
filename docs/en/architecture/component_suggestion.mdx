@@ -63,3 +63,21 @@ The original Lucene backend used in earlier releases. Same trade-offs as OpenSea
 - **You depend on DevOps Jenkins pipeline archival or ServiceMesh log integration.** Choose the legacy **Alauda Container Platform Log Storage for Elasticsearch** plugin. Follow the ACP 4.3 documentation for the Elasticsearch installation flow.
 
 - **You are upgrading from ACP 4.2 or 4.3 on Elasticsearch and want to move to a supported backend.** See the ACP 4.4 upgrade and migration documentation (delivered separately). The migration path lands on either ClickHouse or OpenSearch based on which target you provision.
+
+## Known OpenSearch backend limitations
+
+The following behaviors have been observed on the OpenSearch backend in live installations. They are not present on the ClickHouse backend. Weigh them against the "Lucene-style query" upside before choosing OpenSearch for a production workload; if any of them is a blocker, pick ClickHouse.
+
+| Area | What happens on OpenSearch | Impact |
+| --- | --- | --- |
+| Record timestamp | The Kafka source overwrites the record timestamp with the ingest time. Log, event, and audit are all affected. | The timestamp shown in the console equals when the record hit the aggregate-vector pod, not when the application emitted the log. Time-range queries against the origin time (for example "show me what happened 5 minutes before the incident") miss records. |
+| Backpressure on the bulk breaker | The OpenSearch sink has no `retry_partial` for item-level rejections in the shipped default. | On a bulk breaker trip (429 / `rejected_execution_exception`) the whole batch is dropped silently. A live cluster lost ~79k records in one incident. Set `spec.aggregateVector.sinks.opensearch.retryPartial: true` — this is the current baseline default in newer builds, but re-check on the cluster you are about to install. |
+| Project-level retention | The project-scoped log retention override (`cpaas.io/project.hotDataRetentionDays`, `cpaas.io/project.logPolicyEnabled`) does not take effect on OpenSearch. The operator skips `log-policy-config`, and the `razor-api` cron job that reconciles the ISM policy only reads, never writes. | Every project keeps the platform-default retention. If per-project retention is a compliance requirement, do not choose OpenSearch. See [How to Set the Retention Time of Cold Data for a Project](../how_to/project-cold-data-retention.mdx). |
+| Audit topic self-healing | If the audit KafkaTopic is deleted, the OpenSearch data path does not self-heal — audit ingest stops until the topic is re-created and the `aggregate-vector` audit consumer is restarted. | An operator-side incident on the audit topic requires manual intervention. |
+| Index replicas | The composable index template ships with `number_of_replicas: 0` even when the PLF or the template appears to declare `1`. | HA claims for OpenSearch replicas should be verified per-index (`GET /_cat/indices?v`) rather than trusted from the PLF spec. |
+
+These are tracked as separate follow-ups on the operator side and may be closed by a later `log-storage-operator` bump; the list above reflects the state as of 2026-09.
+
+:::info Diagnosis path
+The symptom that most often surfaces first is "queries return zero when I filter by a time range around the application timestamp." That is the timestamp-overwrite issue above, not a query problem. Compare `SELECT count() FROM ... WHERE timestamp BETWEEN a AND b` with an unbounded `SELECT count()` before you conclude the data is missing.
+:::

@@ -69,11 +69,17 @@ The change reaches the storage cluster within a minute through the platform's cr
 - ACP 4.3 and later, including ACP 4.4, use the new labels as the source of truth.
 - If your environment still contains legacy labels such as `cpaas.io/project.esIndicesKeepDays` or `cpaas.io/project.esPolicyEnabled`, prefer the new labels for new configurations.
 
-:::warning
-On the **OpenSearch** storage backend, project-level retention overrides are limited to hot-index deletion and follow OpenSearch ISM policy behavior. The `coldDataRetentionDays` label does not apply because OpenSearch tiered storage is provisioned outside the platform. Use platform-default retention on OpenSearch, or apply your own ISM policy on the OpenSearch cluster to enforce longer or shorter retention on specific indices.
-:::
+:::warning Project-level retention does not take effect on OpenSearch
+On the **OpenSearch** storage backend the project-scoped labels above do **not** currently take effect. The operator skips writing `log-policy-config` on the OS backend, and the `razor-api` cron that reconciles the ISM policy only reads the policy, never writes it. As a result:
 
-{/* verify against live testing: OpenSearch project-level retention behavior has known gaps; confirm the exact behavior on a running OpenSearch cluster and refine the warning above. */}
+- `cpaas.io/project.hotDataRetentionDays` — no effect.
+- `cpaas.io/project.coldDataRetentionDays` — no effect (OpenSearch tiered storage is provisioned outside the platform anyway).
+- `cpaas.io/project.logPolicyEnabled` — no effect.
+
+Every project on an OpenSearch storage cluster keeps the platform-default retention. If per-project retention is a compliance requirement, choose the ClickHouse backend, or apply your own ISM policies directly against the OpenSearch cluster.
+
+See [Log Component Selection Guide — Known OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations) for the full list of OS-specific caveats.
+:::
 
 ## Related Topics
 
