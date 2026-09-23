@@ -65,7 +65,7 @@ A minimal set of CRs to bring a Kafka cluster up for logging looks like the foll
 The authoritative reference for this section is `log-storage-operator/config/samples/quickstart_external_ch_kafka.yaml`; the snippets below are trimmed for the doc.
 
 ```yaml
-# 1. SASL password Secret. On MicroOS / FIPS hosts the password MUST be
+# 1. SASL password Secret. On Alauda OS / FIPS hosts the password MUST be
 # at least 32 characters; below that, the broker rejects the KafkaUser with
 # UnacceptableCredential. Generate with one of:
 #   openssl rand -base64 24 | tr -d '\n'   # 32 chars base64

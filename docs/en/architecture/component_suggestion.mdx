@@ -64,9 +64,7 @@ The original Lucene backend used in earlier releases. Same trade-offs as OpenSea
 
 - **You are upgrading from ACP 4.2 or 4.3 on Elasticsearch and want to move to a supported backend.** See the ACP 4.4 upgrade and migration documentation (delivered separately). The migration path lands on either ClickHouse or OpenSearch based on which target you provision.
 
-<a id="known-opensearch-backend-limitations"></a>
-
-## Known OpenSearch backend limitations
+## Known OpenSearch backend limitations \{#known-opensearch-backend-limitations}
 
 The following behaviors have been observed on the OpenSearch backend in live installations. They are not present on the ClickHouse backend. Weigh them against the "Lucene-style query" upside before choosing OpenSearch for a production workload; if any of them is a blocker, pick ClickHouse.
 
