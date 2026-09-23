@@ -6,17 +6,34 @@ weight: 16
 
 Migrate historical log, event, and audit data from the legacy Elasticsearch PVCs to the ClickHouse or OpenSearch storage used by the new data path.
 
-Create `LegacyESMigration` before or after uninstalling the legacy plugin. A resource created after uninstall must list `source.pvcRefs` explicitly. The migration reads the source PVCs; the legacy Elasticsearch workload does not need to keep running.
+## Do you need this?
+
+Historical data migration is optional. Once the new data path is live (see [Upgrade](../upgrade/index.mdx)), it already carries every log, event, and audit record written from cutover onward. This migration only backfills the older data that still lives in the legacy Elasticsearch volumes.
+
+If you skip it, the data written before cutover stays only in the legacy Elasticsearch PVCs and is not queryable from ClickHouse or OpenSearch. Once those source PVCs and PVs are released (see [Upgrade](../upgrade/index.mdx), "Retain the source volumes"), that historical data is gone for good. If your site does not need to query the pre-cutover history from the new storage, skip this chapter and release the source volumes once new-storage verification is complete.
+
+## Prerequisites
+
+- The source is a Logging **4.3** Elasticsearch deployment. Migrating historical data to 4.4 is supported only from 4.3; other source versions are not supported yet.
+- The new data path is `Ready` (see [Upgrade](../upgrade/index.mdx)).
+- The source Elasticsearch PVCs and PVs still exist and their protection is intact.
+- The migration worker image for this release. It is delivered separately from the Logging plugin package — contact Alauda technical support to obtain the image that matches your release. An image that does not match the installed Logging plugin version can fail to exit after data verification. Set it as `spec.image` below.
+- The migrated time range is within the retention of the target tables.
+
+`source.indexScope` supports exact index names and globs and must match at least one index.
+
+Create `LegacyESMigration` while the legacy plugin is still installed, before you uninstall it. The operator then captures the source Elasticsearch volumes automatically, so you do not list them by hand.
 
 :::warning
 The source PVCs and PVs must still exist. Once the source PVCs are deleted, or their PVs are released and cleaned up, the historical data cannot be migrated.
 :::
 
-Before creating the resource, ensure that the new data path is `Ready`, the migration image for this release is available, and the migrated time range is within the retention of the target tables. `source.indexScope` supports exact index names and globs and must match at least one index.
+## Create the migration resource
 
-## Step 1: Create the migration resource
+Choose the tab for your target storage. The two definitions differ only in `target.type`, the connection Secret, and the `options` defaults.
 
-### 1.1 ClickHouse
+<Tabs>
+<Tab label="ClickHouse">
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
@@ -25,11 +42,8 @@ metadata:
   name: platform-es-history                               # Stable migration name, used by the commands below
   namespace: cpaas-system
 spec:
-  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
+  image: <migration-worker-image>                         # Required; release-matched image from Alauda technical support, with registry and tag or digest
   source:
-    # pvcRefs:                                            # Required after uninstall; list every legacy Elasticsearch PVC
-    #   - <legacy-es-pvc-0>
-    #   - <legacy-es-pvc-1>
     indexScope:                                           # Required, selects the historical indices to migrate
       - "log-workload-*"
       - "log-platform-*"
@@ -54,7 +68,8 @@ Save the YAML as `legacy-es-migration.yaml` and apply it:
 kubectl apply -f legacy-es-migration.yaml
 ```
 
-### 1.2 OpenSearch
+</Tab>
+<Tab label="OpenSearch">
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
@@ -63,11 +78,8 @@ metadata:
   name: platform-es-history                               # Stable migration name, used by the commands below
   namespace: cpaas-system
 spec:
-  image: <migration-worker-image>                         # Required; migration image provided for this release, with registry and tag or digest
+  image: <migration-worker-image>                         # Required; release-matched image from Alauda technical support, with registry and tag or digest
   source:
-    # pvcRefs:                                            # Required after uninstall; list every legacy Elasticsearch PVC
-    #   - <legacy-es-pvc-0>
-    #   - <legacy-es-pvc-1>
     indexScope:                                           # Required, selects the historical indices to migrate
       - "log-workload-*"
       - "log-platform-*"
@@ -92,7 +104,14 @@ Save the YAML as `legacy-es-migration.yaml` and apply it:
 kubectl apply -f legacy-es-migration.yaml
 ```
 
-## Step 2: Wait for PrecaptureReady
+</Tab>
+</Tabs>
+
+:::tip
+Fallback for an already-uninstalled plugin: if the legacy plugin was uninstalled before this resource was created, the operator can no longer capture the source volumes for you. Add `source.pvcRefs` listing every retained PVC that backed the legacy Elasticsearch StatefulSets (`cpaas-elasticsearch`, `cpaas-elasticsearch-master`); find them with `kubectl -n cpaas-system get pvc` before they are released. Prefer creating the resource before uninstalling, which avoids this.
+:::
+
+## Wait for PrecaptureReady
 
 Watch the resource:
 
@@ -102,13 +121,13 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history -w
 
 Wait for the resource to reach `PrecaptureReady`. Data copy has not started at this phase.
 
-If the legacy plugin is still installed, return to [Upgrade](../upgrade/index.mdx), Step 2, and uninstall it. If it is already uninstalled, continue to the next step.
+`PrecaptureReady` means the source is captured and the volumes are protected. Now uninstall the legacy plugin: follow [Upgrade](../upgrade/index.mdx), "Uninstall the legacy Elasticsearch plugin", then return here. (If it was already uninstalled, the copy proceeds on its own.)
 
 :::warning
 If the phase is `Blocked` or `Failed`, do not delete or recreate the migration resource, Jobs, source volumes, or new-storage data. Read the condition message and contact Alauda support.
 :::
 
-## Step 3: Wait for the migration to succeed
+## Wait for the migration to succeed
 
 After the legacy plugin is uninstalled, the worker starts copying data. Watch the same resource until the phase is `Succeeded`:
 
@@ -119,7 +138,7 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history \
 
 Do not change the `PlatformLogForward` or its connection Secret while migration is running.
 
-## Step 4: Verify the migration
+## Verify the migration
 
 Run the production log, event, and audit queries against ClickHouse or OpenSearch and confirm that the historical range is present.
 

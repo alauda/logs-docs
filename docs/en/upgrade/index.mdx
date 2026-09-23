@@ -7,10 +7,12 @@ weight: 15
 Upgrade an existing ACP deployment from the legacy Elasticsearch log storage plugin to ClickHouse or OpenSearch.
 
 :::warning
-Do not uninstall the legacy plugin, stop the legacy data path, or delete its PVCs, PVs, or protection finalizers before this procedure requires it. Do not stop or scale the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads.
+Do not uninstall the legacy plugin, stop the legacy data path, or delete or unprotect its PVCs and PVs before this procedure requires it. Do not stop or scale the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads.
 :::
 
 ## Before you start
+
+This flow upgrades a cluster running **Alauda Container Platform Log Storage for Elasticsearch** to the ACP 4.4 ClickHouse or OpenSearch data path. Supported source Logging plugin versions are **4.2.x** and **4.3.x**; earlier versions are not supported yet.
 
 Run these checks on the workload cluster before installing the new data path:
 
@@ -22,7 +24,7 @@ kubectl -n cpaas-system get statefulset cpaas-elasticsearch cpaas-elasticsearch-
 
 `AppRelease/logcenter` is the trigger for the legacy upgrade flow. If it is missing, stop: the annotation alone does not start this flow.
 
-## Step 1: Install the new data path
+## Install the new data path
 
 Follow [Installation](../install/index.mdx) to create the connection Secrets and the `PlatformLogForward` for ClickHouse or OpenSearch.
 
@@ -58,7 +60,14 @@ kubectl -n cpaas-system get platformlogforward platform-default \
   -o jsonpath='{range .status.conditions[?(@.type=="LegacyKafkaDrained")]}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-## Step 2: Uninstall the legacy Elasticsearch plugin
+## Decide on historical data
+
+Uninstalling the legacy plugin is the point of no return for the pre-cutover history. The new data path already carries everything written after cutover, but the older data still lives only on the legacy Elasticsearch volumes.
+
+- If you need that history in the new storage, set it up now: follow [Historical Data Migration](../migration/index.mdx) to create the migration resource and wait until it reports `PrecaptureReady`, which captures the source. Then return here to uninstall.
+- If you do not need it, continue.
+
+## Uninstall the legacy Elasticsearch plugin
 
 :::warning
 Before this step, verify all of the following:
@@ -175,10 +184,10 @@ Resource reappearance handling:
 - A global-cluster sequence failure before `ModuleInfo` deletion must be fixed and the global sequence rerun. Do not run the workload-cluster sequence for that attempt.
 :::
 
-## Step 3: Retain the source volumes
+## Retain the source volumes
 
-Keep the protected legacy Elasticsearch PVCs and PVs until new-storage verification is complete and cleanup is approved. Do not remove protection annotations or finalizers, and do not delete the PVCs or PVs.
+Keep the protected legacy Elasticsearch PVCs and PVs until new-storage verification is complete and cleanup is approved. Do not remove their protection, and do not delete the PVCs or PVs.
 
 Only the Elasticsearch PVCs and PVs are retained by this upgrade. Legacy Kafka and ZooKeeper volumes are not retained.
 
-For historical data migration, see [Historical Data Migration](../migration/index.mdx).
+If you set up historical data migration, the worker starts copying now that the plugin is gone. Return to [Historical Data Migration](../migration/index.mdx) to watch it reach `Succeeded` and verify the data before these volumes are released.

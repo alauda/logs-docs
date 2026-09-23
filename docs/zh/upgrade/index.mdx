@@ -8,10 +8,12 @@ sourceSHA: 91717744712477d4ff3282e3d6e128fbe3fe40cf2bb167e0289b768c3da3e75f
 将现有 ACP 部署中的旧 Elasticsearch 日志存储插件升级为 ClickHouse 或 OpenSearch。
 
 :::warning
-在本文档要求之前，请勿卸载旧插件、停止旧数据链路，或删除其 PVC、PV 和保护 finalizer。也不要停止或缩容旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载。
+在本文档要求之前，请勿卸载旧插件、停止旧数据链路，或删除、取消保护其 PVC 和 PV。也不要停止或缩容旧的 Elasticsearch、Kafka、ZooKeeper、lanaya 与 Razor 工作负载。
 :::
 
 ## 开始之前
+
+本流程将运行 **Alauda Container Platform Log Storage for Elasticsearch** 的集群升级到 ACP 4.4 的 ClickHouse 或 OpenSearch 数据链路。支持的源端 Logging 插件版本为 **4.2.x** 和 **4.3.x**；更早版本暂不支持。
 
 安装新数据链路前，在业务集群执行以下检查：
 
@@ -23,7 +25,7 @@ kubectl -n cpaas-system get statefulset cpaas-elasticsearch cpaas-elasticsearch-
 
 `AppRelease/logcenter` 是进入旧 Elasticsearch 升级流程的触发条件。如果不存在，请停止；仅添加 annotation 不会进入该流程。
 
-## 步骤 1：安装新数据链路
+## 安装新数据链路
 
 按[安装](../install/index.mdx)创建连接 Secret，并为 ClickHouse 或 OpenSearch 创建 `PlatformLogForward`。
 
@@ -59,7 +61,14 @@ kubectl -n cpaas-system get platformlogforward platform-default \
   -o jsonpath='{range .status.conditions[?(@.type=="LegacyKafkaDrained")]}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-## 步骤 2：卸载旧 Elasticsearch 插件
+## 是否需要迁移历史数据
+
+卸载旧插件是切换前历史数据的不可逆节点。新数据链路已承载切换之后写入的全部数据，但更早的数据仍只存在于旧 Elasticsearch 存储卷上。
+
+- 如果需要在新存储中保留这些历史数据，现在就先做迁移：按[历史数据迁移](../migration/index.mdx)创建迁移资源，等待其进入 `PrecaptureReady`（此时会捕获源端）。然后返回这里执行卸载。
+- 如果不需要，继续。
+
+## 卸载旧 Elasticsearch 插件
 
 :::warning
 执行本步骤前，确认以下条件全部满足：
@@ -176,10 +185,10 @@ kubectl -n cpaas-system get ingress razor
 - global 集群流程在删除 `ModuleInfo` 之前失败时，修复原因并重新执行 global 集群流程；本次不要执行业务集群流程。
 :::
 
-## 步骤 3：保留源端存储卷
+## 保留源端存储卷
 
-在新存储校验完成、且清理获得批准之前，请保留受保护的旧 Elasticsearch PVC 和 PV。请勿移除保护注解或 finalizer，也不要删除这些 PVC 和 PV。
+在新存储校验完成、且清理获得批准之前，请保留受保护的旧 Elasticsearch PVC 和 PV。请勿移除它们的保护，也不要删除这些 PVC 和 PV。
 
 本次升级只保留 Elasticsearch 的 PVC 和 PV。旧 Kafka 和 ZooKeeper 的存储卷不在保留范围内。
 
-如需迁移历史数据，请参见[历史数据迁移](../migration/index.mdx)。
+如果你已设置历史数据迁移，插件卸载后 worker 即开始复制数据。返回[历史数据迁移](../migration/index.mdx)，观察其进入 `Succeeded` 并校验数据，然后再释放这些存储卷。
