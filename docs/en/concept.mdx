@@ -57,10 +57,10 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 **Positioning**: Kafka-to-storage sink Deployment
 **Description**: The Vector Deployment that consumes from the three Kafka topics (`ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`), applies VRL transforms to shape records for the chosen backend, and writes into ClickHouse or OpenSearch. Replaces the per-pod Vector sidecar used in ACP 4.3 for ClickHouse and takes over the role that Lanaya used to play for Elasticsearch.
 
-### Courier
+### razor-api
 
 **Positioning**: Log query API
-**Description**: The **Alauda Container Platform Log Essentials** plugin publishes Courier on the `global` cluster. Courier fronts the log, event, and audit query endpoints used by the ACP console and routes the underlying queries to the appropriate storage cluster.
+**Description**: The **Alauda Container Platform Log Essentials** plugin publishes `razor-api` on the `global` cluster (ModuleInfo `log-api`). `razor-api` fronts the log, event, and audit query endpoints used by the ACP console and routes the underlying queries to the appropriate storage cluster's Razor.
 
 ## Custom Resources
 
@@ -141,6 +141,6 @@ graph LR
     D --> E[aggregate-vector<br/>Deployment]
     E -->|ClickHouse| F[ClickHouse<br/>columnar]
     E -->|OpenSearch| G[OpenSearch<br/>inverted index]
-    F --> H[Courier / Log Essentials<br/>query API]
+    F --> H[razor-api / Log Essentials<br/>query API on global]
     G --> H
 ```

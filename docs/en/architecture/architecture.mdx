@@ -28,7 +28,7 @@ flowchart LR
       V -->|write| S2[(OpenSearch)]
     end
     subgraph global["global cluster"]
-      Q[Courier<br/>Log Essentials]
+      Q[razor-api<br/>Log Essentials]
     end
     S1 --> Q
     S2 --> Q
@@ -66,7 +66,7 @@ Razor is a stateless Deployment. Earlier releases ran it as a StatefulSet with a
 
 Kafka buffers records between Razor and the storage backend. Both ClickHouse and OpenSearch backends require it. Kafka runs in KRaft mode, so no Zookeeper is deployed.
 
-The SRE owns the Kafka cluster, the SASL account, the three topics, and their ACLs. `log-storage-operator` verifies that all four are present before it lets `aggregate-vector` and `Razor` roll out. See the Kafka prerequisites in [Installation](../install/index.mdx) for the exact requirements.
+The SRE owns the Kafka cluster, the SASL account, the three topics, and their ACLs. `log-storage-operator` verifies only the connection Secret (`platform-default-mq-conn`, its required keys) before it lets `aggregate-vector` and `Razor` roll out; the broker-side ACL and topics are validated at runtime through the SASL / GroupAuthorization errors those consumers surface. See the Kafka prerequisites in [Installation](../install/index.mdx) for the exact requirements.
 
 ## Log Storage
 
@@ -82,7 +82,7 @@ When `PlatformLogForward.spec.externalStorage.type` is `clickhouse`, `aggregate-
 
 ### OpenSearch
 
-When `PlatformLogForward.spec.externalStorage.type` is `opensearch`, `aggregate-vector` writes into rolling indices per log type. Composable templates and ISM policies are provisioned by an OpenSearch-specific one-shot Job.
+When `PlatformLogForward.spec.externalStorage.type` is `opensearch`, `aggregate-vector` writes into rolling indices per log type. Composable index templates and ISM policies are provisioned by an `opensearch-index-init` Job that `log-storage-operator` derives from the PLF.
 
 ### Elasticsearch (legacy)
 
@@ -98,4 +98,4 @@ The ACP console reads through the query APIs published by **Alauda Container Pla
 | Event query | `/platform/events.alauda.io/v1` |
 | Audit query | `/platform/audits.alauda.io/v1` |
 
-Courier (Log Essentials) receives the request, picks the storage cluster from the request, and forwards the query to that cluster's Razor. Razor executes it against the local ClickHouse or OpenSearch endpoint and returns the results.
+`razor-api` (the Log Essentials plugin's Deployment on `global`; ModuleInfo `log-api`) receives the request, picks the storage cluster from the request, and forwards the query to that cluster's Razor. Razor executes it against the local ClickHouse or OpenSearch endpoint and returns the results.
