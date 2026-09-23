@@ -4,53 +4,114 @@ weight: 35
 
 # How to Forward Logs to an External System with LogForward
 
-The **`LogForward`** custom resource is a namespace-scoped CR that lets tenants forward their own log stream to an external system (syslog, HTTP, or Kafka), independently of the platform's built-in storage operator.
-
-Each `LogForward` describes an input filter (namespace, workload, log type) and one or more output sinks. `log-storage-operator` renders the CR into a dedicated Vector Deployment that runs alongside the platform's storage-side data path.
-
-Use `LogForward` when you need to:
-
-- Ship a subset of application logs to a corporate SIEM (syslog to Splunk or ArcSight, HTTP to a log intake gateway, Kafka to a separate analytics pipeline).
-- Give a tenant self-service control over their own forwarding without touching the platform's storage operator.
-- Fan out the same stream to more than one destination (for example, keep logs in the platform for query and ship a copy to a compliance archive).
+The **`LogForward`** custom resource lets tenants forward the platform's log stream to an external system (Elasticsearch, OpenSearch, Loki, syslog, HTTP, ClickHouse, Kafka, console, or an advanced-sink escape hatch), independently of the platform's built-in storage operator. Each CR reads the platform's Kafka topics and produces one Vector Deployment.
 
 `LogForward` is separate from and does not replace the platform's storage pipeline. Records still land in the storage cluster's ClickHouse or OpenSearch as usual; `LogForward` produces an additional copy.
+
+The authoritative CRD source is `api/v1alpha1/logforward_types.go` in `log-storage-operator`. The samples below are trimmed from `config/samples/logforward_*.yaml`.
 
 ## Prerequisites
 
 - The storage cluster the tenant lives on has **Alauda Container Platform Log Storage Management** installed and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
-- The tenant has permission to create resources in the target namespace.
-- The external destination is reachable from every pod in `cpaas-system` on the storage cluster.
+- The external destination is reachable from the storage cluster's `cpaas-system` namespace.
+- Any Secret referenced by `spec.output.authSecretRef` or `spec.output.tls.caSecretRef` lives in `cpaas-system`. The webhook rejects a `LogForward` that references Secrets in any other namespace.
+
+:::warning `LogForward` lives in `cpaas-system` only
+The admission webhook `validate-lf.log.alauda.io` rejects any `LogForward` created outside `cpaas-system`. This is a hard constraint from Bug 205 (zero-touch operator ns): the operator only reconciles Vector Deployments and Secrets in its operand namespace, and cross-namespace secret plumbing was deliberately removed. The platform administrator, not the tenant, is expected to author each `LogForward`.
+:::
+
+## Spec shape
+
+Every `LogForward` has four sections:
+
+- `spec.inputs[]` — one or more logical topics the CR consumes. Each input picks a `type` (`log`, `audit`, or `event`) that maps to the platform's Kafka topic, and an optional `selector` that filters by `namespaces` or `podLabels`.
+- `spec.filters[]` — optional list of typed transforms (`parse`, `filter`, `redact`, `prune`, `remapFields`). Raw VRL is not allowed.
+- `spec.pipelines[]` — required list that wires each pipeline's `inputRefs` and optional `filterRefs` into the single output.
+- `spec.output` — exactly one sink. `type` picks the sink and the matching type-specific block carries its parameters; the shared `endpoint`, `authSecretRef`, and `tls` fields sit at the output's top level.
 
 ## Common Recipes
 
-The examples below sit in the tenant's namespace on the **storage cluster** and are applied with `kubectl apply -f`. Each example describes one output sink; combine sinks in one `spec.outputs` list to fan out.
+### Mirror the platform's log and audit streams to a user Kafka
 
-### Forward workload logs from a namespace to a syslog collector
+Two inputs, no filters, one pipeline per input, all fanned into the same Kafka mirror sink.
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
 kind: LogForward
 metadata:
-  name: security-workload-syslog
-  namespace: security
+  name: audit-mirror
+  namespace: cpaas-system
 spec:
-  input:
-    logType: workload                       # workload / system / kubernetes / platform / audit / event
-    namespaces:
-      - security                             # tenants can only reference namespaces they own
-  outputs:
-    - name: siem-syslog
-      type: syslog
-      syslog:
-        endpoint: syslog.example.com:514
-        protocol: tcp                        # tcp | udp
-        appName: acp-logs
-        facility: local1
-        severity: informational
+  replicas: 2
+  inputs:
+    - name: audit-in
+      type: audit
+      initialOffset: Latest
+    - name: log-in
+      type: log
+      initialOffset: Latest
+      selector:
+        namespaces:
+          include: [default, kube-system]
+  pipelines:
+    - name: audit-pipe
+      inputRefs: [audit-in]
+    - name: log-pipe
+      inputRefs: [log-in]
+  output:
+    type: kafka
+    # Secret keys: username / password. Mounted as OUTPUT_KAFKA_USERNAME
+    # and OUTPUT_KAFKA_PASSWORD, rendered into [sinks.output.sasl].
+    authSecretRef:
+      name: user-kafka-mirror-auth
+    kafka:
+      bootstrapServers: user-broker-1.example.com:9092,user-broker-2.example.com:9092
+      topic: platform-mirror-logs
+      saslMechanism: SCRAM-SHA-512      # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | ""
+      compression: gzip                 # none | gzip | snappy | lz4 | zstd
 ```
 
-{/* verify against live console: syslog facility / severity enum values need confirming on the CRD; the values above are conventional but may differ from the operator's schema. */}
+### Forward the platform's log stream to a user OpenSearch, with prune and redact
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: user-opensearch
+  namespace: cpaas-system
+spec:
+  replicas: 2
+  inputs:
+    - name: platform-log
+      type: log
+      initialOffset: Latest
+  filters:
+    - name: strip-noise
+      type: prune
+      prune:
+        deny: [pod_labels, node_name]
+    - name: redact-token
+      type: redact
+      redact:
+        fields: [access_token, password]
+        replacement: "[REDACTED]"
+  pipelines:
+    - name: to-os
+      inputRefs: [platform-log]
+      filterRefs: [strip-noise, redact-token]
+  output:
+    type: opensearch                     # elasticsearch driver, OS-compatible
+    endpoint: https://user-os.example.com:9200
+    authSecretRef:
+      name: user-os-basic-auth           # Secret keys: username / password
+    tls:
+      verify: true
+      caSecretRef:
+        name: user-os-tls-ca             # Secret key: ca.crt
+    opensearch:
+      index: acp-forward-%Y%m%d          # strftime template
+      bulkAction: create                 # create | index | update
+```
 
 ### Forward audit records to an HTTP intake
 
@@ -59,83 +120,90 @@ apiVersion: log.alauda.io/v1alpha1
 kind: LogForward
 metadata:
   name: compliance-audit-http
-  namespace: compliance
+  namespace: cpaas-system
 spec:
-  input:
-    logType: audit
-  outputs:
-    - name: audit-intake
-      type: http
-      http:
-        endpoint: https://intake.example.com/logs
-        method: POST
-        contentType: application/json
-        authSecretRef:
-          name: audit-intake-basic
-          namespace: compliance             # Secret keys: username, password
+  inputs:
+    - name: audit-in
+      type: audit
+  pipelines:
+    - name: to-intake
+      inputRefs: [audit-in]
+  output:
+    type: http
+    endpoint: https://intake.example.com/logs
+    authSecretRef:
+      name: audit-intake-basic           # Secret keys: username / password
+    http:
+      method: post                       # post | put
+      encodingCodec: json                # json | text
+      framingMethod: newline_delimited   # newline_delimited | character_delimited
 ```
 
-### Forward workload logs to a second Kafka cluster
+:::warning HTTP `authSecretRef` and `Authorization` header are mutually exclusive
+vector's http sink refuses to start with both `[sinks.output.auth]` and a `headers.Authorization` entry — the message is `Authorization header can not be used with defined auth options`. Pick one path:
+
+- Basic auth: set `authSecretRef`, leave `http.headers` without an `Authorization` entry.
+- API token / JWT: leave `authSecretRef` unset and put the full value in `http.headers.Authorization` yourself (for example `Bearer <jwt>` or `Splunk <token>`).
+
+The webhook rejects the conflict at admission time. (Bug 210 F-1.)
+:::
+
+### Ship a namespace's log stream to a syslog collector
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
 kind: LogForward
 metadata:
-  name: analytics-workload-kafka
-  namespace: analytics
+  name: security-workload-syslog
+  namespace: cpaas-system
 spec:
-  input:
-    logType: workload
-    workloads:
-      - kind: Deployment
-        name: web-frontend
-      - kind: Deployment
-        name: web-backend
-  outputs:
-    - name: analytics-kafka
-      type: kafka
-      kafka:
-        bootstrap: kafka.analytics.svc:9092
-        topic: web-logs
-        authSecretRef:
-          name: analytics-kafka-sasl
-          namespace: analytics              # Secret keys: username, password, mechanism
+  inputs:
+    - name: security-ns
+      type: log
+      selector:
+        namespaces:
+          include: [security]
+  pipelines:
+    - name: to-syslog
+      inputRefs: [security-ns]
+  output:
+    type: syslog
+    endpoint: syslog.example.com:514
+    syslog:
+      mode: tcp                          # tcp | udp | unix | tls
 ```
 
-{/* verify against live console: the `input.workloads[]` structure (kind + name) needs confirming against the CRD schema; earlier drafts used a single `workload` string. */}
+:::info Syslog wire format
+The output uses `encoding.codec = "json"` and writes the entire event as one JSON string per record. The operator does not construct RFC 5424 PRI headers or map fields to syslog facility / severity — the receiving server is expected to parse the JSON body. This matches the v4.3 `chart-alauda-log-agent` on-wire contract; the pt L / M rewrite that tried to emit RFC 5424 was reverted in beta.322 after two vector 0.55 codec bugs silently dropped every event.
+:::
 
 ## Verify
 
-After you apply a `LogForward`, `log-storage-operator` builds a dedicated Vector Deployment for it in the storage cluster's `cpaas-system` namespace. Watch the resource until it reports `Ready=True`:
+After you apply a `LogForward`, `log-storage-operator` builds a Vector Deployment for it in `cpaas-system`. Watch the resource until it reports `Ready=True`:
 
 ```bash
-kubectl -n <namespace> get logforward <name> -w
+kubectl -n cpaas-system get logforward <name> -w
 ```
 
 Read the conditions if it does not go Ready:
 
 ```bash
-kubectl -n <namespace> get logforward <name> \
+kubectl -n cpaas-system get logforward <name> \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
-Common failure modes:
-
-| Condition reason | Meaning |
-| --- | --- |
-| `EmptyPredicate` | `spec.input` matches nothing (for example, a namespace that does not exist, or a workload selector with no matches). Fix the filter. |
-| `SinkAuthFailed` | The output's `authSecretRef` is missing keys, or the credentials are wrong. Check the Secret. |
-| `SinkUnreachable` | The output endpoint cannot be reached from `cpaas-system`. Check DNS and network policy. |
-| `VectorSilentExit` | The generated Vector process exited without an error. Usually a config validation issue that Vector surfaces on stdout; read the Deployment's pod logs. |
+The `LogForward` status is deliberately minimal — `observedGeneration`, `Phase`, and readiness `conditions`. It does not report consumer group, topic, lag, partition, offset, replica detail, output name, endpoint, or Secret name. For runtime data-path issues, read the generated Vector Deployment's pod logs.
 
 ## Limits and Notes
 
-- One `LogForward` produces at most one Vector Deployment. Multiple `LogForward` resources in the same namespace are independent.
-- The generated Vector reads from the same Kafka topics that the platform's `aggregate-vector` consumes. It uses its own consumer group so it does not interfere with the platform's ingest.
-- Uninstalling **Alauda Container Platform Log Storage Management** stops the operator; any active `LogForward` deployments are removed as part of the storage operator uninstall.
+- One `LogForward` produces exactly one Vector Deployment. Each replica joins the same Kafka consumer group.
+- The consumer group name is `logforward-<lf-name>`. The platform's `KafkaUser` must include a `logforward-` group **prefix** ACL rule; without it, vector silently fails with `GroupAuthorizationFailed` and the LF reports `Ready=True` while reading zero records. See [Installation](../install/index.mdx) Section 1.1.1 step 3 for the required ACL. (Bug 168d v2.)
+- One `LogForward` has exactly one `output`. To fan out to multiple destinations, create one `LogForward` per destination.
+- Every `filter` of type `filter` must set at least one non-empty predicate (`equals`, `notEquals`, `contains`, or `matches`) per condition. An all-empty condition compiles to `false` and aborts every event silently — the webhook rejects it at admission. (Bug 173 pt1.)
+- Uninstalling **Alauda Container Platform Log Storage Management** stops the operator; any active `LogForward` Deployments are removed as part of the storage operator uninstall.
 - `LogForward` is not intended as a replacement for the platform's storage pipeline. Removing the storage operator removes log query on the console; `LogForward` alone does not restore that.
 
 ## Related Topics
 
-- [Installation](../install/index.mdx) — how to install the storage operator that publishes the `LogForward` CRD.
+- [Installation](../install/index.mdx) — how to install the storage operator that publishes the `LogForward` CRD, and how to set up the `logforward-` KafkaUser prefix ACL rule.
 - [How to Archive Logs to Third-Party Storage](./log_archive.mdx) — the older `razor consumer --database-type=file` archive workflow, intended for NFS / S3 archival rather than real-time forwarding.
