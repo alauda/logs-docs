@@ -701,17 +701,10 @@ After every plugin is `Running`, verify that new records actually flow from a co
 
 If no records arrive within ten minutes, before changing configuration, work through the layers in order: collector `ModuleInfo` status → `PlatformLogForward` conditions → Kafka topic activity → backend ingest.
 
-## 5. Uninstall order
+## Next steps
 
-Uninstall in the reverse of the install order:
+Once every plugin above reports installed:
 
-1. On every collector cluster, uninstall **Alauda Container Platform Log Collector**. Wait for the DaemonSet pods to be removed.
-2. On every storage cluster, delete `PlatformLogForward/platform-default` and wait for it to be gone. `log-storage-operator` cleans up its derived resources through finalizer processing.
-3. On every storage cluster, uninstall **Alauda Container Platform Log Storage Management**.
-4. On the `global` cluster, uninstall **Alauda Container Platform Log Essentials**.
-
-The external ClickHouse (or OpenSearch) cluster and the external Kafka cluster are outside the plugin lifecycle and remain untouched by uninstall. Delete their CRs by hand when you no longer need the data.
-
-:::warning
-The connection Secrets (`platform-default-mq-conn`, `platform-default-ch-conn`, `platform-default-os-conn`) are not deleted by plugin uninstall. Remove them manually only after you are certain no other component in `cpaas-system` still reads them.
-:::
+- Walk the seven-step [How to Verify a Fresh Install of the Logging Stack](../how_to/post-install-verification.mdx) checklist to confirm the write path and the read path are both working end to end.
+- If a step fails, jump straight to the matching entry in [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
+- When you eventually retire this install, follow [How to Uninstall the Logging Stack](../how_to/uninstall.mdx). The external ClickHouse (or OpenSearch) cluster, the external Kafka cluster, and the two SRE-authored connection Secrets are outside the plugin lifecycle — that page names the exact commands to reclaim each.
