@@ -1,0 +1,122 @@
+---
+weight: 45
+---
+
+# How to Override the aggregate-vector Configuration
+
+`log-storage-operator` reconciles the ConfigMap that carries the Vector configuration for `aggregate-vector` and for each `LogForward`. Every time the ConfigMap drifts from what the operator derives from `PlatformLogForward` (or from `LogForward`), the operator patches it back.
+
+For a short-term investigation or a temporary workaround, you can pin the ConfigMap so that the operator stops patching it and your edits survive. Set the `log.alauda.io/user-managed=true` annotation on the ConfigMap. Remove the annotation when you are done; the operator will then rebuild the ConfigMap from the CR on the next reconcile and your edits will be gone.
+
+:::warning
+This is an escape hatch, not a supported configuration surface. Use it only when you have a specific short-term reason and remove it as soon as the reason is gone.
+
+If your change is long-term, request a first-class field on the CR spec (or use the existing knobs in [How to Tune the aggregate-vector Sink](./aggvec-sink-tuning.mdx)) instead of leaving the annotation on for a whole release.
+:::
+
+## Which ConfigMaps accept the annotation
+
+Only two families of ConfigMap consume this annotation:
+
+| ConfigMap | Derived from |
+| --- | --- |
+| `aggregate-vector-config` in `cpaas-system` | `PlatformLogForward/platform-default` |
+| `logforward-<name>-config` in `cpaas-system` | Each `LogForward` CR |
+
+Every other resource the operator manages — Razor Deployment, Kafka resources, ServiceAccount, Ingress, and side resources — ignores the annotation and continues to reconcile normally.
+
+## Common use cases
+
+- Add a Vector `data_dir` or a transform that the CR spec does not expose.
+- Add a `console` sink or a `#!DEBUG` block while investigating a Vector bug.
+- Freeze the exact Vector configuration for a reproduction window.
+
+If any of the above becomes routine on your cluster, request the corresponding CR field and stop using the escape hatch.
+
+## Turn the escape hatch on
+
+Annotate the ConfigMap you want to pin:
+
+```bash
+# For aggregate-vector
+kubectl annotate cm/aggregate-vector-config -n cpaas-system \
+  log.alauda.io/user-managed=true
+
+# For a LogForward
+kubectl annotate cm/logforward-<name>-config -n cpaas-system \
+  log.alauda.io/user-managed=true
+```
+
+Then edit the ConfigMap as you normally would:
+
+```bash
+kubectl edit cm/aggregate-vector-config -n cpaas-system
+```
+
+`log-storage-operator` skips the patch on the next reconcile and logs:
+
+```
+skip reconcile: ConfigMap is user-managed (log.alauda.io/user-managed=true)
+```
+
+## Roll the pod so your edit takes effect
+
+Vector pods do not restart automatically when a user-managed ConfigMap changes, because the operator only computes its rollout hash from the resources it manages. Restart the Deployment yourself:
+
+```bash
+# For aggregate-vector
+kubectl rollout restart deploy/aggregate-vector -n cpaas-system
+
+# For a LogForward
+kubectl rollout restart deploy/logforward-<name> -n cpaas-system
+```
+
+## Turn the escape hatch off
+
+Remove the annotation:
+
+```bash
+kubectl annotate cm/aggregate-vector-config -n cpaas-system \
+  log.alauda.io/user-managed-
+```
+
+On the next reconcile the operator rebuilds the ConfigMap from the CR spec, discarding your edits.
+
+## How the platform interprets the annotation
+
+| ConfigMap state | Operator action |
+| --- | --- |
+| ConfigMap missing (fresh install) | Create it with the CR-derived baseline. The annotation does not block creation. |
+| ConfigMap present, no annotation | Patch it to match the CR-derived baseline (normal behavior). |
+| ConfigMap present, annotation exactly `"true"` | Skip the patch. Your edits stay. |
+| ConfigMap present, annotation set to any other value (`"false"`, `"True"`, `"1"`, `"yes"`) | Patch it (the annotation must equal the exact string `"true"`). |
+
+The value comparison is intentionally strict so an accidental typo does not silently pin a ConfigMap.
+
+## Interaction with other annotations
+
+The platform uses a handful of resource-level annotations for different purposes. They do not conflict and can coexist:
+
+| Annotation | Prevents | Scope |
+| --- | --- | --- |
+| `log.alauda.io/user-managed=true` | The operator's patch of a Vector ConfigMap | `aggregate-vector-config`, `logforward-<name>-config` only |
+| `skip-sync=true` | Sentry / cluster-transformer drift-back rewrites | Broad set of platform-managed resources |
+| `helm.sh/resource-policy=keep` | Helm's delete on uninstall | Any Helm-managed resource |
+
+## Before you upgrade
+
+Before you upgrade the storage operator, check whether any cluster still has the annotation set. New operator versions may fix behavior or ship new sink defaults; a pinned ConfigMap keeps you on the old configuration and can hide the fix.
+
+```bash
+# List all ConfigMaps managed by log-storage-operator that carry the annotation
+kubectl get cm -A -l log.alauda.io/managed-by=log-storage-operator -o yaml \
+  | grep -B 2 'user-managed'
+```
+
+Remove the annotation on any ConfigMap that no longer needs it, verify the CR spec captures the pin you needed, and only then upgrade.
+
+## Related Topics
+
+- [How to Tune the aggregate-vector Sink](./aggvec-sink-tuning.mdx) — the supported knobs that most tuning requests fit into.
+- [How to Forward Logs to an External System with LogForward](./log_forward.mdx) — the CR that produces `logforward-<name>-config` ConfigMaps.
+- [Installation](../install/index.mdx) — the PLF creation flow.

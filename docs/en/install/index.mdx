@@ -1,0 +1,710 @@
+---
+weight: 14
+---
+
+# Installation
+
+This chapter installs the logging stack on a fresh platform. If you are moving an existing ACP 4.3 install to 4.4 instead, see [Upgrade from ACP 4.3 to 4.4](../upgrade.mdx).
+
+The stack has three parts and installs in this order:
+
+1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the Log Storage operator and hand the endpoints to it. This runs on every storage cluster.
+2. **Log Collector** — install the collector plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
+3. **Log Essentials** — install once on the `global` cluster; publishes the query APIs used by the console.
+
+At the end, the ACP console can query the collected data in **Operations Center** > **Logs**.
+
+{/* verify against live console: menu label may be "Operations Center" or "Ops Center"; confirm on a running build. */}
+
+## What you install
+
+The stack ships as three cluster components — two plugins (Log Essentials and Log Collector) and one operator (Log Storage Management). Install only the components that match your topology.
+
+| Component | Kind | Where to install | Purpose |
+| --- | --- | --- | --- |
+| **Alauda Container Platform Log Storage Management** | Operator | Every cluster that stores logs | Deploys `log-storage-operator`, which watches `PlatformLogForward` and builds the storage-side data path (aggregate-vector, Razor, schema-migrations) against either ClickHouse or OpenSearch. The backend choice lives in the PLF, not in the operator install form. |
+| **Alauda Container Platform Log Collector** | Plugin | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
+| **Alauda Container Platform Log Essentials** | Plugin | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
+
+A single storage cluster picks ClickHouse **or** OpenSearch as its backend and serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
+
+For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component Selection Guide](../architecture/component_suggestion.mdx).
+
+:::warning
+
+- **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow the ACP 4.4 upgrade and migration documentation (delivered separately) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
+- **Alauda Container Platform Log Storage for Elasticsearch** is retained for existing customers but is no longer the recommended backend for a fresh install. Choose ClickHouse or OpenSearch. If you must install Elasticsearch, follow the ACP 4.3 documentation for that plugin.
+
+:::
+
+## 1. Install log storage
+
+Do this on every cluster that will store logs.
+
+### 1.1 Prepare the external components
+
+The storage side depends on two external systems: a **Kafka** cluster (mandatory) and a **ClickHouse** or **OpenSearch** cluster (choose one). Prepare them before installing the Log Storage operator.
+
+#### 1.1.1 Kafka
+
+Kafka buffers records between the collector and the storage backend. Both ClickHouse and OpenSearch backends require it.
+
+| Item | Requirement |
+| --- | --- |
+| Version | Kafka 3.7 or later (baseline: 4.2.0). |
+| Authentication | SASL/SCRAM-SHA-512 (recommended), SASL/SCRAM-SHA-256, or SASL/PLAIN. |
+| TLS | Optional. When enabled, the SASL listener runs over TLS. |
+| Topics | Three topics must exist before the storage operator runs: `ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`. |
+| Account ACLs | One SASL account with `Read`, `Write`, `Create`, `Delete`, `Describe` on all three topics, and `Read`, `Describe` on the three consumer groups `alauda_log`, `alauda_event`, `alauda_audit`. |
+| Broker config | `message.max.bytes` and `replica.fetch.max.bytes` at least `10 MiB` so audit batches that occasionally exceed 1 MiB are not rejected. |
+
+If you already run a Kafka cluster, provision the account, topics, and ACLs on it and continue to Section 1.1.2.
+
+**Using Alauda Container Platform Kafka.** ACP ships its own Kafka product (Alauda Kafka Operator, delivered as a separate cluster plugin). For the full install, tuning, and operations guide, see the [Alauda Container Platform Kafka documentation](https://docs.alauda.io/kafka).
+
+A minimal set of CRs to bring a Kafka cluster up for logging looks like the following. The kinds shown use the Alauda strimzi fork (`middleware.alauda.io/v1`, `RdsKafka` / `RdsKafkaUser` / `RdsTopic`), which is the recommended path on ACP. Upstream strimzi (`kafka.strimzi.io/v1beta2`, `Kafka` / `KafkaUser` / `KafkaTopic`) also works — the operator does not care which fork you use, only that the mq-conn Secret and the broker-side ACL / topics line up.
+
+The authoritative reference for this section is `log-storage-operator/config/samples/quickstart_external_ch_kafka.yaml`; the snippets below are trimmed for the doc.
+
+```yaml
+# 1. SASL password Secret. On Alauda OS / FIPS hosts the password MUST be
+# at least 32 characters; below that, the broker rejects the KafkaUser with
+# UnacceptableCredential. Generate with one of:
+#   openssl rand -base64 24 | tr -d '\n'   # 32 chars base64
+#   openssl rand -hex 16                   # 32 chars hex
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-logging-password
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  password: "<generate a strong password of at least 32 characters>"
+---
+# 2. The Kafka cluster. Listener authentication is SCRAM-SHA-512.
+# The five `config` values below are MANDATORY for logging — the broker
+# defaults are too small for the audit-ingest batch size and will silently
+# drop audit batches otherwise. See the Kafka product docs for the rest of
+# the spec.
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafka
+metadata:
+  name: cpaas-kafka
+  namespace: cpaas-system
+spec:
+  kafka:
+    version: 4.2.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+        authentication:
+          type: scram-sha-512
+    config:
+      # MANDATORY. Broker default 1 MiB is too small for K8s audit batches
+      # (~1.1-1.5 MiB decompressed) and rejects all audit ingest. Value
+      # aligns with razor producer max.request.size (10 MiB).
+      message.max.bytes: 10485760
+      # MANDATORY. Must be >= message.max.bytes or replica sync stalls.
+      replica.fetch.max.bytes: 10485760
+      # MANDATORY. Supports an 8 MiB batch envelope plus SASL overhead.
+      socket.request.max.bytes: 104857600
+      # MANDATORY. Prevents ghost topics when razor / aggregate-vector are
+      # temporarily misconfigured.
+      auto.create.topics.enable: "false"
+      # MANDATORY. Prevents silent data loss on broker crash.
+      unclean.leader.election.enable: "false"
+    authorization:
+      type: simple
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+# 3. The SASL account. The nine ACL rules below are ALL required — the
+# storage operator's preflight check reports each missing rule by name
+# and refuses to roll out until they are in place.
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafkaUser
+metadata:
+  name: platform-logging
+  namespace: cpaas-system
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: platform-logging-password
+          key: password
+  authorization:
+    type: simple
+    acls:
+      # (a) All permissions on the three topics.
+      - resource: {type: topic, name: ALAUDA_LOG_TOPIC,   patternType: literal}
+        operation: All
+        host: "*"
+      - resource: {type: topic, name: ALAUDA_EVENT_TOPIC, patternType: literal}
+        operation: All
+        host: "*"
+      - resource: {type: topic, name: ALAUDA_AUDIT_TOPIC, patternType: literal}
+        operation: All
+        host: "*"
+      # (b) Read on the three aggregate-vector consumer groups.
+      - resource: {type: group, name: alauda_log,   patternType: literal}
+        operation: Read
+        host: "*"
+      - resource: {type: group, name: alauda_event, patternType: literal}
+        operation: Read
+        host: "*"
+      - resource: {type: group, name: alauda_audit, patternType: literal}
+        operation: Read
+        host: "*"
+      # (c) Read on the razor and LogForward consumer-group prefixes.
+      # Without these, razor and LogForward tenants get silent
+      # GroupAuthorizationFailed and drop to 0 throughput.
+      - resource: {type: group, name: razor-,      patternType: prefix}
+        operation: Read
+        host: "*"
+      - resource: {type: group, name: logforward-, patternType: prefix}
+        operation: Read
+        host: "*"
+      # (d) DescribeConfigs on the cluster (used by the preflight check).
+      - resource: {type: cluster, name: kafka-cluster, patternType: literal}
+        operation: DescribeConfigs
+        host: "*"
+---
+# 4. The three topics. `spec.topicName` must match the values you put in
+# the Kafka connection Secret in Section 1.3 and the ACL literal names
+# in step 3. Set `replicas` to `1` for a single-node evaluation cluster
+# and `3` for a production three-broker cluster.
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-log-topic                 # DNS-safe CR name
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_LOG_TOPIC            # broker-side topic name (uppercase)
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"            # 48 hours
+    max.message.bytes: "10485760"        # MANDATORY, must match broker
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-event-topic
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_EVENT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    max.message.bytes: "10485760"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata:
+  name: alauda-audit-topic
+  labels:
+    strimzi.io/cluster: cpaas-kafka
+spec:
+  topicName: ALAUDA_AUDIT_TOPIC
+  partitions: 30
+  replicas: 3
+  config:
+    retention.ms: "172800000"
+    max.message.bytes: "10485760"
+```
+
+:::info Two names, one topic
+The CR's `metadata.name` is a DNS-safe kebab-case name (`alauda-log-topic`) and `spec.topicName` is the actual name the broker exposes (`ALAUDA_LOG_TOPIC`, uppercase with underscores). Alauda Container Platform Log Collector and the storage operator always read the broker-side name, so the values you paste into the Kafka connection Secret in Section 1.3 must match `spec.topicName`, not `metadata.name`.
+:::
+
+#### 1.1.2 ClickHouse or OpenSearch
+
+Pick one backend per storage cluster. See [Log Component Selection Guide](../architecture/component_suggestion.mdx) if you have not decided.
+
+##### ClickHouse
+
+| Item | Requirement |
+| --- | --- |
+| Version | ClickHouse 24.x or later (baseline: 25.8). |
+| Operator | ClickHouse Operator (altinity/clickhouse-operator v0.20 or later) installed cluster-wide. |
+| Endpoint | HTTP on `:8123` or HTTPS on `:8443`. |
+| Cluster name | Must match `spec.configuration.clusters[0].name` on the `ClickHouseInstallation` and the name the platform uses with `ON CLUSTER`. ACP baseline default: `replicated`. |
+| Database | ACP baseline default: `observability`. Must exist before installing the storage operator. |
+| Account | One account with full DDL/DML permission on the target database. ACP baseline default: `platform-logging`. |
+
+**Cluster topology.** Choose one of the profiles below and use the same shards / replicas values when you fill in `PlatformLogForward` in Section 1.4. Setting the `PlatformLogForward` values lower silently leaves shards or replicas unused; setting them higher makes the data path try to reach nodes that do not exist.
+
+| Profile | Shards | Replicas | Total nodes |
+| --- | --- | --- | --- |
+| Single-node evaluation | 1 | 1 | 1 |
+| Three-node HA | 1 | 3 | 3 |
+| Six-node scale-out | 2 | 3 | 6 |
+| Nine-node scale-out | 3 | 3 | 9 |
+
+For component sizing at each profile, see [Log Component Capacity Planning](../architecture/capacity_planning.mdx).
+
+If you already run a ClickHouse cluster, ensure the database and the logging account are provisioned on it. To build a cluster from scratch, see the [Alauda Container Platform ClickHouse documentation](https://docs.alauda.io/clickhouse).
+
+
+##### OpenSearch
+
+| Item | Requirement |
+| --- | --- |
+| Version | OpenSearch 3.7.0 (tested version). |
+| Operator | opensearch-project/opensearch-operator installed cluster-wide. |
+| Endpoint | HTTPS on `:9200` (HTTP is supported but not recommended). |
+| Analyzer plugin | `analysis-ik` (an OpenSearch 3.7.0-compatible build) installed on every OpenSearch node. **Required.** The query path defaults to the `ik_smart` analyzer; without the plugin, every keyword or Chinese-content query returns HTTP 400 and the console log page is unusable. |
+| Account | One account with cluster-manage and log-index manage permission. ACP baseline default: `platform-logging`. |
+
+If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, follow the Alauda Container Platform OpenSearch product documentation.
+
+
+### 1.2 Install the Log Storage operator
+
+**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the operator install form.
+
+#### Console
+
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the storage cluster.
+2. Find **Alauda Container Platform Log Storage Management** and click **Install** in its row.
+3. Accept the defaults. Optionally set the node selector and tolerations to pin `log-storage-operator` to infra nodes.
+4. Click **Install**.
+
+{/* verify against live console: confirm the plugin install form does not require connection details (endpoint, credentials) — those are supplied later as PlatformLogForward + connection Secrets, not as install form fields. */}
+
+#### Verify
+
+```bash
+kubectl -n cpaas-system get deployment log-storage-operator
+```
+
+The `READY` column must show `1/1`.
+
+### 1.3 Create the connection Secrets
+
+Two Secrets in `cpaas-system` carry the endpoint and credentials for the external stack. `log-storage-operator` reads them by their default names (`platform-default-*`); do not rename them.
+
+Every command in this section runs on the storage cluster.
+
+#### 1.3.1 Kafka Secret
+
+Required for both backends.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  # Required. Comma-separated host:port. Read the bootstrap Service name from
+  # the Kafka installation, for example:
+  #   cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093  (SASL over TLS)
+  #   cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9092  (SASL without TLS)
+  bootstrap: "cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093"
+
+  # Required. Name of the Kafka cluster CR.
+  kafkaClusterName: "cpaas-kafka"
+
+  # Required. SASL username.
+  username: "platform-logging"
+
+  # Required. SASL password.
+  password: "<kafka-password>"
+
+  # Optional. Defaults to SCRAM-SHA-512.
+  # Allowed: SCRAM-SHA-512, SCRAM-SHA-256, PLAIN.
+  sasl_mechanism: "SCRAM-SHA-512"
+
+  # Optional. Topic names. Defaults shown. Must match the topics you created.
+  topics.log: "ALAUDA_LOG_TOPIC"
+  topics.event: "ALAUDA_EVENT_TOPIC"
+  topics.audit: "ALAUDA_AUDIT_TOPIC"
+
+  # Optional. TLS CA for a TLS listener whose certificate is not
+  # system-trusted. Omit for a plain listener (:9092) or a trusted CA.
+  tls.ca: |-
+    -----BEGIN CERTIFICATE-----
+    <kafka-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+Read the values you do not have at hand:
+
+```bash
+# Bootstrap Service and its port
+kubectl -n cpaas-system get svc cpaas-kafka-kafka-bootstrap
+
+# Kafka SASL password (from the Secret you created in Section 1.1.1)
+kubectl -n cpaas-system get secret platform-logging-password \
+  -o jsonpath='{.data.password}' | base64 -d
+
+# Kafka CA (only for a TLS listener with a private CA)
+kubectl -n cpaas-system get secret cpaas-kafka-cluster-ca-cert \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d
+```
+
+Save the manifest as `platform-default-mq-conn.yaml` and apply it:
+
+```bash
+kubectl apply -f platform-default-mq-conn.yaml
+```
+
+:::warning
+Do not add `tls.insecure_skip_verify: "true"`. When the listener uses TLS, provide `tls.ca`; when it uses plain text, omit `tls.ca` and connect on the plain port.
+:::
+
+#### 1.3.2 ClickHouse Secret
+
+Skip this section if you use OpenSearch.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  # Required. HTTP endpoint, scheme and port included.
+  #   http://…:8123     (plain HTTP)
+  #   https://…:8443    (HTTPS)
+  endpoint: "http://clickhouse-cpaas-clickhouse.cpaas-system.svc:8123"
+
+  # Required. Must match spec.configuration.clusters[0].name on the CHI.
+  # ACP baseline default: replicated
+  cluster: "replicated"
+
+  # Required. Target database. Must exist. ACP baseline default: observability
+  database: "observability"
+
+  # Required. Account with full permission on the target database.
+  # ACP baseline default: platform-logging
+  username: "platform-logging"
+  password: "<clickhouse-password>"
+
+  # Optional. TLS CA for HTTPS with a private CA. Omit for plain HTTP or a
+  # trusted CA.
+  tls.ca: |-
+    -----BEGIN CERTIFICATE-----
+    <clickhouse-ca-certificate>
+    -----END CERTIFICATE-----
+```
+
+Read values:
+
+```bash
+# ClickHouse Service and port
+kubectl -n cpaas-system get svc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+
+# Cluster name, database, shards, replicas
+kubectl -n cpaas-system get chi cpaas-clickhouse \
+  -o jsonpath='{"cluster="}{.spec.configuration.clusters[0].name}{"  database="}{.spec.configuration.settings.default_database}{"  shards="}{.spec.configuration.clusters[0].layout.shardsCount}{"  replicas="}{.spec.configuration.clusters[0].layout.replicasCount}{"\n"}'
+```
+
+Apply:
+
+```bash
+kubectl apply -f platform-default-ch-conn.yaml
+```
+
+:::warning
+Do not add `tls.insecure_skip_verify: "true"`. Provide `tls.ca` for HTTPS endpoints; omit it for plain HTTP endpoints.
+:::
+
+#### 1.3.3 OpenSearch Secret
+
+Skip this section if you use ClickHouse.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-os-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  # Required. Comma-separated HTTP(S) URLs. Put the highly-available
+  # coordinator or load balancer first; some data paths use only the first
+  # entry.
+  endpoints: "https://cpaas-opensearch.cpaas-system.svc:9200"
+
+  # Required unless the OpenSearch cluster allows anonymous access.
+  # ACP baseline default: platform-logging
+  username: "platform-logging"
+  password: "<opensearch-password>"
+```
+
+Apply:
+
+```bash
+kubectl apply -f platform-default-os-conn.yaml
+```
+
+:::info
+The OpenSearch Secret does not carry a `tls.ca` field. The platform connects to OpenSearch with certificate verification disabled, so a private-CA endpoint needs no CA material here. Use `https://` in `endpoints` and the connection succeeds regardless of the issuer.
+:::
+
+### 1.4 Create the PlatformLogForward
+
+`PlatformLogForward` (PLF) is the cluster-scoped CR that `log-storage-operator` watches to build the data path. It is always named `platform-default`, and there is exactly one per storage cluster.
+
+**For ClickHouse:**
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                            # fixed singleton name; do not change
+spec:
+  output:
+    type: clickhouse                                # required for ClickHouse
+  externalStorage:
+    type: clickhouse
+    shards: 1                                       # match the profile from Section 1.1.2
+    replicas: 1                                     # match the profile from Section 1.1.2
+    secretRef:
+      name: platform-default-ch-conn
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka
+    secretRef:
+      name: platform-default-mq-conn
+      namespace: cpaas-system
+```
+
+**For OpenSearch:**
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default                            # fixed singleton name; do not change
+spec:
+  # No `output.type` on OpenSearch — `externalStorage.type` is the source of
+  # truth for backend routing (added in pt L, 2026-08). The ClickHouse branch
+  # predates that refactor and its admission + provisioning paths still read
+  # `output.type: clickhouse`; the OpenSearch branch was added after and never
+  # inherited that legacy field. Setting `output.type: clickhouse` on an
+  # OpenSearch PLF is accepted but ignored — the scenario is still routed
+  # by `externalStorage.type`.
+  externalStorage:
+    type: opensearch
+    secretRef:
+      name: platform-default-os-conn
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka
+    secretRef:
+      name: platform-default-mq-conn
+      namespace: cpaas-system
+```
+
+Save the file as `platform-log-forward.yaml` and apply:
+
+```bash
+kubectl apply -f platform-log-forward.yaml
+```
+
+Watch the resource until `Phase` becomes `Ready` and `Ready` becomes `True`, then stop with `Ctrl-C`:
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+If it does not go Ready within about ten minutes, read the status conditions:
+
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+Optional fields worth setting only when needed:
+
+| Field | Default | When to set |
+| --- | --- | --- |
+| `spec.aggregateVector.replicas` | `3` | Lower to `1` on a single-node evaluation cluster. |
+| `spec.razor.replicas` | `2` | Same guidance. |
+| `spec.razor.resources.limits.cpu` | `1` | Raise to `2`–`4` if you observe collector-side buffer growth combined with Razor CPU saturation. |
+| `spec.clickhouse.ttl.*` | See the plugin docs | Change per-log-type retention. |
+| `spec.clickhouse.tieredPolicy` + `spec.clickhouse.coldTTL` + `spec.clickhouse.s3ColdSecretRef` | (disabled) | Enable ClickHouse hot-cold tiered storage on S3. See [ClickHouse S3 Storage](../how_to/clickhouse-s3-storage.mdx). |
+
+:::info Adopt mode is not for fresh installs
+
+When `log-storage-operator` starts on a cluster that already contains chart-managed ClickHouse or Kafka resources from a legacy ACP 4.2 or 4.3 installation, it creates `PlatformLogForward/platform-default` on its own with `installMode: Adopt` so that migration can proceed non-destructively.
+
+On a fresh install this should not happen. If `kubectl get platformlogforward platform-default` returns a resource before you apply your manifest and its `spec.installMode` is `Adopt`, something on this cluster was mistaken for a legacy installation. Recover by deleting the auto-created object and re-applying yours in one step:
+
+```bash
+kubectl delete platformlogforward platform-default && kubectl apply -f platform-log-forward.yaml
+
+kubectl -n cpaas-system annotate secret platform-default-mq-conn platform-default-ch-conn \
+  log.alauda.io/derived-by=sre-managed --overwrite
+```
+
+For OpenSearch, replace `platform-default-ch-conn` with `platform-default-os-conn`.
+
+If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` exists, or PVCs from a previous ACP release are still bound), stop here and follow the ACP 4.4 migration documentation (delivered separately) instead.
+:::
+
+## 2. Install Log Collector
+
+Install this plugin on every cluster whose logs, events, or audit records must be collected. That includes the `global` cluster if its own data must be collected.
+
+### Console
+
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the target cluster.
+2. Find **Alauda Container Platform Log Collector** and click **Install** in its row.
+3. Configure the parameters:
+
+| Parameter | Value |
+| --- | --- |
+| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. Do not select the legacy **ClickHouse** or **ElasticSearch** options — those are for the deprecated chart-installed storage stacks. |
+| **Storage Cluster Name** | Enter the name of the cluster where `PlatformLogForward/platform-default` is `Ready`. When the collector and the storage are the same cluster, enter that cluster's name. This field is a plain text input in the Standard branch. |
+| **Storage Path** | Absolute path for the collector's local working data. Default `/cpaas/data/nevermore`. On Alauda OS nodes use `/var/cpaas/data/nevermore`. **Cannot be changed after installation.** |
+| **Mount Paths** | Optional. Absolute host paths containing log files the collector must read. |
+| **Audit**, **Event**, **Kubernetes**, **Platform**, **System**, **Workload** | Log types to collect. Defaults enable **Audit**, **Event**, **System**, and **Workload**. |
+
+{/* verify against live console: the "Log Center Plugin" field and its "Standard" option are the v4.4 additions that route through log-storage-operator. Confirm the exact label wording on a live install; also confirm that the legacy "ClickHouse" and "ElasticSearch" options are still displayed alongside "Standard". */}
+
+4. Optional. Expand the advanced form to pin the collector to specific nodes with a node selector and tolerations.
+5. Click **Install**.
+
+### YAML
+
+```yaml
+apiVersion: cluster.alauda.io/v1alpha1
+kind: ModuleInfo
+metadata:
+  annotations:
+    cpaas.io/display-name: logagent
+    cpaas.io/module-name: '{"en": "Alauda Container Platform Log Collector", "zh": "Alauda Container Platform Log Collector"}'
+  labels:
+    cpaas.io/cluster-name: <collector-cluster>
+    cpaas.io/module-name: logagent
+    cpaas.io/module-type: plugin
+    cpaas.io/product: Platform-Center
+  name: <collector-cluster>-logagent
+spec:
+  version: v4.4.0                                   # substitute the version reported by ModuleConfig
+  config:
+    crossClusterDependency:
+      logstorage: <storage-cluster>                 # cluster where PlatformLogForward is Ready
+    dataSource:
+      audit: true
+      event: true
+      kubernetes: false
+      platform: false
+      system: true
+      workload: true
+    components:
+      nevermore:
+        storageSpec:
+          dataDir: /cpaas/data/nevermore            # on Alauda OS: /var/cpaas/data/nevermore
+    storage:
+      type: Standard                                # v4.4 data path via log-storage-operator
+```
+
+{/* verify against live console: the `crossClusterDependency.logstorage` key and the `storage.type: Standard` enum are the v4.4 replacements for the v4.3 `logcenter` / `logclickhouse` + `storage.type: ElasticSearch` / `ClickHouse` pair. Confirm the exact key names on a v4.4 build. */}
+
+Key fields:
+
+| Field | Description |
+| --- | --- |
+| `spec.config.crossClusterDependency.logstorage` | Name of the storage cluster where `PlatformLogForward/platform-default` is `Ready`. The v4.4 Standard branch uses this single field for both ClickHouse and OpenSearch. Do not set the legacy `logcenter` or `logclickhouse` keys. |
+| `spec.config.storage.type` | Must be `Standard` in v4.4. `ClickHouse` and `ElasticSearch` are the legacy chart-managed branches. |
+| `spec.config.dataSource.*` | Log types to collect. |
+| `spec.config.components.nevermore.storageSpec.dataDir` | Local working-data path on the node. Cannot be changed after installation. |
+
+### Verify
+
+Run from the `global` cluster:
+
+```bash
+kubectl get moduleinfo -l cpaas.io/module-name=logagent
+```
+
+Every collector cluster's row must show `STATUS=Running`.
+
+## 3. Install Log Essentials
+
+**Run on the `global` cluster.** Install once per platform. The install flow is unchanged from earlier releases.
+
+### Console
+
+1. Navigate to **Marketplace** > **Cluster Plugins** and select the `global` cluster.
+2. Find **Alauda Container Platform Log Essentials** and click **Install** in its row.
+3. Accept the defaults and click **Install**.
+
+### YAML
+
+```yaml
+apiVersion: cluster.alauda.io/v1alpha1
+kind: ModuleInfo
+metadata:
+  annotations:
+    cpaas.io/display-name: log-api
+    cpaas.io/module-name: '{"en": "Alauda Container Platform Log Essentials", "zh": "Alauda Container Platform Log Essentials"}'
+  labels:
+    cpaas.io/cluster-name: global
+    cpaas.io/module-name: log-api
+    cpaas.io/module-type: plugin
+    cpaas.io/product: Platform-Center
+  name: global-log-api
+spec:
+  version: v4.4.0                                   # substitute the version reported by ModuleConfig
+```
+
+### Verify
+
+```bash
+kubectl get moduleinfo -l cpaas.io/module-name=log-api
+```
+
+The `STATUS` column must be `Running`.
+
+## 4. Verify end-to-end
+
+After every plugin is `Running`, verify that new records actually flow from a collector cluster into the storage backend.
+
+1. On every storage cluster:
+
+   ```bash
+   kubectl get platformlogforward platform-default \
+     -o jsonpath='{"phase="}{.status.phase}{"  ready="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}'
+   ```
+
+   Must read `Ready` / `True`.
+
+2. On every storage cluster:
+
+   ```bash
+   kubectl -n cpaas-system get pods -l app.kubernetes.io/managed-by=log-storage-operator
+   ```
+
+   `aggregate-vector-*` and `razor-*` pods must be `Running`; the `schema-migrations-*` Job must have `STATUS=Completed`.
+
+3. Log in to the ACP console, open **Operations Center** > **Logs** > **Log Query Analysis**, pick the storage cluster in the top-of-page cluster picker, and query for **Workload Logs** from a namespace that is actively producing logs. Recent records must appear.
+
+{/* verify against live console: confirm the exact menu path and the cluster picker label. */}
+
+If no records arrive within ten minutes, before changing configuration, work through the layers in order: collector `ModuleInfo` status → `PlatformLogForward` conditions → Kafka topic activity → backend ingest.
+
+## Next steps
+
+Once every plugin above reports installed:
+
+- Walk the seven-step [How to Verify a Fresh Install of the Logging Stack](../how_to/post-install-verification.mdx) checklist to confirm the write path and the read path are both working end to end.
+- If a step fails, jump straight to the matching entry in [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
+- When you eventually retire this install, follow [How to Uninstall the Logging Stack](../how_to/uninstall.mdx). The external ClickHouse (or OpenSearch) cluster, the external Kafka cluster, and the two SRE-authored connection Secrets are outside the plugin lifecycle — that page names the exact commands to reclaim each.

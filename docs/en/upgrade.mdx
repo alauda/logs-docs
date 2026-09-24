@@ -1,0 +1,133 @@
+---
+weight: 15
+---
+
+# Upgrade from ACP 4.3 to 4.4
+
+The ACP 4.4 logging stack replaces the ACP 4.3 chart-based ClickHouse and Kafka deployments with the Log Storage operator plus user-owned external endpoints. The operator ships an auto-migration Runnable that turns the upgrade into a **two-step, zero-touch** flow for the SRE team:
+
+1. Author one Secret before you install the operator (`platform-default-mq-conn`).
+2. Install the operator.
+
+Everything else — patching the legacy chart resources so `helm uninstall` cannot destroy them, deriving a `PlatformLogForward` CR from the running chart values, seeding the storage-side Secret from the chart's ClickHouse credentials, and driving the retry loop until the new stack is `Ready` — is run by the operator on startup.
+
+This page names the exact contract the operator relies on. If your upgrade skips the shape below (for example if you already ran `helm uninstall` on the 4.3 chart before deploying the 4.4 operator, so the chart values are no longer discoverable), you will need to hand-write the PLF as if it were a fresh install; see [Installation](./install/index.mdx).
+
+:::warning Do not run `helm uninstall` before the operator startup completes
+The v4.4 operator's `patch-keep-legacy` step is what puts `helm.sh/resource-policy: keep` onto the chart's 30 kinds of resources. Uninstalling the chart before the operator has started will delete data. The correct sequence is: install the operator, wait for `PlatformLogForward.status.conditions[type=Ready].status=True`, then optionally uninstall the old chart.
+:::
+
+## Pre-flight: what SRE must do before starting
+
+The single mandatory pre-flight step is:
+
+1. Author `Secret/platform-default-mq-conn` in `cpaas-system` on the storage cluster. See the `Kafka` section of [Installation](./install/index.mdx) for the full contract; the required keys are `bootstrap`, `username`, `password`, `sasl_mechanism`, `topics.log`, `topics.event`, `topics.audit`, and `kafkaClusterName`, with optional `tls.ca` and `tls.insecure_skip_verify`.
+
+The Kafka side is not auto-migrated because in ACP 4.4 Kafka becomes 100% SRE-owned: the operator no longer discovers Kafka from chart values, and cannot generate credentials for you.
+
+The storage side (external ClickHouse or OpenSearch endpoint and DML credentials) **is** auto-derived from the chart's running values by the operator on startup, so you do **not** need to pre-author `Secret/log-storage-operator-external-storage-conn`. If you prefer to hand-author it (for example when the chart values were externally overridden), the operator honours a pre-existing Secret with the same name.
+
+Optional: set the environment variable `STRICT_AUTO_MIGRATION=true` on the operator Deployment before you install. In strict mode, any auto-migration step failure is a hard startup failure, and the operator emits a K8s Event and refuses to serve. Recommended for rollouts where a partial migration is unacceptable; leave unset in steady state.
+
+## Install the operator
+
+Install the Log Storage operator on the storage cluster with the same procedure as [Installation § Fresh install](./install/index.mdx). The moment the operator pod starts, its `AutoMigrationRunnable` (`internal/automigration/runnable.go`, added via `mgr.Add(automigration.NewRunnable(...))`) begins the migration loop on a 30 s tick.
+
+## What the operator does automatically
+
+The AutoMigrationRunnable runs these steps every tick until `.status.migrationPhase == Converged`. Each step is idempotent: it short-circuits if the state it would create already exists.
+
+### 1. Detect the 4.3 → 4.4 transition
+
+The detection heuristic matches when:
+
+- `PlatformLogForward/platform-default` is absent, or `.spec.externalStorage.type` is empty, AND
+- The legacy chart-owned resources are present in `cpaas-system` — specifically a `Deployment/razor` with `app.kubernetes.io/managed-by=Helm` and a `helm.sh/chart` label prefixed with `alauda-log-`.
+
+On a match, `.status.migrationPhase` moves to `Detected` and the loop proceeds. On a fresh install (no chart labels, no legacy razor Deployment) the loop stops here and waits for the SRE to hand-write the PLF.
+
+### 2. `patch-keep-legacy` — protect the chart resources from `helm uninstall`
+
+The operator patches the annotation `helm.sh/resource-policy: keep` onto 30 kinds of legacy chart-owned resources in `cpaas-system`. The selector is `app.kubernetes.io/managed-by=Helm,app.kubernetes.io/instance in (chart-alauda-log-center, chart-alauda-log-clickhouse, chart-alauda-log-agent)`.
+
+The 30 kinds are: `ClickHouseInstallation/cpaas-clickhouse`, `AutoRepair` CRs, chi-derived Services, `StatefulSet/chi-cpaas-clickhouse-*`, `StatefulSet/razor`, `StatefulSet/kafka-*`, `Deployment/aggregate-vector`, `Deployment/razor`, chi-owned PVCs, kafka PVCs, `razor-data-*` PVCs (including topolvm dynamic PVCs matched by name pattern per Bug 115), the underlying PVs (re-patched to `persistentVolumeReclaimPolicy: Retain` per Bug 58 v7), `ConfigMap/clickhouse-storage-config`, `ConfigMap/logging-ttl-config`, `ConfigMap/log-policy-config`, `ConfigMap/log-center-configuration`, `Secret/aggregate-vector-config`, `Secret/secret-bridge`, `Secret/cpaas-clickhouse-users`, `MonitorDashboards`, `AlertRules`, the `RdsKafka` / `KafkaTopic` / `KafkaUser` / `KafkaNodePool` / `StrimziPodSet` CRs, `Feature/log-center`, chart `ServiceAccount`s / `Role`s / `RoleBinding`s, and the chart `Subscription`s.
+
+Once patched, the chart can be uninstalled at any later time without destroying data.
+
+### 3. `derive-plf` — build a `PlatformLogForward` CR from chart values
+
+The operator reads the following inputs and emits `PlatformLogForward/platform-default`:
+
+| Input read | Field derived |
+| --- | --- |
+| `ConfigMap/log-center-configuration` (the chart's rendered values dump) | ClickHouse shards, replicas, and hot / cold `hostPath`. |
+| `Secret/cpaas-clickhouse-users` | ClickHouse endpoint (Service `clickhouse-cpaas-clickhouse.cpaas-system:8123`) and the DML `basic auth` for the operator's `external-storage-conn` Secret. |
+| Chart `Deployment/razor` env | `--clickhouse-cluster`, `--clickhouse-shards`, and `--clickhouse-replicas` — Bug 116 fixed this from a hard-coded `1`. |
+| `ClickHouseInstallation/cpaas-clickhouse` | `spec.storage.tieredPolicy`, `coldTTL`, and the `hot` / `cold` disk paths. `s3ColdSecret` and `s3DataSecret` refs are propagated (Bug 117 for the retention semantics, Bug 118 for the S3 secret plumbing). |
+| `RdsKafka/cpaas-kafka` and its bootstrap Service | `spec.externalMessageQueue.type=kafka`, `spec.externalMessageQueue.secretRef.name=platform-default-mq-conn`. Bug 125 fixed the previous plaintext-versus-TLS drift by using PLAINTEXT / port 9092 unless TLS is explicitly on port 9093. |
+
+If `Secret/log-storage-operator-external-storage-conn` is absent, the operator writes it now, populating `endpoint`, `username`, `password`, `tls.ca`, and `tls.insecure_skip_verify` (the last is a smart default: strict when a CA is present, skip when only self-signed material is available — see Bug 131). If the Secret already exists, the operator leaves its content untouched.
+
+The Kafka mq-conn Secret you authored during pre-flight is verified but never written to by the operator.
+
+### 4. Apply the PLF and drive the reconcile
+
+The operator applies the derived PLF (only if absent — never overwrites a hand-authored PLF) and hands off to its main `PlatformLogForwardReconciler`. From this point the reconcile flow is identical to a fresh install: the finalizer is added, the `Feature/log-center`, `MonitorDashboard`, `AlertRule`, `ConfigMap/log-policy-config`, `ConfigMap/logging-ttl-config`, and `ConfigMap/aiops-logging-migrations` are recreated with an `ownerReference` back to the PLF (Bug 113), the `schema-migrations` Job runs against the external ClickHouse to bring the schema forward, and the new `Deployment/aggregate-vector` and `Deployment/razor` are rolled out.
+
+### 5. Wait for `Ready`
+
+Watch `PlatformLogForward/platform-default.status.conditions` until `Ready` becomes `True`. The intermediate conditions to watch, in order, are `MessageQueueReady`, `StorageReady`, `SchemaMigrated`, `CollectorReady`, `RazorReady`. See [How to Verify a Fresh Install](./how_to/post-install-verification.mdx) for the concrete checks on each — the upgrade path uses the same status object.
+
+On a healthy `AutoMigrationRunnable` tick, `.status.migrationPhase` moves through `Detected → LegacyPatched → PLFDerived → PLFApplied → Converged`. Once it reads `Converged`, the migration is complete.
+
+## After `Ready`: retire the old chart
+
+Once `Ready=True`, the chart is no longer functional — the operator has taken over its Deployments and Services and is driving the new aggregate-vector and razor. The chart's resources are safe to remove because they either now carry `helm.sh/resource-policy: keep` (so a `helm uninstall` will not touch data), or they will be recreated by the operator on the next reconcile if you delete them by accident.
+
+You can uninstall the chart at your leisure:
+
+```bash
+helm uninstall chart-alauda-log-center -n cpaas-system
+helm uninstall chart-alauda-log-clickhouse -n cpaas-system
+helm uninstall chart-alauda-log-agent -n cpaas-system
+```
+
+If any resource carries `helm.sh/resource-policy: keep` at the moment of uninstall, Helm skips it. That is the entire mechanism the migration relies on.
+
+## Rollback plan
+
+If the upgrade lands in `Converged` but a downstream check fails (a razor-api version incompatibility, an ISM policy on OpenSearch that misbehaves, and so on), the rollback path is:
+
+1. `kubectl delete platformlogforward platform-default`. The operator's `handlePLFTerminating` sweeps every resource it created since step 4 above.
+2. Uninstall the operator (see the parallel steps in [Uninstall](./how_to/uninstall.mdx)).
+3. Re-install the ACP 4.3 chart. Because every chart-owned resource still exists (protected by `helm.sh/resource-policy: keep`), the chart re-adopts them.
+
+The Kafka mq-conn Secret you authored during pre-flight is orthogonal to the chart's own resources and can be left in place; the 4.3 chart does not read it.
+
+## Known upgrade-time gotchas
+
+- **Legacy `razor` StatefulSet drain condition.** The PLF exposes a `LegacyRazorDrained` sub-condition (Bug 182, Bug 187). It reports the state of the old chart's `StatefulSet/razor` — either drained cleanly, or absent (because the chart never had a razor sts, or the sts was already deleted). Both count as success. A non-drained old razor sts blocks the new razor Deployment from taking over the log topics.
+- **`schema-migrations` on HTTPS ClickHouse with a self-signed CA.** If the derived `external-storage-conn` Secret ended up with `tls.insecure_skip_verify: true` and you later provide a real CA (`tls.ca`), the smart default flips to strict verification. This is intentional — see Bug 131.
+- **Auto-derived storage credentials versus rotated credentials.** The `external-storage-conn` Secret carries the ClickHouse credentials that the chart had **at the time the operator first ran**. If those credentials are subsequently rotated on the ClickHouse side, you must update the Secret; the operator does not re-derive it after the first tick.
+- **`STRICT_AUTO_MIGRATION` interaction with transient RBAC errors.** If your operator install carries RBAC that lacks any of the roles the auto-migration path needs (see Bug 108 and Bug 122 for the full list), strict mode will refuse to serve. Non-strict mode retries next tick, which usually succeeds after cluster-transformer or the platform operator installer has caught up.
+
+## Upgrades after ACP 4.4
+
+The auto-migration flow described above is a **one-shot** — it only runs when the operator detects the ACP 4.3 chart shape. Once the platform is on ACP 4.4 with a `PlatformLogForward` in place, every subsequent upgrade is a plain operator upgrade over OLM, with no chart-migration steps and no SRE-authored resources beyond what a running install already has.
+
+### Within ACP 4.4 (patch bumps)
+
+`v4.4.x → v4.4.y` is delivered as a new `ClusterServiceVersion` on the same `Subscription` channel. When you approve (or auto-approve) the upgrade:
+
+1. OLM rolls the `log-storage-operator` Deployment to the new image.
+2. The operator reconciles the existing `PlatformLogForward/platform-default` with its updated logic. Any embedded resources that shipped a new default value (SQL migration, ISM policy, VRL transform, aggregate-vector config) are re-emitted on the next reconcile.
+3. If the release includes a new database migration, the `schema-migrations` Job runs it against the external ClickHouse and stamps `schema_migrations.version` forward. The aggvec init-container waits until this is `Complete` before the new aggvec pod becomes ready.
+4. `Deployment/aggregate-vector` and `Deployment/razor` roll to their new images. The PLF sub-conditions (`SchemaMigrated`, `CollectorReady`, `RazorReady`) transit through `False` for the duration of the rollout and return to `True`.
+
+No SRE intervention is required, and neither the two SRE-authored Secrets nor the `PlatformLogForward` spec need to be edited.
+
+### From ACP 4.4 to ACP 4.5
+
+**ACP 4.4 → 4.5 is a plain OLM channel bump with no breaking changes.** The `PlatformLogForward` `v1alpha1` CRD, the `platform-default-mq-conn` Secret contract, and the `log-storage-operator-external-storage-conn` Secret contract all carry forward unchanged. The PLF a customer authored on 4.4 keeps working after the upgrade without any rewrite, and no SRE-visible action is required beyond approving the Subscription's new CSV.
+
+You will not run `patch-keep-legacy` or `derive-plf` again — those subcommands exist only to consume the 4.3-era chart-based install, and they are no-ops on a platform that started as 4.4. There is no equivalent one-shot migration on 4.4 → 4.5.

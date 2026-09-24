@@ -1,0 +1,145 @@
+---
+weight: 90
+---
+
+# Troubleshooting the Logging Stack
+
+This page indexes the failure modes we have seen on live installs of the ACP 4.4 logging stack, keyed by the symptom SRE sees first. Each entry names the code path or the resource we've verified is at fault, so you can jump straight to the fix instead of bisecting.
+
+Ordering follows the install flow: storage prerequisites, then the operator, then the data path, then the query path.
+
+:::info Zero-touch bar
+The v4.4 install and the v4.3 → v4.4 upgrade are supposed to be zero-touch. If any of the recipes below asks you to manually create a resource that the operator should have created, that is a code gap, not a documentation gap — please file it instead of adopting the workaround. The one exception is the SRE-authored secrets called out in [Installation](../install/index.mdx) (Kafka mq-conn and, for the external OpenSearch / ClickHouse path, the storage-conn secrets), which are user input by design.
+:::
+
+## Kafka broker will not start on Alauda OS / FIPS hosts
+
+**Symptom.** After you apply the sample YAML, `RdsKafka/cpaas-kafka` moves to `Ready=False`, and the entity operator log or the `strimzi-cluster-operator` log reports `UnacceptableCredentialException` for one or more KafkaUsers.
+
+**Root cause.** On Alauda OS and FIPS-hardened hosts, the SCRAM-SHA-512 backend rejects passwords under 32 bytes. The sample YAML in [Installation](../install/index.mdx) already flags this, but if you generated your own passwords in the SASL password Secret, verify each password length.
+
+**Fix.**
+
+```bash
+kubectl -n cpaas-system get secret platform-default-mq-conn -o jsonpath='{.data.password}' | base64 -d | wc -c
+# must print >= 32
+```
+
+Regenerate any short password with `openssl rand -base64 24 | tr -d '\n'`, patch the Secret, and let the operator pick up the change on its next reconcile. There is one SCRAM password per KafkaUser, so remember to check every KafkaUser you defined; sharing one password across several users triggers a related failure where all but one user is rejected.
+
+## Kafka broker rejects log records over the default 1 MiB
+
+**Symptom.** aggregate-vector logs `RecordTooLargeException` and lags on ingest, or nevermore's disk buffer fills up on the collection cluster.
+
+**Root cause.** The broker's `message.max.bytes` and `replica.fetch.max.bytes` must both be raised — the platform ships 10 MiB as the baseline. The sample YAML in [Installation](../install/index.mdx) sets both. If you brought your own Kafka cluster and only followed the shorter checklist, the two settings may still be at the Kafka default of `1048588`.
+
+**Fix.** Patch the RdsKafka `spec.kafka.config` to raise both limits to at least `10485760` and let the operator restart the brokers. `producerCompressionType` should also be `zstd` so that even 10 MiB records ship fast enough to keep the aggvec ingest window closed.
+
+## PlatformLogForward stays in `Provisioning` \{#platformlogforward-stays-in-provisioning}
+
+Under `.status.conditions`, look at which sub-condition is stuck at `False`. The condition name tells you which sub-step of the operator's reconcile has not finished, and you can usually pin the root cause with `kubectl describe`.
+
+| Condition stuck at `False` | What the operator is waiting on | Where to look next |
+| --- | --- | --- |
+| `MessageQueueReady` | The `platform-default-mq-conn` Secret in `cpaas-system` — its `bootstrap`, `username`, `password`, `sasl_mechanism`, `topics.log`/`topics.event`/`topics.audit`, and (for TLS) `tls.ca` fields must resolve to a Kafka cluster the operator can reach, and the SCRAM preflight must succeed. | `kubectl get secret platform-default-mq-conn -o yaml` and the operator log for the `preflight` line. See the [Installation](../install/index.mdx) contract. |
+| `StorageReady` | The external storage endpoint the PLF references — the operator opens a plain HTTP or HTTPS handshake and, on ClickHouse, then runs the schema-migrations Job. | For ClickHouse: `kubectl -n cpaas-system get jobs -l job=schema-migrations` then `logs` on the newest run. For OpenSearch: `kubectl -n cpaas-system get jobs -l job=opensearch-init`. |
+| `CollectorReady` | The `aggregate-vector` Deployment has not reached the ready replica count. | Look at the init container `wait-for-schema-migrations` first; it blocks the pod until the schema-migrations Job is `Complete` (ClickHouse) or short-circuits (OpenSearch, per Bug 167). |
+| `RazorReady` | The `razor` Deployment on the storage cluster has not reached the ready replica count. | Common causes: the storage backend rejected razor's connection, or the `log-policy-config` ConfigMap it mounts is missing. |
+| `SchemaMigrated` | The auto-migration Runnable has not yet reported `Converged`. | `kubectl -n cpaas-system logs deploy/log-storage-operator` for the `AutoMigrationRunnable` retry loop's most recent tick reason. |
+
+Two upstream failure modes are worth calling out because they have historically confused this triage:
+
+- The **schema-migrations Job** for external ClickHouse over HTTPS requires a CA. If the CH endpoint uses a self-signed certificate and you did not attach a CA to the external-storage-conn Secret, the operator falls back to `insecure_skip_verify=true` (which it logs). If TLS still fails, the Job's pod log shows the exact handshake error.
+
+- The **`log-center` Feature CR** used to hard-code the `platformURL` (global platform entry) as its `SecureAddress`, which the razor-api log path could not reach cross-cluster. The operator has since been fixed to resolve the local ALB address on the storage cluster instead. If your install is on 4.4 beta.x and the Feature still points at the global platform, upgrade the operator image.
+
+## OpenSearch install: template PUT fails with `strict` 400
+
+**Symptom.** The `opensearchinit` runner Job on OpenSearch 3.7 fails with an HTTP 400 whose body mentions `strict` on the composable template PUT.
+
+**Root cause.** OpenSearch 3.7 disallows `template.settings.index.lifecycle` under `strict` template parsing. The operator's `opensearchinit` runner used to leave this key in the composable template body, and the runner strips it before the PUT.
+
+**Fix.** Bump the operator to the version that includes the strip (see the operator changelog for Bug 200). No user action beyond bumping the operator image.
+
+## Fresh install on OpenSearch fails at `AggregateVectorReady`
+
+**Symptom.** On a fresh install with `PLF.spec.externalStorage.type: opensearch`, aggvec pods CrashLoop with `wait-for-schema-migrations` in `Init`. Nothing appears in the schema-migrations Job list.
+
+**Root cause.** The OpenSearch scenario has no schema-migrations Job (there is no relational schema to migrate). The initContainer should short-circuit on the OpenSearch branch. Older operator images had the initContainer hard-coded to wait for ClickHouse-style schema-migrations Job to reach `Complete`, and would wait forever on OpenSearch.
+
+**Fix.** Bump the operator to the version that adds the OpenSearch branch to `opensearchinit` and the aggvec startup gate (Bug 167).
+
+## PLF is `Ready` but nothing writes to storage
+
+The most common flavour of this is a silent authorization miss on the Kafka side, because the vector kafka source treats `GroupAuthorizationFailed` as recoverable and keeps polling forever without reporting a condition.
+
+**Fix.** Read the vector kafka source's own error log on aggregate-vector pods. It emits one line per rejected fetch, and the SASL user name it uses is the one from the `platform-default-mq-conn` Secret. The KafkaUser ACL that permits it to consume from the log topics must be either wildcard, or must match the `razor-` prefix that razor's KafkaUser advertises. If you followed the sample YAML in [Installation](../install/index.mdx), this is already correct; if you brought your own KafkaUser, cross-check the ACL against the topic list in the mq-conn Secret.
+
+## A tenant's LogForward CR does not forward anything
+
+**Symptom.** A tenant creates a `LogForward` in `cpaas-system`. Its Deployment is `Ready=True`, but the external destination does not receive anything.
+
+Common causes, in order of likelihood:
+
+- The `input.filter` expression is silently non-matching. The empty predicate branch is now caught by the CEL webhook (Bug 173 pt1), but any expression that never evaluates to `true` will produce a Vector pipeline that reads Kafka and writes nothing. Test the expression against a single record with `vector vrl -i -p -o`.
+- The `input.classify` reads from a topic the tenant is not authorized to consume. The vector kafka source treats this as recoverable — no `Ready=False` condition is set. Look at the LogForward pod's vector log for `GroupAuthorizationFailed` on the `spec.input.classify.consumerGroupPrefix` prefix.
+- The `output.type` uses `advancedSink` and the escape-hatch payload is syntactically valid Vector config but semantically empty. `vector validate` on the payload catches most of these.
+
+## Cross-cluster log query returns 401 on collection clusters
+
+**Symptom.** On the global cluster, log queries against the storage cluster return `401` for a few minutes after install, then start working.
+
+**Root cause.** The `log-callback-secret` on the collection cluster is synchronized cross-cluster by cluster-transformer with a small window that used to be five minutes; razor-api's negative token cache used to hold that window and reject queries during it (Bug 51 + Bug 52 + Bug 83).
+
+**Fix.** The window is now one minute in the operator baseline, and the negative cache has been shortened. If you still see the 401 after a full minute, verify the storage cluster's cluster-transformer log for a successful `log-callback-secret` sync. The classic secondary cause is that razor's KafkaUser password rotated and razor did not hot-reload (Bug 98) — a rolling restart of razor picks up the new password.
+
+## The ClickHouse tier-move to S3 silently no-ops
+
+**Symptom.** The PLF spec sets `tieredPolicy` with a `coldTTL`, but data in the ClickHouse `<log_data>` table does not move to the cold volume when the TTL expires. Data is DELETEd instead.
+
+**Root cause.** If razor's schema-init raced the operator's storage-policy config emit, the table was created without a `storage_policy` and the subsequent `ALTER ... TO VOLUME 'cold'` fails with CH `450`. razor's failure detection used to read from an `exception` column that CH 25.8 does not expose, so it silently logged "TTL updated successfully" (see [[project_v4_4_storage_policy_race]] in the operator repo notes).
+
+**Fix.** The v4.4.4 operator image runs schema-migrations with the storage-policy JSON injected per statement (Bug 188 v2 + Bug 189), and the AutoMigrationRunnable retries until CH reports the target policy on the table (Bug 190). If you are on an older beta, upgrade the operator image, then re-apply the PLF `tieredPolicy` field.
+
+## OpenSearch queries drop Chinese or IP-style search terms
+
+**Symptom.** On the OpenSearch backend, log queries for `中文` or `192.168.1.1` return zero results even though the log records are indexed. Queries for `error` or `root` work.
+
+**Root cause.** razor's query builder appended `*` to every non-SQS-special term to preserve prefix matching. On non-ASCII terms and terms with tokenizer separators, the resulting prefix query bypasses the analyzer and never matches any indexed token (see the razor `buildSQSTerm` hotfix, MR!245).
+
+**Fix.** Pick up the razor `v4.4.4` or newer image on the storage cluster (via `PLF.spec.razor.image` or the Subscription `config.env`). Do not patch the deployment in place — the operator will revert it.
+
+## OpenSearch queries filter on `containerName` and always return zero
+
+**Symptom.** OpenSearch log queries with a `containerName` filter return zero results, even for known containers. Removing the filter recovers the results.
+
+**Root cause.** aggregate-vector's OpenSearch pipeline used to write only `.kubernetes_container_name`, while razor's read side term query targets `.docker_container_name.keyword`. The two were not linked.
+
+**Fix.** The aggvec VRL now dual-writes both fields on the OpenSearch path (log-storage-operator MR!92 for `release-4.4`, MR!93 for master). Upgrade the operator to a build that contains those merges.
+
+## Log export produces the literal string `<nil>`
+
+**Symptom.** Exported `.txt` / `.csv` files contain the literal string `<nil>` in cells where the field is missing. The query interface returns an empty string for the same missing field.
+
+**Root cause.** The archive path in razor formatted every field with `fmt.Sprintf("%v", …)`, and for a missing map key that produces the literal `<nil>` rather than an empty string (see razor MR!247).
+
+**Fix.** Pick up razor `v4.4.4` or newer.
+
+## OpenSearch project-scoped retention is ignored
+
+**Symptom.** A tenant sets project-level retention via `cpaas.io/project.hotDataRetentionDays` and `cpaas.io/project.logPolicyEnabled` annotations. The setting has no effect on the OpenSearch backend; every project keeps the platform-default retention.
+
+**Root cause.** By design: the operator's OpenSearch branch does not emit `log-policy-config`, and the razor-api cron that reconciles the ISM policy on OpenSearch only reads it, never writes it. See [OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations).
+
+**Fix.** If per-project retention is a compliance requirement, choose the ClickHouse backend. There is no configuration knob that flips OpenSearch to honour project-level retention today.
+
+## Diagnostic entry points \{#diagnostic-entry-points}
+
+When a symptom does not match anything above, walk the pipeline from the collection end and stop at the first hop that looks wrong:
+
+1. `nevermore` on the collection cluster: `kubectl -n cpaas-system logs -l app=nevermore --tail=200`. Look for VRL / target.json errors or "buffer full" messages.
+2. Kafka: `kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe` — verify the log topics exist with the expected partition count.
+3. `aggregate-vector` on the storage cluster: `kubectl -n cpaas-system logs -l app=aggregate-vector --tail=200`. Look for the kafka source's per-topic status and any sink 4xx/5xx.
+4. Storage backend: `SELECT count() FROM <log_data>` on ClickHouse or `GET _cat/indices` on OpenSearch. Compare with an unbounded time range vs. a bounded one; a large gap between the two is the timestamp-overwrite symptom on OpenSearch (see [OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations)).
+5. `razor` on the storage cluster: `kubectl -n cpaas-system logs -l app=razor --tail=200`. 401s here are the token-sync issue above.
+6. `razor-api` on the global cluster: `kubectl -n cpaas-system logs -l app=razor-api --tail=200`. `parseDatabase` misidentifying the backend (`log-clickhouse` vs `log-opensearch`) will show up as SQL errors against the wrong dialect.

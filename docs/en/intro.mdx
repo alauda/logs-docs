@@ -5,12 +5,12 @@ sourceSHA: a4b5307cd85c3bb2a4cbb61eaf4979c9d2fe33729d430ebbe825a4d0a0f27263
 
 # Introduction
 
-The Logging module is a core component of the ACP platform's observability suite that provides comprehensive log management capabilities for efficient and reliable log processing.
+The Logging module is a core component of the ACP platform's observability suite. It provides comprehensive log management capabilities for efficient and reliable log processing across every cluster on the platform.
 
-This module delivers four essential logging capabilities:
+This module delivers three essential capabilities:
 
-- **Log collection** for automated gathering of logs from applications, containers, and infrastructure components
-- **Log storage** for scalable and durable persistence using Elasticsearch and ClickHouse backends
-- **Log querying** for fast and flexible search across large volumes of log data
+- **Log collection** for automated gathering of standard-output logs, file logs, Kubernetes events, and audit records from applications, containers, and infrastructure components.
+- **Log storage** for scalable and durable persistence into ClickHouse or OpenSearch (recommended) or Elasticsearch (retained for legacy customers).
+- **Log querying** for fast, flexible search across large volumes of log data from the ACP console.
 
-By integrating these capabilities with powerful open-source components like Filebeat, Elasticsearch, and ClickHouse, it enables organizations to efficiently handle massive log volumes, accelerate troubleshooting, ensure compliance requirements, and gain valuable operational insights in real time.
+The Logging module delivers these capabilities through three cluster components — two plugins (**Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Collector**) and one operator (**Alauda Container Platform Log Storage Management**) — layered on top of open-source components: `nevermore` (collection), Vector (data path), Kafka (buffering), and ClickHouse or OpenSearch (storage). One Log Storage Management operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR, not in the operator install form. Together they enable organizations to handle massive log volumes, accelerate troubleshooting, meet compliance requirements, and gain operational insights in real time.

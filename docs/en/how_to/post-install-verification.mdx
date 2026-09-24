@@ -1,0 +1,138 @@
+---
+weight: 5
+---
+
+# How to Verify a Fresh Install of the Logging Stack
+
+After [Installation](../install/index.mdx) reports every plugin as installed, walk this checklist to confirm the write path and the read path are both working. Each step ends in one concrete signal, so it is easy to stop at the first thing that is wrong and jump to [Troubleshooting](./troubleshooting.mdx).
+
+The checklist runs on any of the storage backends. Points that only apply to one backend are called out inline.
+
+## 1. `PlatformLogForward/platform-default` is `Ready`
+
+The single top-level readiness signal for the entire storage cluster is:
+
+```bash
+kubectl -n cpaas-system get platformlogforward platform-default -o jsonpath='{.status.conditions}' | jq
+```
+
+Every condition should be `status: "True"`. The single top-level signal is `Ready=True` with reason `AllComponentsReady`. Under it, the sub-conditions that a fresh install rolls through are `MessageQueueReady` (Kafka SASL and topic list validated), `StorageReady` (the external ClickHouse or OpenSearch endpoint is reachable and its schema is initialized), `CollectorReady` (aggregate-vector Deployment is at full ready-replicas), `RazorReady` (razor Deployment is at full ready-replicas), and `SchemaMigrated` (the auto-migration Runnable has converged). If any is `False`, the `message` names the sub-step that has not finished — see [Troubleshooting: PlatformLogForward stays in Provisioning](./troubleshooting.mdx#platformlogforward-stays-in-provisioning).
+
+## 2. The data-plane pods are all running
+
+Even after the PLF is `Ready`, individual components can be in a soft restart. The one-shot check is:
+
+```bash
+kubectl -n cpaas-system get pods -l 'app in (aggregate-vector,razor)' -o wide
+```
+
+Every pod should be `1/1 Running`. `CrashLoopBackOff` on `aggregate-vector` at this point is almost always the schema-migrations init-container (ClickHouse) or the OpenSearch template PUT (OpenSearch) — see the matching entries in [Troubleshooting](./troubleshooting.mdx).
+
+On the collection cluster (which may or may not be the same cluster):
+
+```bash
+kubectl -n cpaas-system get pods -l app=nevermore -o wide
+```
+
+Every node in the `Log.Kubernetes=true` collection scope should have a `nevermore` pod in `Running`.
+
+## 3. The `log-center` Feature CR is on the global cluster
+
+The global cluster runs razor-api, which discovers each storage cluster through a `Feature/log-center` CR. On the global cluster:
+
+```bash
+kubectl get feature log-center -o jsonpath='{.spec}' | jq
+```
+
+Fields that should be populated:
+
+- `spec.type` — `clickhouse` or `opensearch`, matching the storage backend you installed.
+- `spec.secureAddress` — the storage cluster's local ALB endpoint (not the global platform URL). If this points at the global platform URL, upgrade the operator; earlier operator builds derived it wrong (Bug 134).
+- `spec.secretRef` — the name of the callback secret in `cpaas-system` on the storage cluster; razor-api uses it to authenticate cross-cluster.
+
+## 4. The storage schema is present
+
+### ClickHouse backend
+
+The schema-migrations Job runs once per install and stamps the `schema_migrations` table with the target version.
+
+```bash
+kubectl -n cpaas-system exec -it deploy/razor -- \
+  clickhouse-client -h <ch-endpoint> --database <log-db> \
+  --query "SELECT version, dirty FROM schema_migrations"
+```
+
+`dirty` should be `0`. `version` should equal the highest number in `internal/migrations` in the operator image you deployed (the migrations are embedded into the operator binary at build time).
+
+### OpenSearch backend
+
+The `opensearchinit` runner Job PUTs the composable template and the ISM policy. Verify both:
+
+```bash
+# composable template
+curl -sk -u admin:admin https://<os-endpoint>/_index_template/cpaas-native-log-center | jq '.index_templates[0].name'
+# ISM policy
+curl -sk -u admin:admin https://<os-endpoint>/_plugins/_ism/policies/cpaas-native-log-center | jq '.policy.policy_id'
+```
+
+Both should echo the object name. If either 404s, the runner Job did not complete — see the OpenSearch entries in [Troubleshooting](./troubleshooting.mdx).
+
+## 5. Kafka is receiving records
+
+The end of the collection pipeline pushes to Kafka. If aggregate-vector is idle, records are stuck upstream (in nevermore, or in the collector-side Kafka producer).
+
+```bash
+kubectl -n cpaas-system exec sts/cpaas-kafka -- \
+  bin/kafka-run-class.sh kafka.tools.GetOffsetShell \
+    --bootstrap-server localhost:9092 \
+    --topic ALAUDA_LOG_DATA \
+    --time -1
+```
+
+Repeat after 30 seconds. The offset should climb. If it does not, `nevermore` is not producing — check `kubectl -n cpaas-system logs -l app=nevermore --tail=200` on the collection cluster.
+
+## 6. A synthetic log appears end-to-end
+
+The full pipeline signal is: emit a log, wait, query it back. Run something with a distinctive marker on any cluster that is collected:
+
+```bash
+kubectl -n default run smoketest --restart=Never --image=busybox --rm -it -- \
+  sh -c 'echo "logging-smoketest-$(date +%s)"; sleep 3'
+```
+
+Wait about a minute. On the global cluster, query razor-api for the marker:
+
+```bash
+kubectl -n cpaas-system exec -it deploy/razor-api -- \
+  curl -sG 'http://localhost:8080/platform/logging.alauda.io/v2/logs' \
+    --data-urlencode 'q=logging-smoketest' \
+    --data-urlencode 'projects=default'
+```
+
+The response should include at least one hit. If the hit count is zero, walk the [Diagnostic entry points](./troubleshooting.mdx#diagnostic-entry-points) list top-to-bottom.
+
+## 7. Audit and event streams also land
+
+Log records ride the same topics as events and audit records but under different table families. Confirm both are reaching storage:
+
+```bash
+# ClickHouse
+kubectl -n cpaas-system exec -it deploy/razor -- \
+  clickhouse-client -h <ch-endpoint> --database <log-db> \
+  --query "SELECT count() FROM audit_data WHERE timestamp > now() - INTERVAL 5 MINUTE"
+
+# OpenSearch
+curl -sk -u admin:admin 'https://<os-endpoint>/audit-*/_count?q=timestamp:>=now-5m'
+```
+
+Both should return non-zero on any active platform. Zero on `audit_data` for the ClickHouse backend and a healthy log count often means one of the write-path reshapes was skipped (see the Bug 169 aggvec CH reshape family in the operator's known-issue notes). Zero on OpenSearch's `audit-*` with a healthy log count means the aggregate-vector event/audit VRL is dropping records — again the operator's OpenSearch reshape branch.
+
+## What to record for the release checklist
+
+Once every step above returns green, capture the following as the install baseline for future comparison:
+
+- The operator image tag and razor image tag.
+- The `PlatformLogForward.status.storageIdentity` — this snapshot ties the running install to the exact ClickHouse database or OpenSearch tenant it wrote to.
+- The `kafka --describe` output for the log topics, so a future partition-count change is a comparable diff.
+
+If per-project retention is important to the customer, verify the fresh install honours it. On ClickHouse this uses the `log-policy-config` ConfigMap and the razor-api cron; on OpenSearch it does not take effect at all — see [Known OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations) before you deliver.
