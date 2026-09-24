@@ -1,8 +1,8 @@
 ---
-weight: 10
+weight: 20
 ---
 
-# How to Upgrade from ACP 4.3 to 4.4
+# Upgrade from ACP 4.3 to 4.4
 
 The ACP 4.4 logging stack replaces the ACP 4.3 chart-based ClickHouse and Kafka deployments with the Log Storage operator plus user-owned external endpoints. The operator ships an auto-migration Runnable that turns the upgrade into a **two-step, zero-touch** flow for the SRE team:
 
@@ -11,7 +11,7 @@ The ACP 4.4 logging stack replaces the ACP 4.3 chart-based ClickHouse and Kafka 
 
 Everything else — patching the legacy chart resources so `helm uninstall` cannot destroy them, deriving a `PlatformLogForward` CR from the running chart values, seeding the storage-side Secret from the chart's ClickHouse credentials, and driving the retry loop until the new stack is `Ready` — is run by the operator on startup.
 
-This page names the exact contract the operator relies on. If your upgrade skips the shape below (for example if you already ran `helm uninstall` on the 4.3 chart before deploying the 4.4 operator, so the chart values are no longer discoverable), you will need to hand-write the PLF as if it were a fresh install; see [Installation](../install/index.mdx).
+This page names the exact contract the operator relies on. If your upgrade skips the shape below (for example if you already ran `helm uninstall` on the 4.3 chart before deploying the 4.4 operator, so the chart values are no longer discoverable), you will need to hand-write the PLF as if it were a fresh install; see [Installation](./index.mdx).
 
 :::warning Do not run `helm uninstall` before the operator startup completes
 The v4.4 operator's `patch-keep-legacy` step is what puts `helm.sh/resource-policy: keep` onto the chart's 30 kinds of resources. Uninstalling the chart before the operator has started will delete data. The correct sequence is: install the operator, wait for `PlatformLogForward.status.conditions[type=Ready].status=True`, then optionally uninstall the old chart.
@@ -21,7 +21,7 @@ The v4.4 operator's `patch-keep-legacy` step is what puts `helm.sh/resource-poli
 
 The single mandatory pre-flight step is:
 
-1. Author `Secret/platform-default-mq-conn` in `cpaas-system` on the storage cluster. See the `Kafka` section of [Installation](../install/index.mdx) for the full contract; the required keys are `bootstrap`, `username`, `password`, `sasl_mechanism`, `topics.log`, `topics.event`, `topics.audit`, and `kafkaClusterName`, with optional `tls.ca` and `tls.insecure_skip_verify`.
+1. Author `Secret/platform-default-mq-conn` in `cpaas-system` on the storage cluster. See the `Kafka` section of [Installation](./index.mdx) for the full contract; the required keys are `bootstrap`, `username`, `password`, `sasl_mechanism`, `topics.log`, `topics.event`, `topics.audit`, and `kafkaClusterName`, with optional `tls.ca` and `tls.insecure_skip_verify`.
 
 The Kafka side is not auto-migrated because in ACP 4.4 Kafka becomes 100% SRE-owned: the operator no longer discovers Kafka from chart values, and cannot generate credentials for you.
 
@@ -31,7 +31,7 @@ Optional: set the environment variable `STRICT_AUTO_MIGRATION=true` on the opera
 
 ## Install the operator
 
-Install the Log Storage operator on the storage cluster with the same procedure as [Installation § Fresh install](../install/index.mdx). The moment the operator pod starts, its `AutoMigrationRunnable` (`internal/automigration/runnable.go`, added via `mgr.Add(automigration.NewRunnable(...))`) begins the migration loop on a 30 s tick.
+Install the Log Storage operator on the storage cluster with the same procedure as [Installation § Fresh install](./index.mdx). The moment the operator pod starts, its `AutoMigrationRunnable` (`internal/automigration/runnable.go`, added via `mgr.Add(automigration.NewRunnable(...))`) begins the migration loop on a 30 s tick.
 
 ## What the operator does automatically
 
@@ -76,7 +76,7 @@ The operator applies the derived PLF (only if absent — never overwrites a hand
 
 ### 5. Wait for `Ready`
 
-Watch `PlatformLogForward/platform-default.status.conditions` until `Ready` becomes `True`. The intermediate conditions to watch, in order, are `MessageQueueReady`, `StorageReady`, `SchemaMigrated`, `CollectorReady`, `RazorReady`. See [How to Verify a Fresh Install](./post-install-verification.mdx) for the concrete checks on each — the upgrade path uses the same status object.
+Watch `PlatformLogForward/platform-default.status.conditions` until `Ready` becomes `True`. The intermediate conditions to watch, in order, are `MessageQueueReady`, `StorageReady`, `SchemaMigrated`, `CollectorReady`, `RazorReady`. See [How to Verify a Fresh Install](../how_to/post-install-verification.mdx) for the concrete checks on each — the upgrade path uses the same status object.
 
 On a healthy `AutoMigrationRunnable` tick, `.status.migrationPhase` moves through `Detected → LegacyPatched → PLFDerived → PLFApplied → Converged`. Once it reads `Converged`, the migration is complete.
 
@@ -99,7 +99,7 @@ If any resource carries `helm.sh/resource-policy: keep` at the moment of uninsta
 If the upgrade lands in `Converged` but a downstream check fails (a razor-api version incompatibility, an ISM policy on OpenSearch that misbehaves, and so on), the rollback path is:
 
 1. `kubectl delete platformlogforward platform-default`. The operator's `handlePLFTerminating` sweeps every resource it created since step 4 above.
-2. Uninstall the operator (see the parallel steps in [Uninstall](./uninstall.mdx)).
+2. Uninstall the operator (see the parallel steps in [Uninstall](../how_to/uninstall.mdx)).
 3. Re-install the ACP 4.3 chart. Because every chart-owned resource still exists (protected by `helm.sh/resource-policy: keep`), the chart re-adopts them.
 
 The Kafka mq-conn Secret you authored during pre-flight is orthogonal to the chart's own resources and can be left in place; the 4.3 chart does not read it.

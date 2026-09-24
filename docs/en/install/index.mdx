@@ -4,7 +4,9 @@ weight: 14
 
 # Installation
 
-This chapter installs the logging stack. The stack has three parts and installs in this order:
+This chapter installs the logging stack on a fresh platform. If you are moving an existing ACP 4.3 install to 4.4 instead, see [Upgrade from ACP 4.3 to 4.4](./upgrade-from-v4.3.mdx).
+
+The stack has three parts and installs in this order:
 
 1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the Log Storage operator and hand the endpoints to it. This runs on every storage cluster.
 2. **Log Collector** — install the collector plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
