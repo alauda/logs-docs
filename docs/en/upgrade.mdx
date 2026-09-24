@@ -126,10 +126,8 @@ The auto-migration flow described above is a **one-shot** — it only runs when 
 
 No SRE intervention is required, and neither the two SRE-authored Secrets nor the `PlatformLogForward` spec need to be edited.
 
-### From ACP 4.4 to a future minor release
+### From ACP 4.4 to ACP 4.5
 
-The pivot committed to a stable operator + `PlatformLogForward` contract. From ACP 4.4 onwards, upgrades to a future minor release (for example ACP 4.5 when it ships) follow the same shape as a patch bump. If the future release introduces a new CRD version (`v1beta1`), the operator will ship a conversion webhook that keeps the running `v1alpha1` object valid; the PLF a customer authored on 4.4 continues to work after the upgrade without a rewrite.
+**ACP 4.4 → 4.5 is a plain OLM channel bump with no breaking changes.** The `PlatformLogForward` `v1alpha1` CRD, the `platform-default-mq-conn` Secret contract, and the `log-storage-operator-external-storage-conn` Secret contract all carry forward unchanged. The PLF a customer authored on 4.4 keeps working after the upgrade without any rewrite, and no SRE-visible action is required beyond approving the Subscription's new CSV.
 
-You will not have to run `patch-keep-legacy` or `derive-plf` again — those subcommands only exist to handle the 4.3-era chart-based install, and they are no-ops on a platform that started as 4.4. There is no equivalent one-shot migration planned for 4.4-to-4.5.
-
-If a future minor release **does** require an SRE-visible change — for example a new mandatory key in the mq-conn Secret, or a Kafka broker configuration knob that is not backward-compatible — the release notes for that version will name the change and this page will grow a section that mirrors the pre-flight checklist above. Until such a section exists, treat the upgrade as a plain OLM channel bump.
+You will not run `patch-keep-legacy` or `derive-plf` again — those subcommands exist only to consume the 4.3-era chart-based install, and they are no-ops on a platform that started as 4.4. There is no equivalent one-shot migration on 4.4 → 4.5.
