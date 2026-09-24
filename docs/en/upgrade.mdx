@@ -110,3 +110,26 @@ The Kafka mq-conn Secret you authored during pre-flight is orthogonal to the cha
 - **`schema-migrations` on HTTPS ClickHouse with a self-signed CA.** If the derived `external-storage-conn` Secret ended up with `tls.insecure_skip_verify: true` and you later provide a real CA (`tls.ca`), the smart default flips to strict verification. This is intentional — see Bug 131.
 - **Auto-derived storage credentials versus rotated credentials.** The `external-storage-conn` Secret carries the ClickHouse credentials that the chart had **at the time the operator first ran**. If those credentials are subsequently rotated on the ClickHouse side, you must update the Secret; the operator does not re-derive it after the first tick.
 - **`STRICT_AUTO_MIGRATION` interaction with transient RBAC errors.** If your operator install carries RBAC that lacks any of the roles the auto-migration path needs (see Bug 108 and Bug 122 for the full list), strict mode will refuse to serve. Non-strict mode retries next tick, which usually succeeds after cluster-transformer or the platform operator installer has caught up.
+
+## Upgrades after ACP 4.4
+
+The auto-migration flow described above is a **one-shot** — it only runs when the operator detects the ACP 4.3 chart shape. Once the platform is on ACP 4.4 with a `PlatformLogForward` in place, every subsequent upgrade is a plain operator upgrade over OLM, with no chart-migration steps and no SRE-authored resources beyond what a running install already has.
+
+### Within ACP 4.4 (patch bumps)
+
+`v4.4.x → v4.4.y` is delivered as a new `ClusterServiceVersion` on the same `Subscription` channel. When you approve (or auto-approve) the upgrade:
+
+1. OLM rolls the `log-storage-operator` Deployment to the new image.
+2. The operator reconciles the existing `PlatformLogForward/platform-default` with its updated logic. Any embedded resources that shipped a new default value (SQL migration, ISM policy, VRL transform, aggregate-vector config) are re-emitted on the next reconcile.
+3. If the release includes a new database migration, the `schema-migrations` Job runs it against the external ClickHouse and stamps `schema_migrations.version` forward. The aggvec init-container waits until this is `Complete` before the new aggvec pod becomes ready.
+4. `Deployment/aggregate-vector` and `Deployment/razor` roll to their new images. The PLF sub-conditions (`SchemaMigrated`, `CollectorReady`, `RazorReady`) transit through `False` for the duration of the rollout and return to `True`.
+
+No SRE intervention is required, and neither the two SRE-authored Secrets nor the `PlatformLogForward` spec need to be edited.
+
+### From ACP 4.4 to a future minor release
+
+The pivot committed to a stable operator + `PlatformLogForward` contract. From ACP 4.4 onwards, upgrades to a future minor release (for example ACP 4.5 when it ships) follow the same shape as a patch bump. If the future release introduces a new CRD version (`v1beta1`), the operator will ship a conversion webhook that keeps the running `v1alpha1` object valid; the PLF a customer authored on 4.4 continues to work after the upgrade without a rewrite.
+
+You will not have to run `patch-keep-legacy` or `derive-plf` again — those subcommands only exist to handle the 4.3-era chart-based install, and they are no-ops on a platform that started as 4.4. There is no equivalent one-shot migration planned for 4.4-to-4.5.
+
+If a future minor release **does** require an SRE-visible change — for example a new mandatory key in the mq-conn Secret, or a Kafka broker configuration knob that is not backward-compatible — the release notes for that version will name the change and this page will grow a section that mirrors the pre-flight checklist above. Until such a section exists, treat the upgrade as a plain OLM channel bump.
