@@ -7,11 +7,6 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 
 ## Open Source Components
 
-### nevermore
-
-**Positioning**: Node-level log collector
-**Description**: A DaemonSet that runs on every node in a collector cluster. `nevermore` reads standard-output logs from containers, file logs from configured host paths, Kubernetes events, and audit records; enriches them with cluster / namespace / pod metadata; and forwards them to the storage cluster over HTTP. Internally, `nevermore` uses [Vector](https://vector.dev/) as its data path engine. It replaces Filebeat, which was the collector used in ACP 4.3 and earlier.
-
 ### Vector
 
 **Positioning**: High-performance observability data pipeline
@@ -37,10 +32,15 @@ sourceSHA: a6fa96d9a58d9a3986d59ee6c63540d1f62d9e23d27d6a885090189bab05ff2b
 
 ### Elasticsearch
 
-**Positioning**: Distributed search and analytics engine (legacy backend)
-**Description**: The original Lucene-based backend used by ACP Logging in earlier releases. Retained for existing customers upgrading from ACP 4.2 or 4.3 and remains fully supported through the Elasticsearch storage plugin. New installations should choose ClickHouse or OpenSearch.
+**Positioning**: Distributed search and analytics engine (previous backend, no longer offered on ACP 4.4)
+**Description**: The Lucene-based backend used by ACP Logging in earlier releases. **Fresh installs on ACP 4.4 cannot choose Elasticsearch.** Customers upgrading from ACP 4.2 or 4.3 on the Elasticsearch backend must switch to ClickHouse or OpenSearch as part of the upgrade — see the upgrade guide for the migration path.
 
 ## ACP Logging Components
+
+### nevermore
+
+**Positioning**: Node-level log collector
+**Description**: A DaemonSet that runs on every node in a collector cluster. `nevermore` reads standard-output logs from containers, file logs from configured host paths, Kubernetes events, and audit records; enriches them with cluster / namespace / pod metadata; and forwards them to the storage cluster over HTTP. Internally, `nevermore` uses [Vector](https://vector.dev/) as its data path engine. It replaces Filebeat, which was the collector used in ACP 4.3 and earlier.
 
 ### log-storage-operator
 

@@ -36,9 +36,9 @@ kubectl -n cpaas-system get pods -l app=nevermore -o wide
 
 Every node in the `Log.Kubernetes=true` collection scope should have a `nevermore` pod in `Running`.
 
-## 3. The `log-center` Feature CR is on the global cluster
+## 3. The `log-center` Feature CR is on the storage cluster
 
-The global cluster runs razor-api, which discovers each storage cluster through a `Feature/log-center` CR. On the global cluster:
+The Log Storage operator creates a `Feature/log-center` CR in `cpaas-system` on **the storage cluster it is installed on**. The global cluster's razor-api reads this Feature (synced through cluster-transformer) to discover each storage cluster's endpoint. On the storage cluster:
 
 ```bash
 kubectl get feature log-center -o jsonpath='{.spec}' | jq

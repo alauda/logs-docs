@@ -5,21 +5,22 @@ sourceSHA: 3ec0c250be447bd6f28860f61de04ddf0a6e4e69186767f8bbc8d209917d284c
 
 # Log Component Selection Guide
 
-When installing the Logging module you pick one storage backend per storage cluster. Three backends are available:
+When installing the Logging module on ACP 4.4 you pick one of two storage backends per storage cluster:
 
 - **ClickHouse** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended for high throughput and cost-sensitive retention.
 - **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters.
-- **Elasticsearch** (legacy chart-based **Alauda Container Platform Log Storage for Elasticsearch**) — retained for existing customers upgrading from ACP 4.2 or 4.3; not the recommended choice for a fresh install.
 
-For ClickHouse and OpenSearch the operator is the same — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`. Elasticsearch remains its own legacy chart-based plugin.
+The operator is the same for both — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`.
 
-This page compares them so you can pick one before you install.
+The Elasticsearch backend that earlier releases shipped is **no longer offered on ACP 4.4**. Customers upgrading from ACP 4.2 or 4.3 on Elasticsearch must migrate their data to ClickHouse or OpenSearch as part of the upgrade — see the upgrade guide. The comparison table below still lists Elasticsearch so upgrading customers can weigh a target for the migration.
+
+This page compares the options so you can pick one before you install.
 
 :::warning
 
 - Pick one backend per storage cluster. Do not stack ClickHouse and OpenSearch on the same storage cluster.
-- The DevOps product does not currently support archiving Jenkins pipeline execution records into ClickHouse or OpenSearch. If you rely on Jenkins pipeline archival, choose the Elasticsearch backend.
-- The ServiceMesh product currently integrates with the Elasticsearch backend only. If you rely on service mesh log integration, choose Elasticsearch.
+- The DevOps product does not currently support archiving Jenkins pipeline execution records into ClickHouse or OpenSearch. If Jenkins pipeline archival is a hard requirement, the ACP 4.4 platform cannot serve it today; raise this with the platform team before you plan the migration.
+- The ServiceMesh product currently integrates with the Elasticsearch backend only. If ServiceMesh log integration is a hard requirement, the ACP 4.4 platform cannot serve it today either; raise this with the platform team before you plan the migration.
 - The **ClickHouse** backend does not support IPv6-only or IPv6 dual-stack workload clusters.
 
 :::
@@ -34,14 +35,15 @@ A columnar database for OLAP workloads. Compresses well, aggregates fast, and pa
 
 A distributed search engine forked from Elasticsearch. Inverted-index search over log records; strong ad-hoc query experience with keyword highlighting and faceted queries. Trade-off: heavier per-record storage and more CPU for the same ingest volume.
 
-### Elasticsearch
+### Elasticsearch (upgrade-only reference)
 
-The original Lucene backend used in earlier releases. Same trade-offs as OpenSearch on the ingest side; retained for customers who cannot yet move.
+The Lucene backend used in earlier releases. **Not installable on ACP 4.4**; the row is kept in the comparison below so customers migrating off ACP 4.3 Elasticsearch have a like-for-like reference against the two supported backends.
 
 ## Feature comparison
 
-| | **ClickHouse** | **OpenSearch** | **Elasticsearch** | Notes |
+| | **ClickHouse** | **OpenSearch** | **Elasticsearch** (previous release) | Notes |
 | --- | --- | --- | --- | --- |
+| Available for fresh 4.4 install | Yes | Yes | **No** | Elasticsearch remains readable during upgrade; the migration to ClickHouse or OpenSearch is required. |
 | High availability | Yes | Yes | Yes | |
 | Horizontal scalability | Yes | Yes | Yes | |
 | Query experience | Weak (SQL only) | Strong (Lucene DSL) | Strong (Lucene DSL) | OpenSearch and Elasticsearch expose Lucene-style search; ClickHouse offers SQL only. |
@@ -50,8 +52,6 @@ The original Lucene backend used in earlier releases. Same trade-offs as OpenSea
 | S3 tiered storage | Yes (hot / cold via `PLF.spec.clickhouse.tieredPolicy`) | ISM policy on OpenSearch | ILM policy on Elasticsearch | Only ClickHouse can push cold data to S3 as an ACP-managed feature; OpenSearch and Elasticsearch tiering is a self-managed policy. |
 | Chinese full-text search | Substring match | `analysis-ik` plugin (**required** for ACP OpenSearch) | `analysis-ik` plugin | The OpenSearch install must include `analysis-ik`; without it the platform's log query page returns 400. |
 | Community activity | Growing | Active (Amazon-led fork) | Active (Elastic-led) | |
-| Jenkins pipeline archival | Not supported | Not supported | Supported | Choose Elasticsearch if your platform archives Jenkins pipeline records into Logging. |
-| ServiceMesh log integration | Not supported | Not supported | Supported | Choose Elasticsearch if ServiceMesh integrates with Logging. |
 | IPv6-only workload clusters | Not supported | Supported | Supported | |
 
 ## Recommendations
@@ -60,9 +60,7 @@ The original Lucene backend used in earlier releases. Same trade-offs as OpenSea
 
 - **You rely on Lucene-style keyword search, highlighting, or faceted queries, or you are already familiar with the Elasticsearch DSL.** Install **Alauda Container Platform Log Storage Management** and set `PlatformLogForward.spec.externalStorage.type: opensearch`. Make sure the `analysis-ik` plugin is installed on every OpenSearch node before you apply the PLF.
 
-- **You depend on DevOps Jenkins pipeline archival or ServiceMesh log integration.** Choose the legacy **Alauda Container Platform Log Storage for Elasticsearch** plugin. Follow the ACP 4.3 documentation for the Elasticsearch installation flow.
-
-- **You are upgrading from ACP 4.2 or 4.3 on Elasticsearch and want to move to a supported backend.** See [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx). The migration path lands on either ClickHouse or OpenSearch based on which target you provision.
+- **You are upgrading from ACP 4.2 or 4.3 on Elasticsearch.** The Elasticsearch backend is not offered on ACP 4.4, so you must migrate. Pick either ClickHouse or OpenSearch above and follow [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) plus [Historical Data Migration](../migration/index.mdx) for the concrete migration path.
 
 ## Known OpenSearch backend limitations \{#known-opensearch-backend-limitations}
 
