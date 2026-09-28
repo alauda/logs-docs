@@ -10,7 +10,7 @@ sourceSHA: a693536535f48f4ec77b829836a78a804dd12d6a552db81460fa4666b0170dad
 The Logging module has three responsibilities:
 
 1. **Log collection** — read logs, events, and audit records on every collector node.
-2. **Log storage** — persist those records into a scalable backend (ClickHouse or OpenSearch, recommended; Elasticsearch retained for legacy).
+2. **Log storage** — persist those records into a scalable backend (ClickHouse or OpenSearch). Elasticsearch is no longer offered on ACP 4.4; customers upgrading from earlier releases on Elasticsearch migrate to one of these two.
 3. **Log query and visualization** — serve queries from the ACP console over the stored data.
 
 These responsibilities are split across three cluster components — two plugins (Log Essentials, Log Collector) and one operator (Log Storage Management) — that talk to two external systems the SRE prepares before install: a Kafka cluster and either a ClickHouse or an OpenSearch cluster. See [Installation](../install/index.mdx). The Log Storage Management operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR.
@@ -84,9 +84,9 @@ When `PlatformLogForward.spec.externalStorage.type` is `clickhouse`, `aggregate-
 
 When `PlatformLogForward.spec.externalStorage.type` is `opensearch`, `aggregate-vector` writes into rolling indices per log type. Composable index templates and ISM policies are provisioned by an `opensearch-index-init` Job that `log-storage-operator` derives from the PLF.
 
-### Elasticsearch (legacy)
+### Elasticsearch (previous release, not available on ACP 4.4)
 
-The Elasticsearch storage plugin remains available for existing customers. Its pipeline (Filebeat → Kafka → Lanaya → Elasticsearch) is unchanged; do not mix a Fresh `PlatformLogForward` on top of it. See [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx) if you plan to move an Elasticsearch installation onto ClickHouse or OpenSearch.
+The Elasticsearch storage backend shipped in earlier releases through a chart-based pipeline (Filebeat → Kafka → Lanaya → Elasticsearch). It is **not offered on ACP 4.4** — you cannot pick it during a fresh install, and the `PlatformLogForward` CR has no code path for it. Customers upgrading from ACP 4.2 or 4.3 on Elasticsearch migrate to ClickHouse or OpenSearch as part of the upgrade; see [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx).
 
 ## Log Visualization
 

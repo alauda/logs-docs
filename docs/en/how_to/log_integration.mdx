@@ -5,10 +5,10 @@ sourceSHA: de8684967169dd8cf37f798e6022c102cb552424cb291405a007fe5776c9d337
 
 # How to Interface with External ES Storage Clusters
 
-:::warning ACP 4.4 note
-This guide covers the **Alauda Container Platform Log Storage for Elasticsearch** (legacy) plugin only. It uses the chart install-form field `elasticsearch.address` and the paired `basicAuthSecretName`, which are Elasticsearch-plugin conventions retained from earlier releases.
+:::warning Applies to earlier releases only
+This guide describes the Elasticsearch storage plugin's `elasticsearch.address` / `basicAuthSecretName` install-form fields, retained here as reference material for ACP 4.2 / 4.3 installations that are still running the chart-installed Elasticsearch stack.
 
-If you are on the recommended backends (ClickHouse or OpenSearch), external interfacing is the **default** install path, not an opt-in. Every storage cluster reaches an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets. Follow [Installation](../install/index.mdx) and skip this guide.
+**ACP 4.4 does not ship the Elasticsearch backend at all.** Fresh 4.4 installs reach an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets — external interfacing is the default install path, not an opt-in. Follow [Installation](../install/index.mdx) and skip this guide. Customers upgrading from ACP 4.3 on Elasticsearch migrate to ClickHouse or OpenSearch during the upgrade; see the [Upgrade guide](../upgrade.mdx).
 :::
 
 You can interface with external Elasticsearch or Kafka clusters by writing YAML configurations. Depending on your business requirements, you can choose to interface with only the external Elasticsearch cluster (while installing Kafka in the current cluster), or you can interface with both the external Elasticsearch and Kafka clusters simultaneously.

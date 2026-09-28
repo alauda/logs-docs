@@ -152,7 +152,7 @@ Before you close out the uninstall:
 
 - `kubectl -n cpaas-system get platformlogforward` returns `No resources found`.
 - `kubectl -n cpaas-system get pods -l 'app in (aggregate-vector,razor,log-storage-operator)'` returns `No resources found`.
-- On the global cluster, `kubectl get feature log-center` returns `NotFound`.
+- On the storage cluster, `kubectl get feature log-center` returns `NotFound` (the CR was created by the operator on the storage cluster and swept by the finalizer).
 - The three external systems above have been either dropped or intentionally left as historical retention.
 
 If any of these fails, walk the [Troubleshooting: PlatformLogForward stays in Provisioning](./troubleshooting.mdx#platformlogforward-stays-in-provisioning) table with the `False` condition — the finalizer flow uses the same names on the way out as on the way in.
