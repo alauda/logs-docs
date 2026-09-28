@@ -5,56 +5,79 @@ sourceSHA: 3ec0c250be447bd6f28860f61de04ddf0a6e4e69186767f8bbc8d209917d284c
 
 # Log Component Selection Guide
 
-When installing a log component, the platform provides two log storage options: Elasticsearch and ClickHouse. This article outlines the features and applicable scenarios of these two components to help you choose the most suitable one.
+When installing the Logging module you pick one storage backend per storage cluster. Three backends are available:
+
+- **ClickHouse** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended for high throughput and cost-sensitive retention.
+- **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters.
+- **Elasticsearch** (legacy chart-based **Alauda Container Platform Log Storage for Elasticsearch**) — retained for existing customers upgrading from ACP 4.2 or 4.3; not the recommended choice for a fresh install.
+
+For ClickHouse and OpenSearch the operator is the same — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`. Elasticsearch remains its own legacy chart-based plugin.
+
+This page compares them so you can pick one before you install.
 
 :::warning
 
-- You can only choose one of Elasticsearch or ClickHouse for the cluster log storage component installation.
-- Any cluster's log storage component can be selected for log collection to interface with the storage data.
-- Now DevOps product does not support archiving Jenkins pipeline execution records using ClickHouse. If you need to use Jenkins pipeline features, please choose **Alauda Container Platform Log Storage for ClickHouse** cautiously.
-- Now ServiceMesh product does not support integration with ClickHouse. If you need to use service mesh features, please choose **Alauda Container Platform Log Storage for ClickHouse** cautiously.
-- Now **Alauda Container Platform Log Storage for ClickHouse** does not support IPv6 single-stack or IPv6 dual-stack workload clusters.
+- Pick one backend per storage cluster. Do not stack ClickHouse and OpenSearch on the same storage cluster.
+- The DevOps product does not currently support archiving Jenkins pipeline execution records into ClickHouse or OpenSearch. If you rely on Jenkins pipeline archival, choose the Elasticsearch backend.
+- The ServiceMesh product currently integrates with the Elasticsearch backend only. If you rely on service mesh log integration, choose Elasticsearch.
+- The **ClickHouse** backend does not support IPv6-only or IPv6 dual-stack workload clusters.
 
 :::
 
-## Architecture Comparison
+## Architecture at a glance
 
-### Elasticsearch Architecture
+### ClickHouse
 
-Elasticsearch is an open-source distributed search engine built on Lucene, designed for fast full-text search and analysis. Its advantages include:
+A columnar database for OLAP workloads. Compresses well, aggregates fast, and pairs cleanly with S3 for tiered cold storage. Trade-off: no inverted index, so keyword search is a `LIKE`-style scan.
 
-- High-performance search: Supports real-time search and can quickly process massive amounts of data.
-- Flexible querying capabilities: Offers a powerful query DSL, supporting complex query requirements.
-- Scalability: Easily horizontally scalable as needed, suitable for applications of all sizes.
-- Diverse data support: Able to handle both structured and unstructured data, widely applicable.
+### OpenSearch
 
-### ClickHouse Architecture
+A distributed search engine forked from Elasticsearch. Inverted-index search over log records; strong ad-hoc query experience with keyword highlighting and faceted queries. Trade-off: heavier per-record storage and more CPU for the same ingest volume.
 
-ClickHouse is a high-performance columnar database designed for Online Analytical Processing (OLAP). Its advantages include:
+### Elasticsearch
 
-- Fast data processing: Supports rapid querying and analysis through columnar storage and data compression.
-- Real-time analysis: Capable of processing real-time data streams, suitable for real-time data analysis scenarios.
-- High throughput: Optimized for the performance of large-scale data writing and querying, making it very suitable for big data scenarios.
-- Flexible SQL support: Compatible with standard SQL, easy to get started, reducing the usage threshold.
-- Flexible storage planning: Supports S3-backed storage planning for ClickHouse data and tiered cold storage scenarios.
+The original Lucene backend used in earlier releases. Same trade-offs as OpenSearch on the ingest side; retained for customers who cannot yet move.
 
-## Function Comparison
+## Feature comparison
 
-|           | ClickHouse | Elasticsearch | Explanation                                                                                                                                               |
-| --------- | ---------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **High Availability**   | Supported         | Supported            |                                                                                                                                                       |
-| **Scalability**  | Supported         | Supported            |                                                                                                                                                       |
-| **Query Experience**  | Weak          | Strong             | Elasticsearch offers more robust search capabilities based on the Lucene language, while ClickHouse only supports SQL queries, limiting its search capabilities.                                                                                  |
-| **Resource Usage**  | Low          | High             | For the same performance requirements, ClickHouse requires fewer resources than Elasticsearch. For example, to support 20,000 logs per second, Elasticsearch needs 3 es-masters and 7 es-nodes (2c4g+8c16g), while ClickHouse only requires 3 2c4g replicas. |
-| **Performance**    | High          | Low             | Under the same resource conditions, the log volume supported by ClickHouse far exceeds that of Elasticsearch.                                                                                                     |
-| **Community Activity** | Medium          | High             | The Elasticsearch community is active with rich documentation, while ClickHouse is a growing and improving community.                                                                                                |
+| | **ClickHouse** | **OpenSearch** | **Elasticsearch** | Notes |
+| --- | --- | --- | --- | --- |
+| High availability | Yes | Yes | Yes | |
+| Horizontal scalability | Yes | Yes | Yes | |
+| Query experience | Weak (SQL only) | Strong (Lucene DSL) | Strong (Lucene DSL) | OpenSearch and Elasticsearch expose Lucene-style search; ClickHouse offers SQL only. |
+| Resource usage per ingest unit | Low | Medium | High | Rule of thumb: to sustain 20,000 logs/s you need roughly 3 ClickHouse replicas (2C/4G), or an OpenSearch cluster with 3 master + 5 data (2C/4G + 8C/16G), or an Elasticsearch cluster of similar shape. |
+| Ingest throughput per node | High | Medium | Medium | See [Log Component Capacity Planning](./capacity_planning.mdx) for the ACP-tested profiles. |
+| S3 tiered storage | Yes (hot / cold via `PLF.spec.clickhouse.tieredPolicy`) | ISM policy on OpenSearch | ILM policy on Elasticsearch | Only ClickHouse can push cold data to S3 as an ACP-managed feature; OpenSearch and Elasticsearch tiering is a self-managed policy. |
+| Chinese full-text search | Substring match | `analysis-ik` plugin (**required** for ACP OpenSearch) | `analysis-ik` plugin | The OpenSearch install must include `analysis-ik`; without it the platform's log query page returns 400. |
+| Community activity | Growing | Active (Amazon-led fork) | Active (Elastic-led) | |
+| Jenkins pipeline archival | Not supported | Not supported | Supported | Choose Elasticsearch if your platform archives Jenkins pipeline records into Logging. |
+| ServiceMesh log integration | Not supported | Not supported | Supported | Choose Elasticsearch if ServiceMesh integrates with Logging. |
+| IPv6-only workload clusters | Not supported | Supported | Supported | |
 
-## Selection Recommendations
+## Recommendations
 
-- If you are accustomed to using Elasticsearch and have a high dependency on the Lucene language, it is recommended that you continue to use **Alauda Container Platform Log Storage for Elasticsearch**.
+- **You want the most cost-effective backend for large log volume and can accept SQL-only search.** Install **Alauda Container Platform Log Storage Management** and set `PlatformLogForward.spec.externalStorage.type: clickhouse`. Enable S3 tiered storage if long retention drives your storage bill.
 
-- If you depend on the platform's Jenkins pipeline or service mesh features, it is recommended that you continue to use **Alauda Container Platform Log Storage for Elasticsearch**.
+- **You rely on Lucene-style keyword search, highlighting, or faceted queries, or you are already familiar with the Elasticsearch DSL.** Install **Alauda Container Platform Log Storage Management** and set `PlatformLogForward.spec.externalStorage.type: opensearch`. Make sure the `analysis-ik` plugin is installed on every OpenSearch node before you apply the PLF.
 
-- If you have high requirements for the performance and resource consumption of the log component but only have basic needs for log querying, it is recommended that you choose **Alauda Container Platform Log Storage for ClickHouse**.
+- **You depend on DevOps Jenkins pipeline archival or ServiceMesh log integration.** Choose the legacy **Alauda Container Platform Log Storage for Elasticsearch** plugin. Follow the ACP 4.3 documentation for the Elasticsearch installation flow.
 
-- If you need to integrate object storage or use S3-based cold and hot separation for ClickHouse log data, it is recommended that you evaluate **Alauda Container Platform Log Storage for ClickHouse** first.
+- **You are upgrading from ACP 4.2 or 4.3 on Elasticsearch and want to move to a supported backend.** See the ACP 4.4 upgrade and migration documentation (delivered separately). The migration path lands on either ClickHouse or OpenSearch based on which target you provision.
+
+## Known OpenSearch backend limitations \{#known-opensearch-backend-limitations}
+
+The following behaviors have been observed on the OpenSearch backend in live installations. They are not present on the ClickHouse backend. Weigh them against the "Lucene-style query" upside before choosing OpenSearch for a production workload; if any of them is a blocker, pick ClickHouse.
+
+| Area | What happens on OpenSearch | Impact |
+| --- | --- | --- |
+| Record timestamp | The Kafka source overwrites the record timestamp with the ingest time. Log, event, and audit are all affected. | The timestamp shown in the console equals when the record hit the aggregate-vector pod, not when the application emitted the log. Time-range queries against the origin time (for example "show me what happened 5 minutes before the incident") miss records. |
+| Backpressure on the bulk breaker | The OpenSearch sink has no `retry_partial` for item-level rejections in the shipped default. | On a bulk breaker trip (429 / `rejected_execution_exception`) the whole batch is dropped silently. A live cluster lost ~79k records in one incident. Set `spec.aggregateVector.sinks.opensearch.retryPartial: true` — this is the current baseline default in newer builds, but re-check on the cluster you are about to install. |
+| Project-level retention | The project-scoped log retention override (`cpaas.io/project.hotDataRetentionDays`, `cpaas.io/project.logPolicyEnabled`) does not take effect on OpenSearch. The operator skips `log-policy-config`, and the `razor-api` cron job that reconciles the ISM policy only reads, never writes. | Every project keeps the platform-default retention. If per-project retention is a compliance requirement, do not choose OpenSearch. See [How to Set the Retention Time of Cold Data for a Project](../how_to/project-cold-data-retention.mdx). |
+| Audit topic self-healing | If the audit KafkaTopic is deleted, the OpenSearch data path does not self-heal — audit ingest stops until the topic is re-created and the `aggregate-vector` audit consumer is restarted. | An operator-side incident on the audit topic requires manual intervention. |
+| Index replicas | The composable index template ships with `number_of_replicas: 0` even when the PLF or the template appears to declare `1`. | HA claims for OpenSearch replicas should be verified per-index (`GET /_cat/indices?v`) rather than trusted from the PLF spec. |
+
+These are tracked as separate follow-ups on the operator side and may be closed by a later `log-storage-operator` bump; the list above reflects the state as of 2026-09.
+
+:::info Diagnosis path
+The symptom that most often surfaces first is "queries return zero when I filter by a time range around the application timestamp." That is the timestamp-overwrite issue above, not a query problem. Compare `SELECT count() FROM ... WHERE timestamp BETWEEN a AND b` with an unbounded `SELECT count()` before you conclude the data is missing.
+:::

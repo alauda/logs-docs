@@ -1,0 +1,174 @@
+---
+weight: 40
+---
+
+# How to Tune the aggregate-vector Sink
+
+`aggregate-vector` reads records from Kafka and writes them into ClickHouse or OpenSearch. Its batching, buffering, retry, and concurrency defaults suit the vast majority of clusters. When the platform-default profile does not fit — for example when ClickHouse is throwing `TooManyParts`, OpenSearch is tripping its bulk breaker, or you want the collector to trade latency for a bigger flush — the platform exposes tuning knobs on `PlatformLogForward.spec.aggregateVector.sinks.*`.
+
+Every field is optional. Fields you do not set follow the platform-default baseline; upgrading a cluster that has never touched these knobs is a no-op.
+
+`log-storage-operator` reconciles `PlatformLogForward` on every change and rolls `aggregate-vector` automatically when a knob changes. No `kubectl rollout restart` is needed.
+
+## Before You Begin
+
+- **Alauda Container Platform Log Storage Management** installed on the storage cluster, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
+- You edit `PlatformLogForward` with `kubectl edit platformlogforward platform-default`.
+
+## When to Tune
+
+:::warning Knob scope follows the backend
+The `clickhouse` block under `spec.aggregateVector.sinks` is only rendered when `PlatformLogForward.spec.externalStorage.type` is `clickhouse`. The `opensearch` block is only rendered when the type is `opensearch`. Setting a knob for the other backend on a running cluster is a silent no-op — the values sit in the CR but never reach Vector. Verify the backend with `kubectl get platformlogforward platform-default -o jsonpath='{.spec.externalStorage.type}'` before you edit.
+:::
+
+Reach for these knobs when you observe **one specific symptom** in production. Do not preemptively change defaults.
+
+| Symptom | Sink | Field(s) to consider |
+| --- | --- | --- |
+| ClickHouse logs show frequent `TooManyParts` / `max_partitions_per_insert_block` | ClickHouse | `requestConcurrency` (lower to a fixed value), `batchMaxEvents` (larger flush) |
+| ClickHouse HTTP `413 Payload Too Large` | ClickHouse | `batchMaxBytes` (lower) |
+| Audit ingest latency too high | ClickHouse or OpenSearch | `batchTimeoutSecs` (lower) |
+| Kafka lag climbs even though the storage backend looks idle | either | `bufferMaxEvents` (larger) |
+| Pod memory pressure or `Killed` events on `aggregate-vector` | either | `bufferMaxEvents` (smaller) |
+| OpenSearch bulk breaker trips (`network.breaker.inflight_requests`) | OpenSearch | `batchMaxBytes` (lower) |
+| OpenSearch cluster rolls or GC pauses cause temporary write failure | OpenSearch | `requestRetryMaxDurationSecs` (up to `3600`) |
+| Repeated OpenSearch `es_rejected_execution_exception` triggers "duplicate index" alerts on your side | OpenSearch | `retryPartial: false` (see caveat) |
+
+If your symptom is not on this list, capture the storage-side error before tuning; changing a knob without a specific reason usually makes things worse.
+
+## ClickHouse sink knobs
+
+Set under `spec.aggregateVector.sinks.clickhouse`.
+
+| Field | Type | Default | When to change |
+| --- | --- | --- | --- |
+| `batchMaxEvents` | integer (≥ 1) | `50000` | Raise to make ClickHouse flushes larger and less frequent when the CH cluster reports too many small parts. Lower for audit if flush latency matters. |
+| `batchMaxBytes` | integer (≥ 1024) | `52428800` (50 MB) | Lower when ClickHouse returns `413 Payload Too Large` or when the network to CH is slow enough that a large flush hits a timeout. |
+| `batchTimeoutSecs` | integer (≥ 1) | `60` | Lower for real-time-sensitive log types (typically audit). |
+| `bufferMaxEvents` | integer (≥ 1) | `50000` | Raise when the ingest pipeline back-pressures Kafka consumption too often. Lower when the pod memory limit is tight. |
+| `bufferWhenFull` | `block` \| `drop_newest` | `block` | Change to `drop_newest` only for non-compliance workloads where the platform is allowed to drop the newest events instead of back-pressuring Kafka. |
+| `requestConcurrency` | `adaptive` \| `fixed` \| positive integer | `adaptive` (Vector default) | Set to a fixed positive integer like `"4"` when ClickHouse cannot keep up with adaptive concurrency (typical smoking gun is `TooManyParts`). |
+| `requestRetryAttempts` | integer (≥ -1) | `-1` (infinite) | Cap to a positive integer only when you need alerting on repeated CH failure rather than transparent retry. |
+| `requestRetryMaxDurationSecs` | integer (≥ 1) | `30` | Raise to `3600` on clusters where ClickHouse rolls or has short outage windows in the 30–120 s range. |
+
+Notes:
+
+- The Vector `buffer.type` is always `memory` and is not tunable. Kafka is the durable buffer; a second on-disk buffer inside Vector would duplicate durability without extra safety. When the memory buffer fills, Vector back-pressures the Kafka source and records stay on the broker; a Vector restart replays them from the last committed offset.
+- `requestConcurrency` accepts three forms: the strings `"adaptive"` or `"fixed"`, or a positive integer written as a string (for example `"4"`). The platform renders quoted strings as quoted strings and integer strings as bare integers in the Vector configuration.
+
+## OpenSearch sink knobs
+
+Set under `spec.aggregateVector.sinks.opensearch`. The same knobs apply to the legacy Elasticsearch backend (`output.type: elasticsearch`).
+
+| Field | Type | Default | When to change |
+| --- | --- | --- | --- |
+| `batchMaxBytes` | integer (≥ 1024) | `5242880` (5 MB) | The most important OpenSearch knob. Raise to `10485760` (10 MB) on OpenSearch clusters with large heap; lower when you see the bulk breaker (`network.breaker.inflight_requests`) trip with HTTP 429. |
+| `batchMaxEvents` | integer (≥ 1) | `100000` | Rarely the primary throttle; `batchMaxBytes` and `batchTimeoutSecs` usually flush first. Lower if you want event count to drive flushes. |
+| `batchTimeoutSecs` | integer (≥ 1) | `60` | Lower for real-time-sensitive log types. |
+| `bufferMaxEvents` | integer (≥ 1) | `50000` | Raise when Kafka lag climbs even though OpenSearch is idle; lower when pod memory is tight. |
+| `requestRetryMaxDurationSecs` | integer (≥ 1) | `3600` (1 h) | The default suits OpenSearch rolls and GC pauses. Lower it only on very stable OpenSearch environments where a 1-hour retry window creates noise; raise is rarely useful. |
+| `retryPartial` | boolean | `true` | Whether item-level partial failures (`es_rejected_execution_exception`, `too_many_requests`) are retried instead of silently dropped. Keep `true` unless you have a specific reason to opt out. |
+
+`retryPartial: false` caveat: **only** disable partial-failure retry when you have a strong reason (for example, your monitoring cannot tolerate the duplicate-index alert that retries can trigger) and you have verified that duplicates are folded away by the platform's idempotent `bulk.action = create` + document `_id` pattern. In earlier ACP releases the default was effectively `false` and one production cluster silently dropped 79,000 records; the current default `true` exists to prevent that class of incident.
+
+Notes:
+
+- The Vector `buffer.type` is `memory` and `buffer.when_full` is `block`; neither is tunable. See the ClickHouse sink notes for the reasoning.
+- `compression: gzip`, `bulk.action: create`, and `api_version: v8` are fixed by the platform because they express the invariants of the OpenSearch write path (compression saves 3–5× on the wire; `create` + document `_id` keeps retries idempotent; `v8` avoids the removed `_type` field that OpenSearch 3.7 rejects). These are not exposed as knobs.
+
+## Example — ClickHouse
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default
+spec:
+  output:
+    type: clickhouse
+  externalStorage:
+    type: clickhouse
+    secretRef:
+      name: platform-default-ch-conn
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka
+    secretRef:
+      name: platform-default-mq-conn
+      namespace: cpaas-system
+  aggregateVector:
+    replicas: 3
+    sinks:
+      clickhouse:
+        # ClickHouse reports frequent small parts; let the flush build larger.
+        batchMaxBytes: 20971520          # 20 MiB
+        batchMaxEvents: 200000
+        batchTimeoutSecs: 30
+        # The pipeline back-pressures Kafka too often; grow the buffer while
+        # keeping block so no record is dropped.
+        bufferMaxEvents: 200000
+        bufferWhenFull: block
+        # Production ClickHouse rolls occasionally; give retries an hour of budget.
+        requestRetryMaxDurationSecs: 3600
+        # ClickHouse TooManyParts; move from adaptive to fixed 4-way concurrency.
+        requestConcurrency: "4"
+```
+
+## Example — OpenSearch
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default
+spec:
+  externalStorage:
+    type: opensearch
+    secretRef:
+      name: platform-default-os-conn
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka
+    secretRef:
+      name: platform-default-mq-conn
+      namespace: cpaas-system
+  aggregateVector:
+    replicas: 3
+    sinks:
+      opensearch:
+        # Large-heap OpenSearch cluster; take 10 MiB flushes for better throughput.
+        batchMaxBytes: 10485760
+        # The pipeline back-pressures Kafka too often; grow the buffer.
+        bufferMaxEvents: 200000
+        # Keep the default 1-hour retry window for OpenSearch rolls.
+        requestRetryMaxDurationSecs: 3600
+        # Only set this to false when your monitoring cannot tolerate the
+        # duplicate-index alert triggered by transparent partial retry,
+        # and after you have verified that the bulk.action=create idempotent
+        # path holds in your data.
+        # retryPartial: false
+```
+
+## Apply and verify
+
+After you save the resource:
+
+```bash
+kubectl get platformlogforward platform-default -w
+```
+
+The `Ready` column should stay `True`. `log-storage-operator` renders the new Vector configuration into the `aggregate-vector-config` ConfigMap in `cpaas-system` and rolls the `aggregate-vector` Deployment.
+
+Verify the new values landed in Vector's configuration:
+
+```bash
+kubectl -n cpaas-system get cm aggregate-vector-config \
+  -o jsonpath='{.data.vector\.toml}' | grep -A 4 '\[sinks'
+```
+
+If a knob you set does not appear in the ConfigMap, check the field name and the PLF status conditions for a validation error.
+
+## Related Topics
+
+- [Installation](../install/index.mdx) — the PLF creation flow.
+- [How to Override the aggregate-vector Configuration](./vector-cm-override.mdx) — the escape hatch when the CRD does not expose the field you need.

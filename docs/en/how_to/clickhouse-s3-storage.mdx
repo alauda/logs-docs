@@ -4,53 +4,66 @@ weight: 15
 
 # How to Use S3 Storage with ClickHouse
 
-This guide explains how to configure **Alauda Container Platform Log Storage for ClickHouse** to use S3 for log data storage.
+This guide explains how to configure **Alauda Container Platform Log Storage Management** with a ClickHouse backend to keep cold log data on an S3-compatible object store.
 
-ClickHouse supports two S3-based usage modes:
+The S3-related knobs live on the `PlatformLogForward` (PLF) CR, not on the plugin install form. Enable them by editing PLF fields on the storage cluster; the change takes effect after `log-storage-operator` reconciles.
 
-- **S3 only**: ClickHouse stores log table data in S3.
-- **Cold and hot separation**: ClickHouse stores active data locally and transfers cold data to S3 based on the configured retention rules.
+:::info
+This guide describes ACP-managed **hot / cold tiered storage** for ClickHouse. Records stay on local disk while active and move to S3 once the hot TTL elapses, remaining queryable through the platform.
+
+It is unrelated to the [log archive](./log_archive.mdx) workflow, which exports logs out of the platform for long-term compliance retention.
+:::
 
 ## Before You Begin
 
-Prepare an S3 Secret in the `cpaas-system` namespace of the target storage cluster.
+Confirm the target storage cluster:
 
-The Secret must include the label `cpaas.io/credentials: S3`, because the plugin installation page filters selectable S3 credentials by this label.
+1. Has **Alauda Container Platform Log Storage Management** installed with `PlatformLogForward.spec.externalStorage.type: clickhouse` (see [Installation](../install/index.mdx)).
+2. Has `PlatformLogForward/platform-default` in `Ready` state.
+3. Has an S3-compatible endpoint reachable from every pod in `cpaas-system`.
 
-Example:
+You also need the S3 credentials and, if the endpoint uses HTTPS with a private CA, the CA certificate.
+
+## 1. Create the S3 credential Secret
+
+Store the S3 credentials in a Secret in `cpaas-system` on the storage cluster. The Secret name is used by `PlatformLogForward.spec.clickhouse.s3ColdSecretRef` in the next step, and can be any DNS-safe name.
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: clickhouse-s3-config
+  name: clickhouse-s3-cold
   namespace: cpaas-system
   labels:
-    cpaas.io/credentials: S3
+    cpaas.io/credentials: S3     # required so the console filters this Secret in S3 selectors
 type: Opaque
 stringData:
-  ACCESS_KEY_ID: <access-key-id>
-  SECRET_ACCESS_KEY: <secret-access-key>
-  ENDPOINT: https://<s3-endpoint>
-  REGION: <region>
-  BUCKET: <bucket-name>
+  ACCESS_KEY_ID: "<access-key-id>"
+  SECRET_ACCESS_KEY: "<secret-access-key>"
+  ENDPOINT: "https://<s3-endpoint>"
+  REGION: "<region>"             # leave empty only if the backend does not require it
+  BUCKET: "<bucket-name>"
 ```
-
-Secret field description:
 
 | Field | Description |
 | --- | --- |
 | `ACCESS_KEY_ID` | Access key for the S3 service. |
 | `SECRET_ACCESS_KEY` | Secret key for the S3 service. |
-| `ENDPOINT` | S3 service endpoint. |
+| `ENDPOINT` | S3 service endpoint, scheme included. Use `https://` for TLS. |
 | `REGION` | Region of the S3 service. Leave empty only if the backend does not require it. |
-| `BUCKET` | Bucket used by ClickHouse. |
+| `BUCKET` | Bucket where ClickHouse writes cold data. |
 
-If the S3 endpoint uses `https`, prepare an additional CA certificate Secret for **Alauda Container Platform Log Storage for ClickHouse**.
+Apply the Secret on the storage cluster:
 
-This Secret must use the fixed name `clickhouse-ca-certificates` and must be created in the `cpaas-system` namespace. Do not change the Secret name, namespace, or key name. Only replace the certificate content in `ca-certificates.crt`.
+```bash
+kubectl apply -f clickhouse-s3-cold.yaml
+```
 
-Example:
+## 2. Optional — trust the S3 CA
+
+Skip this section if the S3 endpoint uses plain `http://`, or if its HTTPS certificate is signed by a system-trusted CA.
+
+Create the CA Secret with the fixed name `clickhouse-ca-certificates` in `cpaas-system`. Do not change the Secret name, its namespace, or the key name; only replace the certificate content.
 
 ```yaml
 apiVersion: v1
@@ -66,73 +79,96 @@ stringData:
     -----END CERTIFICATE-----
 ```
 
-HTTPS S3 CA Secret notes:
+Apply:
 
-| Field | Requirement |
+```bash
+kubectl apply -f clickhouse-ca-certificates.yaml
+```
+
+## 3. Enable tiered storage on `PlatformLogForward`
+
+Edit the PLF and set the tiered-storage fields. Every field is on `spec.clickhouse`:
+
+```bash
+kubectl edit platformlogforward platform-default
+```
+
+Add or replace:
+
+```yaml
+spec:
+  clickhouse:
+    tieredPolicy:
+      enabled: true                              # enable hot / cold tiering
+      coldStoragePolicy: "log_s3_cold"           # storage policy name; leave the default unless
+                                                 # you configured a custom name in the CHI
+    s3ColdSecretRef:
+      name: clickhouse-s3-cold                   # Secret created in Step 1
+      namespace: cpaas-system
+    coldTTL:
+      workload: 30                               # days each log type stays on cold storage
+      platform: 30                               # after leaving hot storage
+      system: 30
+      kubernetes: 30
+      event: 30
+      audit: 90
+    ttl:
+      workload: 7                                # days each log type stays on hot (local) storage
+      platform: 7                                # before it moves to cold
+      system: 7
+      kubernetes: 7
+      event: 30
+      audit: 90
+```
+
+| Field | Meaning |
 | --- | --- |
-| `metadata.name` | Must be `clickhouse-ca-certificates`. |
-| `metadata.namespace` | Must be `cpaas-system`. |
-| `stringData.ca-certificates.crt` | Replace this field with the CA certificate chain required by the HTTPS S3 endpoint. |
+| `spec.clickhouse.tieredPolicy.enabled` | Master switch for hot / cold tiering. `false` (the default) keeps all data on local storage until it is deleted by the hot TTL. |
+| `spec.clickhouse.tieredPolicy.coldStoragePolicy` | Name of the ClickHouse storage policy that points at S3. Leave it at the default unless you customized the storage policy name in your `ClickHouseInstallation`. |
+| `spec.clickhouse.s3ColdSecretRef` | Secret that carries the S3 credentials and endpoint. Reference the Secret you created in Step 1. |
+| `spec.clickhouse.ttl.<log-type>` | Hot retention per log type, in days. Records older than this move from local storage into cold storage (when tiering is enabled) or are deleted (when it is not). |
+| `spec.clickhouse.coldTTL.<log-type>` | Cold retention per log type, in days. Records older than this are deleted from S3. Set to `0` to keep the log type on cold storage indefinitely. |
 
-## Use S3 for Log Data Storage
+Save and exit. `log-storage-operator` runs the `schema-migrations` Job to apply the new storage policy and TTL settings; watch the PLF status until it returns to `Ready`:
 
-When installing **Alauda Container Platform Log Storage for ClickHouse**, set **Storage Policy** to **Separation of storage and compute**.
+```bash
+kubectl get platformlogforward platform-default -w
+```
 
-Keep **Cold and Hot Separate** disabled if you want to use the S3-only mode.
+## 4. Optional — S3 as the only ClickHouse data location
 
-In this mode:
+Enable S3 as the sole data location for ClickHouse (no local hot layer) by setting the ClickHouse storage policy to an S3-only policy in the `ClickHouseInstallation`, then pointing `PlatformLogForward` at the same Secret through `spec.clickhouse.s3DataSecretRef`.
 
-- ClickHouse metadata remains on local storage or the selected StorageClass.
-- ClickHouse log table data is stored in S3.
+This mode is intended for evaluation or for backups where local disk cost dominates. It sacrifices query latency because every query round-trips to S3.
+
+```yaml
+spec:
+  clickhouse:
+    s3DataSecretRef:
+      name: clickhouse-s3-cold
+      namespace: cpaas-system
+```
 
 :::warning
-When S3 is used for ClickHouse log data, metadata storage performance still matters.
-
-- Prefer `LocalVolume` for ClickHouse metadata storage whenever possible.
-- If `LocalVolume` cannot be used and metadata must use a `StorageClass`, choose a high-performance storage backend.
-- As an engineering recommendation, plan for sustained read and write throughput greater than `200 MiB/s` to reduce the risk of metadata-related performance bottlenecks.
+- Even in S3-only mode, ClickHouse metadata still lives on local storage (or the ClickHouseInstallation's `StorageClass`). Metadata performance still matters: plan for sustained `≥ 200 MiB/s` read and write throughput on the metadata volume to keep merges and inserts healthy.
+- Prefer `LocalVolume` for metadata whenever possible; if you must use a `StorageClass`, pick a high-performance backend.
 :::
 
-Configure the following fields during installation:
+## Project-level cold retention
 
-| Field | Description |
-| --- | --- |
-| **Storage Policy** | Select **Separation of storage and compute**. |
-| **Metadata Storage Type** | Select `LocalVolume` or `StorageClass` for ClickHouse metadata. |
-| **Metadata Storage Path** | Required when `LocalVolume` is selected. The default path is `/cpaas/data/clickhouse`. |
-| **Metadata StorageClass** | Required when `StorageClass` is selected. |
-| **Metadata Capacity** | Recommended value is `20 Gi`. |
-| **S3 for Log Data** | Select the S3 Secret prepared in `cpaas-system`. |
-| **Cold and Hot Separate** | Keep this switch disabled for the S3-only mode. |
+Project-level overrides let you keep certain projects' logs longer (or shorter) than the PLF defaults. See [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx).
 
-## Enable Cold and Hot Separate
+## Notes and limits
 
-If you want ClickHouse to keep active data locally and transfer cold data to S3, enable **Cold and Hot Separate** during installation.
+- Only one cold-data Secret and one data-plane Secret are supported per PLF. Point both at the same S3 bucket, or at two buckets in the same S3 endpoint.
+- Do not expose the S3 access keys in plain text; keep them in `Secret` resources and load them from there.
+- Tiered storage cannot be disabled without redeploying the ClickHouse table layout. Plan the choice before you have production data.
+- Cold TTL can be adjusted after install; changes take effect on the next reconcile.
+- Cold data retention behavior is different from log archival. See [How to Archive Logs to Third-Party Storage](./log_archive.mdx) for the archival path.
+- In disaster recovery scenarios, do not point the primary and standby ClickHouse clusters at the same S3 bucket.
 
-After the switch is enabled, configure:
+## Related topics
 
-| Field | Description |
-| --- | --- |
-| **S3 for Log Cold Data** | Select the S3 Secret used for cold data storage. |
-| **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure the cold-data retention period for each log type before it is transferred to cold storage. |
-
-Behavior notes:
-
-- Active data remains in the current ClickHouse storage.
-- When the configured retention period expires, the corresponding data is transferred to the cold S3 storage.
-- A value of `0` means that this log type is not transferred to cold storage.
-
-## Limits and Notes
-
-- The current plugin installation workflow supports configuring one S3 target for log data storage and one S3 target for cold storage.
-- S3 credentials must be stored in Kubernetes Secrets. Do not expose access keys in plain text in installation records or screenshots.
-- If the S3 endpoint uses `https`, you must also create the `clickhouse-ca-certificates` Secret in `cpaas-system`. Only the certificate content in `ca-certificates.crt` should be customized.
-- The storage policy type and the **Cold and Hot Separate** switch cannot be changed after installation.
-- Cold data retention settings can be adjusted after installation.
-- This capability is different from the log export or archive solution described in [How to Archive Logs to Third-Party Storage](./log_archive.mdx). The archive guide describes exporting logs out of the platform, while this guide describes ClickHouse native storage behavior.
-- In disaster recovery scenarios, do not configure the primary and standby ClickHouse deployments to use the same S3 bucket.
-
-## Related Topics
-
-- For plugin installation parameters, see [Installation](../install_log.mdx).
-- For project-level cold data retention settings, see [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx).
+- [Installation](../install/index.mdx) — the PLF creation flow.
+- [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx) — per-project override.
+- [Log Component Selection Guide](../architecture/component_suggestion.mdx) — when to pick ClickHouse over OpenSearch or Elasticsearch.

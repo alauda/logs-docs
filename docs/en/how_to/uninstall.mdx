@@ -1,0 +1,158 @@
+---
+weight: 85
+---
+
+# How to Uninstall the Logging Stack
+
+Removing the ACP 4.4 logging stack is a three-part sequence: delete the `PlatformLogForward` custom resource, uninstall the Log Storage operator, then clean the parts that are user-owned by design (external Kafka, external ClickHouse or OpenSearch, and the persistent volumes the storage cluster wrote to).
+
+The operator has been designed so that step 1 is safe to run at any time and never leaves orphans behind, but steps 2 and 3 have manual boundaries called out below. Everything the operator wrote lives under `cpaas-system` on the storage cluster; there is no cluster-wide state to sweep beyond one webhook Secret.
+
+:::warning Data on the storage backend is not deleted by the operator
+Whatever the operator wrote to the external Kafka topics, the external ClickHouse database, or the external OpenSearch tenant stays there after uninstall. Those are user-owned resources. If your uninstall goal includes reclaiming that storage, you must issue the drop commands in the last section below.
+:::
+
+## 1. Delete `PlatformLogForward/platform-default`
+
+This one command drives the operator's `handlePLFTerminating` handler, which sweeps every side resource that the operator itself created:
+
+```bash
+kubectl delete platformlogforward platform-default
+```
+
+`handlePLFTerminating` deletes the following, in this order:
+
+1. Best-effort clean of the `KafkaTopic` CRs the operator ever created. On installs where `spec.externalMessageQueue.type` is set (the default), this step is a no-op — the topics are user-owned.
+2. Best-effort clean of `KafkaUser/platform-logging`. Skipped when the mq-conn Secret is user-authored.
+3. The `Deployment/razor`, `Deployment/aggregate-vector`, sibling `Service` resources, the `ServiceAccount/razor`, and its `Role` / `RoleBinding`.
+4. The `ConfigMap/aggregate-vector-config` and the `ConfigMap/aiops-logging-migrations`.
+5. The `Job/schema-migrations` and `Job/opensearch-init`.
+6. The `Feature/log-center` on the local cluster.
+
+Every side resource in the list above carries an `ownerReference` back to the `PlatformLogForward`, so K8s garbage-collects it even if the operator crashes mid-deletion. Once `handlePLFTerminating` has run to completion, it removes the `logging.platform.alauda.io/plf-finalizer` finalizer and the PLF disappears. Under normal load this happens within 60 seconds.
+
+Verify:
+
+```bash
+kubectl get platformlogforward platform-default
+# should return NotFound
+```
+
+## 2. Uninstall the Log Storage operator
+
+Once the PLF is gone, the operator itself can be uninstalled. If you installed via OLM, delete the Subscription and the ClusterServiceVersion:
+
+```bash
+kubectl -n cpaas-system delete subscription log-storage-operator
+kubectl -n cpaas-system delete csv $(kubectl -n cpaas-system get csv -o name | grep log-storage-operator)
+```
+
+If you installed via a chart, `helm uninstall log-storage-operator -n cpaas-system` is the equivalent.
+
+Uninstalling the operator does **not** delete:
+
+- The `Secret/log-storage-operator-webhook-server-cert` (kept intentionally so cert-manager can hand it back in a re-install).
+- The `Secret/log-storage-operator-external-storage-conn` (kept because you may re-install and want the endpoint credentials preserved).
+- The `Secret/platform-default-mq-conn` (kept, same reason).
+- Any legacy chart-owned `PersistentVolume` that carried `helm.sh/resource-policy: keep` and `persistentVolumeReclaimPolicy: Retain`. See section 3.
+
+Delete these by name if your uninstall goal is to reclaim namespaces completely:
+
+```bash
+kubectl -n cpaas-system delete secret \
+  log-storage-operator-webhook-server-cert \
+  log-storage-operator-external-storage-conn \
+  platform-default-mq-conn
+```
+
+## 3. Reclaim persistent volumes (optional)
+
+`PersistentVolume` and `PersistentVolumeClaim` are **never** auto-deleted by the operator. On a fresh 4.4 install the underlying storage is on the external ClickHouse or OpenSearch cluster, so there is nothing to reclaim on ACP. On an install that started as an ACP 4.3 chart-based deployment and was subsequently upgraded to 4.4, the legacy `chi-cpaas-clickhouse-*`, `data-cpaas-kafka-*`, and `razor-data-*` PVCs are still present with `helm.sh/resource-policy: keep`.
+
+If you want to reclaim them:
+
+```bash
+kubectl -n cpaas-system get pvc -l 'app.kubernetes.io/instance in (chart-alauda-log-clickhouse,chart-alauda-log-agent,chart-alauda-log-center)'
+# review the list, then delete
+kubectl -n cpaas-system delete pvc <name-1> <name-2> ...
+```
+
+If those PVCs are backed by PVs with `persistentVolumeReclaimPolicy: Retain` (which is the operator's default post-Bug 58 v7), the underlying data still lives on the physical volumes after the PVC is gone. Reclaim those with `kubectl delete pv` once you have confirmed the data is truly no longer needed.
+
+## 4. Clean the user-owned storage side
+
+The external Kafka, external ClickHouse, and external OpenSearch are all owned by the SRE team, not the operator. Nothing the operator did survives on those systems after their databases and topics are dropped, and the operator has no cluster credentials that would let it do this automatically.
+
+### External Kafka
+
+```bash
+# Delete the log topics
+kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_LOG_DATA'
+kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_EVENT'
+kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_AUDIT'
+# Delete the SASL user (Alauda Kafka Operator variant)
+kubectl -n cpaas-system delete rdskafkauser platform-logging
+```
+
+If your Kafka cluster is a stand-alone Alauda Kafka Operator install that you brought up specifically for the logging stack, uninstalling that operator and its `RdsKafka` CR takes the whole Kafka side down at once.
+
+### External ClickHouse
+
+Connect to the ClickHouse cluster with an admin account (not the DML user from the operator's `external-storage-conn` Secret) and drop the databases:
+
+```bash
+clickhouse-client --host <endpoint> --user admin --password <pw> \
+  --query "DROP DATABASE IF EXISTS alauda_log ON CLUSTER '{cluster}'"
+clickhouse-client --host <endpoint> --user admin --password <pw> \
+  --query "DROP DATABASE IF EXISTS alauda_event ON CLUSTER '{cluster}'"
+clickhouse-client --host <endpoint> --user admin --password <pw> \
+  --query "DROP DATABASE IF EXISTS alauda_audit ON CLUSTER '{cluster}'"
+```
+
+If you set `spec.storage.databaseNameOverride` on the PLF, substitute your override. The `system.schema_migrations` table is inside the log database and is dropped with it.
+
+If the ClickHouse cluster is dedicated to logging, you can decommission the cluster itself instead.
+
+### External OpenSearch
+
+```bash
+# Delete the indices
+curl -sk -u admin:admin -XDELETE 'https://<endpoint>/log-*'
+curl -sk -u admin:admin -XDELETE 'https://<endpoint>/event-*'
+curl -sk -u admin:admin -XDELETE 'https://<endpoint>/audit-*'
+# Delete the ISM policies (seven policies embedded by the operator)
+for p in log-hot-warm-delete log-hot-delete event-hot-warm-delete event-hot-delete audit-hot-warm-delete audit-hot-delete rollover; do
+  curl -sk -u admin:admin -XDELETE "https://<endpoint>/_plugins/_ism/policies/${p}"
+done
+# Delete the composable and component templates
+curl -sk -u admin:admin 'https://<endpoint>/_index_template' \
+  | jq -r '.index_templates[].name' \
+  | grep -E '^(log|event|audit|cpaas-native-)' \
+  | xargs -I{} curl -sk -u admin:admin -XDELETE "https://<endpoint>/_index_template/{}"
+```
+
+## 5. Uninstall the Log Collector plugin on collector clusters
+
+If the storage cluster you are decommissioning is the last storage cluster in the platform, remove the Log Collector plugin from every collector cluster afterwards. Each cluster:
+
+```bash
+# In the workload cluster
+kubectl -n cpaas-system delete subscription log-collector
+kubectl -n cpaas-system delete csv $(kubectl -n cpaas-system get csv -o name | grep log-collector)
+```
+
+The Log Collector plugin does not persist state that outlives its own namespaced resources, so this is a clean removal.
+
+## 6. Final checklist
+
+Before you close out the uninstall:
+
+- `kubectl -n cpaas-system get platformlogforward` returns `No resources found`.
+- `kubectl -n cpaas-system get pods -l 'app in (aggregate-vector,razor,log-storage-operator)'` returns `No resources found`.
+- On the global cluster, `kubectl get feature log-center` returns `NotFound`.
+- The three external systems above have been either dropped or intentionally left as historical retention.
+
+If any of these fails, walk the [Troubleshooting: PlatformLogForward stays in Provisioning](./troubleshooting.mdx#platformlogforward-stays-in-provisioning) table with the `False` condition — the finalizer flow uses the same names on the way out as on the way in.
