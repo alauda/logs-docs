@@ -32,7 +32,7 @@ For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component S
 
 :::warning
 
-- **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow the ACP 4.4 upgrade and migration documentation (delivered separately) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
+- **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
 - **Alauda Container Platform Log Storage for Elasticsearch** is retained for existing customers but is no longer the recommended backend for a fresh install. Choose ClickHouse or OpenSearch. If you must install Elasticsearch, follow the ACP 4.3 documentation for that plugin.
 
 :::
@@ -555,7 +555,7 @@ kubectl -n cpaas-system annotate secret platform-default-mq-conn platform-defaul
 
 For OpenSearch, replace `platform-default-ch-conn` with `platform-default-os-conn`.
 
-If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` exists, or PVCs from a previous ACP release are still bound), stop here and follow the ACP 4.4 migration documentation (delivered separately) instead.
+If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` exists, or PVCs from a previous ACP release are still bound), stop here and follow [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx) instead.
 :::
 
 ## 2. Install Log Collector
