@@ -705,6 +705,6 @@ If no records arrive within ten minutes, before changing configuration, work thr
 
 Once every plugin above reports installed:
 
-- Walk the seven-step [How to Verify a Fresh Install of the Logging Stack](../how_to/post-install-verification.mdx) checklist to confirm the write path and the read path are both working end to end.
+- Walk the seven-step [How to Verify a Fresh Install of the Logging Stack](./post-install-verification.mdx) checklist to confirm the write path and the read path are both working end to end.
 - If a step fails, jump straight to the matching entry in [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
 - When you eventually retire this install, follow [How to Uninstall the Logging Stack](../how_to/uninstall.mdx). The external ClickHouse (or OpenSearch) cluster, the external Kafka cluster, and the two SRE-authored connection Secrets are outside the plugin lifecycle — that page names the exact commands to reclaim each.
