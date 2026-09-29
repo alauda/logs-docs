@@ -29,7 +29,7 @@ The single mandatory pre-flight step is:
 
 The Kafka side is not auto-migrated because in ACP 4.4 Kafka becomes 100% SRE-owned: the operator no longer discovers Kafka from chart values, and cannot generate credentials for you.
 
-The storage side (external ClickHouse or OpenSearch endpoint and DML credentials) **is** auto-derived from the chart's running values by the operator on startup, so you do **not** need to pre-author `Secret/log-storage-operator-external-storage-conn`. If you prefer to hand-author it (for example when the chart values were externally overridden), the operator honours a pre-existing Secret with the same name.
+The storage side (external ClickHouse or OpenSearch endpoint and DML credentials) **is** auto-derived from the chart's running values by the operator on startup. On the ClickHouse path the operator creates `Secret/platform-default-ch-conn`; on the OpenSearch path it creates `Secret/platform-default-os-conn`. These are the same Secret names a fresh install would author — the difference is only who writes them (SRE on a fresh install, the auto-migration Runnable on an upgrade). If you prefer to hand-author the Secret (for example when the chart values were externally overridden), the operator honours a pre-existing Secret with the same name.
 
 Optional: set the environment variable `STRICT_AUTO_MIGRATION=true` on the operator Deployment before you install. In strict mode, any auto-migration step failure is a hard startup failure, and the operator emits a K8s Event and refuses to serve. Recommended for rollouts where a partial migration is unacceptable; leave unset in steady state.
 
@@ -65,12 +65,12 @@ The operator reads the following inputs and emits `PlatformLogForward/platform-d
 | Input read | Field derived |
 | --- | --- |
 | `ConfigMap/log-center-configuration` (the chart's rendered values dump) | ClickHouse shards, replicas, and hot / cold `hostPath`. |
-| `Secret/cpaas-clickhouse-users` | ClickHouse endpoint (Service `clickhouse-cpaas-clickhouse.cpaas-system:8123`) and the DML `basic auth` for the operator's `external-storage-conn` Secret. |
+| `Secret/cpaas-clickhouse-users` | ClickHouse endpoint (Service `clickhouse-cpaas-clickhouse.cpaas-system:8123`) and the DML `basic auth` for the operator's `platform-default-ch-conn` Secret. |
 | Chart `Deployment/razor` env | `--clickhouse-cluster`, `--clickhouse-shards`, and `--clickhouse-replicas` — Bug 116 fixed this from a hard-coded `1`. |
 | `ClickHouseInstallation/cpaas-clickhouse` | `spec.storage.tieredPolicy`, `coldTTL`, and the `hot` / `cold` disk paths. `s3ColdSecret` and `s3DataSecret` refs are propagated (Bug 117 for the retention semantics, Bug 118 for the S3 secret plumbing). |
 | `RdsKafka/cpaas-kafka` and its bootstrap Service | `spec.externalMessageQueue.type=kafka`, `spec.externalMessageQueue.secretRef.name=platform-default-mq-conn`. Bug 125 fixed the previous plaintext-versus-TLS drift by using PLAINTEXT / port 9092 unless TLS is explicitly on port 9093. |
 
-If `Secret/log-storage-operator-external-storage-conn` is absent, the operator writes it now, populating `endpoint`, `username`, `password`, `tls.ca`, and `tls.insecure_skip_verify` (the last is a smart default: strict when a CA is present, skip when only self-signed material is available — see Bug 131). If the Secret already exists, the operator leaves its content untouched.
+If `Secret/platform-default-ch-conn` (ClickHouse path) or `Secret/platform-default-os-conn` (OpenSearch path) is absent, the operator writes it now, populating `endpoint`, `username`, `password`, `tls.ca`, and `tls.insecure_skip_verify` (the last is a smart default: strict when a CA is present, skip when only self-signed material is available — see Bug 131). This is the same Secret shape and name the SRE would author on a fresh install; the difference is only that the auto-migration Runnable fills it in for you here. If the Secret already exists, the operator leaves its content untouched.
 
 The Kafka mq-conn Secret you authored during pre-flight is verified but never written to by the operator.
 
@@ -111,8 +111,8 @@ The Kafka mq-conn Secret you authored during pre-flight is orthogonal to the cha
 ### Known upgrade-time gotchas
 
 - **Legacy `razor` StatefulSet drain condition.** The PLF exposes a `LegacyRazorDrained` sub-condition (Bug 182, Bug 187). It reports the state of the old chart's `StatefulSet/razor` — either drained cleanly, or absent (because the chart never had a razor sts, or the sts was already deleted). Both count as success. A non-drained old razor sts blocks the new razor Deployment from taking over the log topics.
-- **`schema-migrations` on HTTPS ClickHouse with a self-signed CA.** If the derived `external-storage-conn` Secret ended up with `tls.insecure_skip_verify: true` and you later provide a real CA (`tls.ca`), the smart default flips to strict verification. This is intentional — see Bug 131.
-- **Auto-derived storage credentials versus rotated credentials.** The `external-storage-conn` Secret carries the ClickHouse credentials that the chart had **at the time the operator first ran**. If those credentials are subsequently rotated on the ClickHouse side, you must update the Secret; the operator does not re-derive it after the first tick.
+- **`schema-migrations` on HTTPS ClickHouse with a self-signed CA.** If the derived `platform-default-ch-conn` Secret ended up with `tls.insecure_skip_verify: true` and you later provide a real CA (`tls.ca`), the smart default flips to strict verification. This is intentional — see Bug 131.
+- **Auto-derived storage credentials versus rotated credentials.** The `platform-default-ch-conn` (or `platform-default-os-conn`) Secret carries the storage credentials that the chart had **at the time the operator first ran**. If those credentials are subsequently rotated on the ClickHouse or OpenSearch side, you must update the Secret; the operator does not re-derive it after the first tick.
 - **`STRICT_AUTO_MIGRATION` interaction with transient RBAC errors.** If your operator install carries RBAC that lacks any of the roles the auto-migration path needs (see Bug 108 and Bug 122 for the full list), strict mode will refuse to serve. Non-strict mode retries next tick, which usually succeeds after cluster-transformer or the platform operator installer has caught up.
 
 ## After ACP 4.4
@@ -132,6 +132,6 @@ No SRE intervention is required, and neither the two SRE-authored Secrets nor th
 
 ### From ACP 4.4 to ACP 4.5
 
-**ACP 4.4 → 4.5 is a plain OLM channel bump with no breaking changes.** The `PlatformLogForward` `v1alpha1` CRD, the `platform-default-mq-conn` Secret contract, and the `log-storage-operator-external-storage-conn` Secret contract all carry forward unchanged. The PLF a customer authored on 4.4 keeps working after the upgrade without any rewrite, and no SRE-visible action is required beyond approving the Subscription's new CSV.
+**ACP 4.4 → 4.5 is a plain OLM channel bump with no breaking changes.** The `PlatformLogForward` `v1alpha1` CRD, the `platform-default-mq-conn` Secret contract, and the `platform-default-ch-conn` / `platform-default-os-conn` Secret contracts all carry forward unchanged. The PLF a customer authored on 4.4 keeps working after the upgrade without any rewrite, and no SRE-visible action is required beyond approving the Subscription's new CSV.
 
 You will not run `patch-keep-legacy` or `derive-plf` again — those subcommands exist only to consume the 4.3-era chart-based install, and they are no-ops on a platform that started as 4.4. There is no equivalent one-shot migration on 4.4 → 4.5.
