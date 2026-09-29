@@ -52,16 +52,16 @@ If you installed via a chart, `helm uninstall log-storage-operator -n cpaas-syst
 Uninstalling the operator does **not** delete:
 
 - The `Secret/log-storage-operator-webhook-server-cert` (kept intentionally so cert-manager can hand it back in a re-install).
-- The `Secret/log-storage-operator-external-storage-conn` (kept because you may re-install and want the endpoint credentials preserved).
+- The `Secret/platform-default-ch-conn` on a ClickHouse install, or `Secret/platform-default-os-conn` on an OpenSearch install (kept because you may re-install and want the endpoint credentials preserved).
 - The `Secret/platform-default-mq-conn` (kept, same reason).
 - Any legacy chart-owned `PersistentVolume` that carried `helm.sh/resource-policy: keep` and `persistentVolumeReclaimPolicy: Retain`. See section 3.
 
-Delete these by name if your uninstall goal is to reclaim namespaces completely:
+Delete these by name if your uninstall goal is to reclaim namespaces completely (adjust for the backend you installed):
 
 ```bash
 kubectl -n cpaas-system delete secret \
   log-storage-operator-webhook-server-cert \
-  log-storage-operator-external-storage-conn \
+  platform-default-ch-conn \
   platform-default-mq-conn
 ```
 
@@ -101,7 +101,7 @@ If your Kafka cluster is a stand-alone Alauda Kafka Operator install that you br
 
 ### External ClickHouse
 
-Connect to the ClickHouse cluster with an admin account (not the DML user from the operator's `external-storage-conn` Secret) and drop the databases:
+Connect to the ClickHouse cluster with an admin account (not the DML user from the `platform-default-ch-conn` Secret) and drop the databases:
 
 ```bash
 clickhouse-client --host <endpoint> --user admin --password <pw> \
