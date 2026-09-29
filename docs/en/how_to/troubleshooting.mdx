@@ -49,7 +49,7 @@ Under `.status.conditions`, look at which sub-condition is stuck at `False`. The
 
 Two upstream failure modes are worth calling out because they have historically confused this triage:
 
-- The **schema-migrations Job** for external ClickHouse over HTTPS requires a CA. If the CH endpoint uses a self-signed certificate and you did not attach a CA to the external-storage-conn Secret, the operator falls back to `insecure_skip_verify=true` (which it logs). If TLS still fails, the Job's pod log shows the exact handshake error.
+- The **schema-migrations Job** for external ClickHouse over HTTPS requires a CA. If the CH endpoint uses a self-signed certificate and you did not attach a CA to the `platform-default-ch-conn` Secret, the operator falls back to `insecure_skip_verify=true` (which it logs). If TLS still fails, the Job's pod log shows the exact handshake error.
 
 - The **`log-center` Feature CR** used to hard-code the `platformURL` (global platform entry) as its `SecureAddress`, which the razor-api log path could not reach cross-cluster. The operator has since been fixed to resolve the local ALB address on the storage cluster instead. If your install is on 4.4 beta.x and the Feature still points at the global platform, upgrade the operator image.
 
