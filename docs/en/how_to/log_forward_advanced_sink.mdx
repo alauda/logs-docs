@@ -17,7 +17,7 @@ If none of these apply, prefer a typed output and the standard filters in [How t
 ## Prerequisites
 
 - **Alauda Container Platform Log Storage Management** installed, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
-- Storage operator **≥ v4.4.8** on the storage cluster, which is the version that ships the `advancedSink.rawTransforms` field and lifts `batch` / `request` from the parameters denylist. On older versions `kubectl apply` of a `LogForward` with `rawTransforms` is rejected by the admission webhook with `unknown field` or `reserved key`.
+- The storage operator shipped in the v4.4 release carries the `advancedSink.rawTransforms` field and does not block `batch` / `request` in parameters. The patterns in this document assume you are on that release.
 - Secrets referenced by `spec.output.authSecretRef` and `spec.output.tls.caSecretRef` live in `cpaas-system`.
 
 :::warning `LogForward` lives in `cpaas-system` only
@@ -66,7 +66,7 @@ A free-form object whose keys mirror the chosen sink's Vector configuration. Nes
 
 Nested keys named the same (for example `{"resource": {"type": "gce_instance"}}`) are **not** rejected — the webhook only checks the parameters top level.
 
-**Previously reserved, now allowed** (since v4.4.8): `batch` and `request`. Both are per-sink knobs; the OTLP envelope recipe below needs `batch.max_events: 1` to work.
+**Previously reserved, now allowed**: `batch` and `request`. Both are per-sink knobs; the OTLP envelope recipe below needs `batch.max_events: 1` to work.
 
 ### `advancedSink.rawTransforms[]`
 
