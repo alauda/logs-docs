@@ -1,0 +1,365 @@
+---
+weight: 36
+---
+
+# How to Forward Logs with `advancedSink` and `rawTransforms`
+
+The typed `LogForward` outputs (`kafka`, `elasticsearch`, `opensearch`, `syslog`, `http`, `console`, `blackhole`, `clickhouse`) cover most forwarding scenarios. The `advancedSink` output is the escape hatch for everything else — it lets you pick **any Vector sink** by name and reshape events with **a small, allowlisted set of Vector transforms** before the sink writes.
+
+Reach for `advancedSink` when:
+
+- the destination is a vendor sink the platform does not expose as a typed output (`datadog_logs`, `humio_logs`, `aws_s3`, `nats`, `gcp_cloud_storage`, …);
+- the destination needs a specific wire-format envelope that typed outputs do not produce (OTLP `resourceLogs/scopeLogs/logRecords`, Splunk HEC batch, …);
+- the forward path needs richer event-level reshaping than the platform filters (`parse`, `filter`, `redact`, `prune`, `remapFields`) can do — for example batch-aggregating many records into one request body, or writing a VRL predicate that combines multiple conditions.
+
+If none of these apply, prefer a typed output and the standard filters in [How to Forward Logs with LogForward](./log_forward.mdx) — they have tighter validation and are easier to review.
+
+## Prerequisites
+
+- **Alauda Container Platform Log Storage Management** installed, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
+- The storage operator shipped in the v4.4 release carries the `advancedSink.rawTransforms` field and does not block `batch` / `request` in parameters. The patterns in this document assume you are on that release.
+- Secrets referenced by `spec.output.authSecretRef` and `spec.output.tls.caSecretRef` live in `cpaas-system`.
+
+:::warning `LogForward` lives in `cpaas-system` only
+Same constraint as every other `LogForward`: the admission webhook `validate-lf.log.alauda.io` rejects any `LogForward` outside `cpaas-system`. The platform administrator, not the tenant, authors each CR.
+:::
+
+## Spec shape
+
+```yaml
+spec:
+  inputs:       [...]           # same as a typed LF
+  filters:      [...]           # optional — platform-typed filters, field-level ops
+  pipelines:    [...]           # same as a typed LF, wires inputs → filters → the single output
+  output:
+    type: advancedSink
+    endpoint:  <optional>       # some sinks use endpoint; others carry URL inside parameters
+    authSecretRef:              # optional, Secret keys: username / password
+      name: <secret>
+    tls:                        # optional
+      verify: true | false
+      caSecretRef:
+        name: <secret>          # Secret key: ca.crt
+    advancedSink:
+      componentType: <string>   # one Vector sink type, e.g. http / datadog_logs / humio_logs / aws_s3
+      parameters:   <object>    # Vector sink config fragment (keys mirror Vector's TOML)
+      rawTransforms: [...]      # optional — a chain of Vector transforms before the sink
+```
+
+### `advancedSink.componentType`
+
+Pick exactly one Vector sink type by name. The name matches what Vector uses in its own documentation — for example `http`, `datadog_logs`, `humio_logs`, `aws_s3`, `nats`, `elasticsearch` (if you want its full knob set rather than the platform's typed wrapper). The storage operator does not maintain a per-sink allowlist, because new Vector versions add sinks faster than any curated list can keep up. Vector validates the type at startup; if the name is wrong or the sink is gated behind a Vector feature flag that is off, the Vector pod fails to come up and the `LogForward` reports `Ready=False` with the parser error on `status.conditions`.
+
+### `advancedSink.parameters`
+
+A free-form object whose keys mirror the chosen sink's Vector configuration. Nested objects translate to nested TOML tables (`{"encoding": {"codec": "json"}}` becomes `[sinks.output.encoding] codec = "json"`).
+
+**Reserved keys** (admission webhook rejects at the parameters top level):
+
+| Key | Why reserved |
+|---|---|
+| `type` | Already set by the operator from `componentType`. |
+| `inputs` | The operator wires inputs itself from `pipelines` and `rawTransforms`. |
+| `sources` / `transforms` / `route` | A single sink block cannot carry a sub-topology. |
+| `buffer` | Buffer behaviour is a platform contract. |
+| `acknowledgements` / `healthcheck` | Platform decides the ack and healthcheck story. |
+
+Nested keys named the same (for example `{"resource": {"type": "gce_instance"}}`) are **not** rejected — the webhook only checks the parameters top level.
+
+**Previously reserved, now allowed**: `batch` and `request`. Both are per-sink knobs; the OTLP envelope recipe below needs `batch.max_events: 1` to work.
+
+### `advancedSink.rawTransforms[]`
+
+An optional ordered chain of Vector transforms that runs **after** the platform filters and **before** the sink writes. Each entry has:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string, unique within the LF, `[A-Za-z0-9_-]+`, 1–63 chars | Transform id. |
+| `type` | enum: `remap`, `filter`, `reduce`, `throttle`, `sample`, `dedupe` | Vector transform type. |
+| `spec` | object | The transform's Vector config fragment (keys mirror Vector's TOML; `inputs` and `type` are rejected because the operator wires them). |
+
+**Why these six types?** They are **local, side-effect-free** transforms — they do not change the topology, do not create sub-outputs, do not call external services. `route` (multi-output) breaks the operator's input wiring. `lua` (arbitrary code) is a safety hazard. `log_to_metric` belongs on the metrics pipeline.
+
+**Execution order** inside the generated Vector pipeline:
+
+```
+Kafka source → platform filters (parse/filter/redact/prune/remapFields)
+             → rawTransforms[0] → rawTransforms[1] → … → sink
+```
+
+The operator wires the `inputs` on every stage; you never write `inputs` yourself (and the webhook rejects it if you do).
+
+### Picking between a platform `filters[]` entry and a `rawTransforms[]` entry
+
+The two overlap. The rule of thumb:
+
+| Need | Use |
+|---|---|
+| Rename, drop, keep a flat set of fields; strip a known PII field; parse a JSON `message`; filter by a plain field equality / substring / regex | Platform typed filter (`parse` / `filter` / `redact` / `prune` / `remapFields`). Tighter validation, no VRL. |
+| Reshape the event (flat → nested, build an OTLP record, wrap into a batch envelope); write a predicate that combines many fields in one VRL expression; rate-limit by key; sample while keeping all errors; dedupe over a sliding window | `rawTransforms` entry (`remap`, `filter`, `reduce`, `throttle`, `sample`, `dedupe`). |
+
+Mix them freely: the platform filters run first and do the easy field-level work, then `rawTransforms` do the heavier shape work on an already-clean event.
+
+## Recipes
+
+Three worked examples, from simple to involved.
+
+### Recipe A — Forward audit records to Datadog, with pruning and enrichment
+
+Scenario: ship platform audit records to Datadog Logs. Use the platform `prune` filter to drop noisy fields, then a `rawTransforms.remap` to add a tenant tag that Datadog can route on.
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: audit-to-datadog
+  namespace: cpaas-system
+spec:
+  replicas: 2
+  inputs:
+    - name: audit-in
+      type: audit
+      initialOffset: Latest
+  filters:
+    - name: strip-noise
+      type: prune
+      prune:
+        deny: [pod_labels, node_name, path]      # platform-level, field-only
+  pipelines:
+    - name: audit-pipe
+      inputRefs: [audit-in]
+      filterRefs: [strip-noise]
+  output:
+    type: advancedSink
+    authSecretRef:
+      name: user-datadog-api                     # Secret keys: username(ignored) / password(API key)
+    advancedSink:
+      componentType: datadog_logs
+      parameters:
+        site: datadoghq.com
+        default_api_key: "${OUTPUT_PASSWORD}"    # vector expands at startup from Secret
+        compression: gzip                        # vector's datadog_logs sink serialises
+                                                 # as JSON on wire; do NOT set
+                                                 # `encoding.codec` here — this sink's
+                                                 # `encoding` block only accepts
+                                                 # only_fields / except_fields /
+                                                 # timestamp_format, and `codec` makes
+                                                 # `vector validate` fail at startup.
+      rawTransforms:
+        - name: add-tenant-tag
+          type: remap
+          spec:
+            source: |
+              .ddtags = "tenant:acme,env:prod,cluster:" + (to_string(.cluster) ?? "unknown")
+              .service = "acp-audit"
+```
+
+Points worth noting:
+
+- `authSecretRef.password` → `OUTPUT_PASSWORD` env on the Vector pod → `${OUTPUT_PASSWORD}` literal in `parameters` expands at Vector startup. The `username` key is required by the Secret shape but Datadog does not read it.
+- The platform `prune` filter runs **before** the `remap`, so the enrichment VRL operates on an already-smaller event.
+- VRL fallible operations (`to_string(x)`) must carry a fallback (`?? "unknown"`) or the whole transform aborts the event. For a full VRL recipe set see the operator-side guide at `log-storage-operator/docs/HOWTO_LF_ADVANCED_SINK_RAW_TRANSFORMS.md`.
+
+### Recipe B — Forward platform logs to a generic HTTP intake, with a VRL filter and sampling
+
+Scenario: ship application logs to a generic HTTP intake, but **drop healthcheck noise** with a composite condition the platform `filter` cannot express as a single predicate, and **sample the surviving stream** at 10% per pod to control volume.
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: app-logs-to-http
+  namespace: cpaas-system
+spec:
+  replicas: 2
+  inputs:
+    - name: platform-log
+      type: log
+      initialOffset: Latest
+      selector:
+        namespaces:
+          include: [prod-app-1, prod-app-2]
+  filters:
+    - name: redact-tokens
+      type: redact
+      redact:
+        fields: [access_token, bearer_token]
+        replacement: "[REDACTED]"
+  pipelines:
+    - name: to-intake
+      inputRefs: [platform-log]
+      filterRefs: [redact-tokens]
+  output:
+    type: advancedSink
+    advancedSink:
+      componentType: http
+      parameters:
+        uri: https://intake.example.com/logs
+        method: post
+        encoding:
+          codec: json
+        framing:
+          method: newline_delimited
+        request:
+          headers:
+            Authorization: "Bearer <paste-token-or-use-authSecretRef>"
+            Content-Type: application/x-ndjson
+      rawTransforms:
+        # 1) drop healthcheck noise AND warnings whose message is just a stacktrace tail
+        - name: drop-noise
+          type: filter
+          spec:
+            condition: |
+              msg   = to_string(.message) ?? ""
+              level = to_string(.level) ?? ""
+              # keep when the condition is true
+              level != "debug" &&
+              !contains(msg, "/healthz") &&
+              !contains(msg, "/readyz")  &&
+              !(level == "warn" && starts_with(msg, "\tat "))
+        # 2) sample 10% per pod — keep same pod's events consistent inside the window
+        - name: sample-10pct
+          type: sample
+          spec:
+            rate: 10
+            key_field: ".kubernetes_pod_name"
+            exclude: '.level == "error"'           # errors are always kept
+```
+
+Points worth noting:
+
+- The platform `redact` filter and the `rawTransforms` `filter` / `sample` are composed: redact first, then drop, then sample.
+- The `exclude` field on `sample` ensures every error survives — a common ask you cannot express with the platform `filter` filter.
+- Vector's `http` sink refuses to start if both `authSecretRef` and `parameters.request.headers.Authorization` are set. Pick one path (same rule as the typed HTTP output in [How to Forward Logs with LogForward](./log_forward.mdx)).
+
+### Recipe C — Forward platform logs as OTLP envelopes to an OpenTelemetry Collector
+
+Scenario: ship platform logs to an OTel Collector's `otlphttp` receiver. OTLP/HTTP wants a single top-level JSON object (`{resourceLogs: [...]}`), not an array — so the recipe uses `remap` + `reduce` + `remap` to build the envelope, and `batch.max_events: 1` on the sink so Vector does not re-batch the single produced envelope into an array.
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: logs-to-otlp
+  namespace: cpaas-system
+spec:
+  replicas: 2
+  inputs:
+    - name: platform-log
+      type: log
+      initialOffset: Latest
+  pipelines:
+    - name: to-otlp
+      inputRefs: [platform-log]
+  output:
+    type: advancedSink
+    advancedSink:
+      componentType: http
+      parameters:
+        uri: https://otel-collector.example.com:4318/v1/logs
+        method: post
+        encoding:
+          codec: json
+        framing:
+          method: bytes
+        request:
+          headers:
+            Content-Type: application/json
+        batch:
+          max_events: 1              # one reduce output → one POST body (object, not array)
+      rawTransforms:
+        # 1) per-event: build one OTLP logRecord and attach a batch key for the reducer
+        - name: to-record
+          type: remap
+          spec:
+            source: |
+              body_str, _ = to_string(.message)
+              if body_str == null || body_str == "" {
+                body_str = encode_json(.)
+              }
+              rec = {
+                "timeUnixNano": "0",
+                "severityText": to_string(.level) ?? "INFO",
+                "body":         { "stringValue": body_str },
+                "attributes": [
+                  { "key": "k8s.namespace.name", "value": { "stringValue": to_string(.kubernetes_namespace) ?? "" } },
+                  { "key": "k8s.pod.name",       "value": { "stringValue": to_string(.kubernetes_pod_name)   ?? "" } },
+                  { "key": "k8s.container.name", "value": { "stringValue": to_string(.container_name)        ?? "" } }
+                ]
+              }
+              . = { "batchKey": "ALL", "rec": rec }
+        # 2) batch many records into one event with a .rec array
+        - name: wrap
+          type: reduce
+          spec:
+            group_by:        [batchKey]
+            expire_after_ms: 1000       # one POST per second
+            merge_strategies:
+              rec: array
+        # 3) shape the final OTLP envelope
+        - name: envelope
+          type: remap
+          spec:
+            source: |
+              recs = array!(.rec)
+              . = {
+                "resourceLogs": [{
+                  "resource": {
+                    "attributes": [
+                      { "key": "service.name", "value": { "stringValue": "acp-log-forward" } }
+                    ]
+                  },
+                  "scopeLogs": [{
+                    "scope":      { "name": "acp-lf", "version": "0.1" },
+                    "logRecords": recs
+                  }]
+                }]
+              }
+```
+
+Points worth noting:
+
+- `batch.max_events: 1` is **required** for OTLP/HTTP. Without it, Vector's `http` sink wraps the reducer's single envelope into a one-element array `[{...}]`, which the OTel Collector rejects with 400.
+- `expire_after_ms` trades latency against batch size. 1 second (shown) is a reasonable default; at very high volume reduce it to 500 ms, at very low volume raise it to 5 000 ms. Watch for the collector's `max_request_body_size` — if envelopes exceed it, cut `expire_after_ms`.
+- The timestamp (`timeUnixNano: "0"`) is a placeholder: the collector will use ingest time. To preserve the real event time, replace it with `to_string(to_unix_timestamp(parse_timestamp!(.timestamp, "%+")) * 1000000000)`.
+- If the collector needs auth, add it to `parameters.request.headers.Authorization` (`Bearer ${OUTPUT_PASSWORD}`) and set `authSecretRef` with the key in the Secret's `password`.
+
+## Verify
+
+Same as any `LogForward`:
+
+```bash
+kubectl -n cpaas-system apply -f my-advanced-lf.yaml
+kubectl -n cpaas-system get logforward <name> -w
+# wait for READY=True
+```
+
+If it does not go Ready, read the conditions:
+
+```bash
+kubectl -n cpaas-system get logforward <name> \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+Common `Ready=False` reasons specific to `advancedSink`:
+
+- `AdvancedSinkParametersRejected` — a reserved key (`type`, `inputs`, `sources`, `transforms`, `route`, `buffer`, `acknowledgements`, `healthcheck`) is set at the parameters top level.
+- `RawTransformsRejected` — a `rawTransforms[*]` entry has a non-allowlisted `type`, a duplicate `name`, or writes `inputs` / `type` inside its `spec`.
+- `VectorValidateFailed` — the operator renders a Vector config, invokes `vector validate` as a pre-flight, and only rolls the Deployment if validation passes. The condition message carries the Vector parser error verbatim; it is almost always a typo in a Vector sink field name or a VRL syntax error (`fallible without ??`).
+
+To debug the actual on-wire payload the sink is emitting, point the sink `uri` at a short-lived echo pod and read what arrives — the operator-side guide at `log-storage-operator/docs/HOWTO_LF_ADVANCED_SINK_RAW_TRANSFORMS.md` ships an echo-pod recipe you can copy.
+
+## Limits and Notes
+
+- `rawTransforms[*].type` is restricted to `remap`, `filter`, `reduce`, `throttle`, `sample`, `dedupe`. Other Vector transform types (notably `route` and `lua`) are rejected.
+- `rawTransforms[*].spec` cannot carry `inputs` or `type` — the operator wires them.
+- One `LogForward` has exactly one output and one Vector Deployment. To fan out to many destinations, create many `LogForward` CRs; they can share platform filters by copy-paste only (there is no cross-CR filter re-use).
+- Platform filters (`filters[]`) and `rawTransforms[]` are both run; filters first, rawTransforms second. Use the former for field-level ops, the latter for event-shape ops.
+- The platform's `KafkaUser` must include the `logforward-` consumer-group prefix ACL rule. Without it the Vector pod silently reads zero records and the `LogForward` still reports `Ready=True`. See [Installation](../install/index.mdx) for the ACL recipe.
+- `advancedSink` is an escape hatch. Vector sink schemas can change between Vector minor releases; the operator runs `vector validate` as a pre-flight on every reconcile and refuses to roll a broken config, so upgrades stay safe, but it is worth re-reading the Vector sink reference after a storage operator major upgrade.
+
+## Related Topics
+
+- [How to Forward Logs with LogForward](./log_forward.mdx) — typed outputs (`kafka`, `elasticsearch`, `opensearch`, `syslog`, `http`, `console`, `blackhole`, `clickhouse`) and the platform filter catalogue.
+- [How to Archive Logs to Third-Party Storage](./log_archive.mdx) — the `razor consumer --database-type=file` archival path, for NFS / S3 cold storage rather than real-time forwarding.
+- [Installation](../install/index.mdx) — storage operator install and the `logforward-` KafkaUser prefix ACL rule.
