@@ -226,7 +226,7 @@ Points worth noting:
 
 - The platform `redact` filter and the `rawTransforms` `filter` / `sample` are composed: redact first, then drop, then sample.
 - The `exclude` field on `sample` ensures every error survives — a common ask you cannot express with the platform `filter` filter.
-- Vector's `http` sink refuses to start if both `authSecretRef` and `parameters.request.headers.Authorization` are set. Pick one path (same rule as in the [typed HTTP output](./log_forward.mdx#forward-audit-records-to-an-http-intake)).
+- Vector's `http` sink refuses to start if both `authSecretRef` and `parameters.request.headers.Authorization` are set. Pick one path (same rule as the typed HTTP output in [How to Forward Logs with LogForward](./log_forward.mdx)).
 
 ### Recipe C — Forward platform logs as OTLP envelopes to an OpenTelemetry Collector
 
