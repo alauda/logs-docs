@@ -138,9 +138,13 @@ spec:
       parameters:
         site: datadoghq.com
         default_api_key: "${OUTPUT_PASSWORD}"    # vector expands at startup from Secret
-        encoding:
-          codec: json
-        compression: gzip
+        compression: gzip                        # vector's datadog_logs sink serialises
+                                                 # as JSON on wire; do NOT set
+                                                 # `encoding.codec` here — this sink's
+                                                 # `encoding` block only accepts
+                                                 # only_fields / except_fields /
+                                                 # timestamp_format, and `codec` makes
+                                                 # `vector validate` fail at startup.
       rawTransforms:
         - name: add-tenant-tag
           type: remap
