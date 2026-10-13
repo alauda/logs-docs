@@ -210,6 +210,7 @@ apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
 metadata:
   name: alauda-log-topic                 # DNS-safe CR name
+  namespace: cpaas-system                # must match the RdsKafka cluster's namespace
   labels:
     strimzi.io/cluster: cpaas-kafka
 spec:
@@ -224,6 +225,7 @@ apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
 metadata:
   name: alauda-event-topic
+  namespace: cpaas-system
   labels:
     strimzi.io/cluster: cpaas-kafka
 spec:
@@ -238,6 +240,7 @@ apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
 metadata:
   name: alauda-audit-topic
+  namespace: cpaas-system
   labels:
     strimzi.io/cluster: cpaas-kafka
 spec:
