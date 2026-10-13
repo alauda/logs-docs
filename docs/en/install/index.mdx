@@ -74,6 +74,8 @@ The manifest below carries placeholders and example values that you MUST customi
 - **Broker storage size** (`RdsKafka.spec.storage.size`): default `100Gi` fits an evaluation cluster. For production, size it by `retention.ms × daily volume × replication factor`.
 - **Replicas** (`RdsKafka.spec.replicas`, `RdsKafka.spec.controller.replicas`, `RdsTopic.spec.replicas`): the manifest shows production values (`3` / `3` / `3`). For a single-node evaluation cluster, set every one of them to `1`. Mixing production topic replicas with a 1-broker cluster blocks topic creation.
 - **Topic partitions** (`RdsTopic.spec.partitions`): `30` is a production starting point. Lower for small clusters; must match (or divide into) the aggregate-vector parallelism you expect downstream.
+
+Apply only after every placeholder above is substituted.
 :::
 
 ```yaml
@@ -330,6 +332,8 @@ Required for both backends.
 - `username`: the SASL account you created with `RdsKafkaUser` (Section 1.1.1 uses `platform-logging`).
 - `password`: replace `<kafka-password>` with the real password you put into `Secret platform-logging-password` (plaintext here — operator reads this Secret, not the K8s SASL Secret the broker reads).
 - `tls.ca`: only when the SASL listener runs over TLS with a certificate your K8s pods do not already trust. Replace `<kafka-ca-certificate>` with the PEM block, or remove the whole `tls.ca` key if you use a plaintext listener (`:9092`) or a system-trusted CA.
+
+Apply only after every placeholder above is substituted.
 :::
 
 ```yaml
@@ -405,6 +409,8 @@ Skip this section if you use OpenSearch.
 - `endpoint`: HTTPS or HTTP URL of your ClickHouse — the native HTTP interface (default port 8123 / TLS 8443), **not** the native TCP port 9000.
 - `username` / `password`: the ClickHouse user the operator will connect as. The example `<clickhouse-password>` is a placeholder — put the real password here. The user must have `CREATE DATABASE`, `CREATE TABLE`, `INSERT`, `SELECT` on the logging database (razor's `schema-migrations` job creates it on first run).
 - `tls.ca`: only when ClickHouse runs HTTPS with a certificate your K8s pods do not already trust. Replace `<clickhouse-ca-certificate>` with the PEM block, or remove it for HTTP / system-trusted CA.
+
+Apply only after every placeholder above is substituted.
 :::
 
 ```yaml
@@ -469,6 +475,8 @@ Skip this section if you use ClickHouse.
 - `endpoints`: HTTPS or HTTP URL of your OpenSearch (default port 9200). Comma-separated for multi-node coordination.
 - `username` / `password`: the OpenSearch account the operator will connect as. The example `<opensearch-password>` is a placeholder — put the real password here. The user must be able to manage index templates and ILM policies on the logging index pattern.
 - `tls.ca`: only when OpenSearch runs HTTPS with a certificate your K8s pods do not already trust. Remove the whole `tls.ca` key for HTTP / system-trusted CA.
+
+Apply only after every placeholder above is substituted.
 :::
 
 ```yaml
@@ -634,6 +642,8 @@ Every `<...>` is a placeholder and the version string is example-only. Apply as-
 - Replace `<storage-cluster>` (in `spec.config.crossClusterDependency.logstorage`) with the cluster where `PlatformLogForward/platform-default` is Ready.
 - Replace `spec.version: v4.4.0` with the actual version your cluster has: `kubectl get moduleconfigs | grep logagent` and copy a `logagent-v4.4.x` name. The ModuleConfig CR must exist for the version you set here, otherwise the webhook rejects with `moduleconfig <name> not found`.
 - Review `spec.config.dataSource.*` and `spec.config.components.nevermore.storageSpec.dataDir`: the defaults are fine for a stock Alauda host, but Alauda OS uses `/var/cpaas/data/nevermore` and air-gapped sites may need a different volume.
+
+Apply only after every placeholder above is substituted.
 :::
 
 ```yaml
