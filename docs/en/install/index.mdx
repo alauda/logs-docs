@@ -74,6 +74,10 @@ The manifest below carries placeholders and example values that you MUST customi
 - **Broker storage size** (`RdsKafka.spec.storage.size`): default `100Gi` fits an evaluation cluster. For production, size it by `retention.ms × daily volume × replication factor`.
 - **Replicas** (`RdsKafka.spec.replicas`, `RdsKafka.spec.controller.replicas`, `RdsTopic.spec.replicas`): the manifest shows production values (`3` / `3` / `3`). For a single-node evaluation cluster, set every one of them to `1`. Mixing production topic replicas with a 1-broker cluster blocks topic creation.
 - **Topic partitions** (`RdsTopic.spec.partitions`): `30` is a production starting point. Lower for small clusters; must match (or divide into) the aggregate-vector parallelism you expect downstream.
+- **Replication-factor config** (`RdsKafka.spec.config.default.replication.factor` / `min.insync.replicas` / `offsets.topic.replication.factor` / `transaction.state.log.replication.factor` / `transaction.state.log.min.isr`): manifest ships `3 / 2 / 3 / 3 / 2` for a 3-broker production cluster. For a single-broker evaluation cluster set every `3` to `1` and every `2` to `1`; a 3-broker config on a 1-broker cluster leaves `__consumer_offsets` under-replicated and no consumer can commit.
+- **Resources** (`RdsKafka.spec.resources`, `controller.resources`, `entityOperator.topicOperator.resources` / `userOperator.resources`, `kafkaExporter.resources`): the example limits/requests are a reasonable per-broker baseline. Tune for your traffic — brokers scale with throughput, entity-operator stays small.
+- **Tolerations** (`controller.template.pod.tolerations`, `kafka.template.pod.tolerations`, `entityOperator.template.pod.tolerations`, `kafkaExporter.template.pod.tolerations`): the manifest tolerates everything so single-node evaluation clusters (where control-plane tainted nodes host workloads) can schedule. Tighten or remove for production clusters where you want Kafka only on worker nodes.
+- **upgradeOption.autoUpgrade** (`RdsKafka.spec.upgradeOption.autoUpgrade`): `false` pins the version — SRE drives upgrades. Setting `true` lets a CSV bump roll your brokers unattended.
 
 Apply only after every placeholder above is substituted.
 :::
@@ -110,9 +114,18 @@ spec:
   version: 4.2.0
   mode: KRaft                       # MANDATORY: v4.4 kafka runs in KRaft mode (no ZooKeeper)
   replicas: 3                       # broker count — 1 for single-node evaluation, 3 for production
+  upgradeOption:
+    autoUpgrade: false              # SRE pins the version; set true only if you accept rolling upgrades on CSV bumps
   storage:
     class: ""                       # fill in your StorageClass; leave "" to use the cluster default
     size: 100Gi
+  resources:                        # broker pod sizing — tune to your traffic
+    limits:
+      cpu: "2"
+      memory: 4Gi
+    requests:
+      cpu: 200m
+      memory: 1Gi
   config:
     # MANDATORY. Broker default 1 MiB is too small for K8s audit batches
     # (~1.1-1.5 MiB decompressed) and rejects all audit ingest. Value
@@ -127,12 +140,36 @@ spec:
     auto.create.topics.enable: "false"
     # MANDATORY. Prevents silent data loss on broker crash.
     unclean.leader.election.enable: "false"
+    # Production replication defaults for a 3-broker cluster. For a
+    # single-broker evaluation cluster set every "3" below to "1" and
+    # min.insync.replicas / transaction.state.log.min.isr to "1".
+    default.replication.factor: "3"
+    min.insync.replicas: "2"
+    offsets.topic.replication.factor: "3"
+    transaction.state.log.replication.factor: "3"
+    transaction.state.log.min.isr: "2"
+    # Retention sizing — razor consumes within seconds, 48h window is
+    # the usual production SLO for replay / incident forensics.
+    log.retention.ms: "172800000"             # 48 hours
+    log.retention.bytes: "4928307200"         # ~4.6 GiB / partition
+    num.partitions: "30"                      # default when auto.create is on; topics below pin this explicitly
   controller:                       # MANDATORY in KRaft mode: dedicated controller quorum
     replicas: 3                     # 1 for single-node evaluation, 3 for production quorum
     roles: [controller]
     storage:
       class: ""                     # same as broker; leave "" for cluster default SC
       size: 5Gi                     # controller logs are small, 5Gi is enough
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 200m
+        memory: 512Mi
+    template:
+      pod:
+        tolerations:                # tolerate control-plane taint so single-node evaluation clusters schedule
+          - operator: Exists
   kafka:
     authorization:
       type: simple
@@ -143,9 +180,43 @@ spec:
       tls:
         authentication:
           type: scram-sha-512
+    template:
+      pod:
+        tolerations:
+          - operator: Exists
   entityOperator:
-    topicOperator: {}
-    userOperator: {}
+    topicOperator:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 256Mi
+    userOperator:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 256Mi
+    template:
+      pod:
+        tolerations:
+          - operator: Exists
+  kafkaExporter:                    # exposes broker metrics for the aggregate-vector lag watchdog and dashboards
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    template:
+      pod:
+        tolerations:
+          - operator: Exists
 ---
 # 3. The SASL account. The nine ACL rules below are ALL required — the
 # storage operator's preflight check reports each missing rule by name
