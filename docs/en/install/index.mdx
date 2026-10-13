@@ -81,42 +81,56 @@ type: Opaque
 stringData:
   password: "<generate a strong password of at least 32 characters>"
 ---
-# 2. The Kafka cluster. Listener authentication is SCRAM-SHA-512.
-# The five `config` values below are MANDATORY for logging — the broker
-# defaults are too small for the audit-ingest batch size and will silently
-# drop audit batches otherwise. See the Kafka product docs for the rest of
-# the spec.
+# 2. The Kafka cluster. Alauda's `RdsKafka` is a strimzi fork whose
+# schema differs from upstream Kafka: `version` / `config` / `replicas`
+# / `mode` / `controller` / `storage` sit at `spec.*` top level (NOT
+# under `spec.kafka.*`), and `spec.kafka.listeners` is a MAP keyed by
+# `plain` / `tls` / `external` (NOT a list). Listener authentication is
+# SCRAM-SHA-512. The five `config` values below are MANDATORY for
+# logging — the broker defaults are too small for the audit-ingest
+# batch size and will silently drop audit batches otherwise.
 apiVersion: middleware.alauda.io/v1
 kind: RdsKafka
 metadata:
   name: cpaas-kafka
   namespace: cpaas-system
 spec:
+  version: 4.2.0
+  mode: KRaft                       # MANDATORY: v4.4 kafka runs in KRaft mode (no ZooKeeper)
+  replicas: 3                       # broker count — 1 for single-node evaluation, 3 for production
+  storage:
+    class: ""                       # fill in your StorageClass; leave "" to use the cluster default
+    size: 100Gi
+  config:
+    # MANDATORY. Broker default 1 MiB is too small for K8s audit batches
+    # (~1.1-1.5 MiB decompressed) and rejects all audit ingest. Value
+    # aligns with razor producer max.request.size (10 MiB).
+    message.max.bytes: "10485760"
+    # MANDATORY. Must be >= message.max.bytes or replica sync stalls.
+    replica.fetch.max.bytes: "10485760"
+    # MANDATORY. Supports an 8 MiB batch envelope plus SASL overhead.
+    socket.request.max.bytes: "104857600"
+    # MANDATORY. Prevents ghost topics when razor / aggregate-vector are
+    # temporarily misconfigured.
+    auto.create.topics.enable: "false"
+    # MANDATORY. Prevents silent data loss on broker crash.
+    unclean.leader.election.enable: "false"
+  controller:                       # MANDATORY in KRaft mode: dedicated controller quorum
+    replicas: 3                     # 1 for single-node evaluation, 3 for production quorum
+    roles: [controller]
+    storage:
+      class: ""                     # same as broker; leave "" for cluster default SC
+      size: 5Gi                     # controller logs are small, 5Gi is enough
   kafka:
-    version: 4.2.0
-    listeners:
-      - name: plain
-        port: 9092
-        type: internal
-        tls: false
-        authentication:
-          type: scram-sha-512
-    config:
-      # MANDATORY. Broker default 1 MiB is too small for K8s audit batches
-      # (~1.1-1.5 MiB decompressed) and rejects all audit ingest. Value
-      # aligns with razor producer max.request.size (10 MiB).
-      message.max.bytes: 10485760
-      # MANDATORY. Must be >= message.max.bytes or replica sync stalls.
-      replica.fetch.max.bytes: 10485760
-      # MANDATORY. Supports an 8 MiB batch envelope plus SASL overhead.
-      socket.request.max.bytes: 104857600
-      # MANDATORY. Prevents ghost topics when razor / aggregate-vector are
-      # temporarily misconfigured.
-      auto.create.topics.enable: "false"
-      # MANDATORY. Prevents silent data loss on broker crash.
-      unclean.leader.election.enable: "false"
     authorization:
       type: simple
+    listeners:                      # MAP keyed by `plain` / `tls` / `external`, NOT a list
+      plain:
+        authentication:
+          type: scram-sha-512
+      tls:
+        authentication:
+          type: scram-sha-512
   entityOperator:
     topicOperator: {}
     userOperator: {}
