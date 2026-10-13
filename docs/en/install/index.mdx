@@ -156,7 +156,7 @@ metadata:
   name: platform-logging
   namespace: cpaas-system
   labels:
-    strimzi.io/cluster: cpaas-kafka
+    middleware.alauda.io/cluster: cpaas-kafka
 spec:
   authentication:
     type: scram-sha-512
@@ -212,7 +212,7 @@ metadata:
   name: alauda-log-topic                 # DNS-safe CR name
   namespace: cpaas-system                # must match the RdsKafka cluster's namespace
   labels:
-    strimzi.io/cluster: cpaas-kafka
+    middleware.alauda.io/cluster: cpaas-kafka
 spec:
   topicName: ALAUDA_LOG_TOPIC            # broker-side topic name (uppercase)
   partitions: 30
@@ -227,7 +227,7 @@ metadata:
   name: alauda-event-topic
   namespace: cpaas-system
   labels:
-    strimzi.io/cluster: cpaas-kafka
+    middleware.alauda.io/cluster: cpaas-kafka
 spec:
   topicName: ALAUDA_EVENT_TOPIC
   partitions: 30
@@ -242,7 +242,7 @@ metadata:
   name: alauda-audit-topic
   namespace: cpaas-system
   labels:
-    strimzi.io/cluster: cpaas-kafka
+    middleware.alauda.io/cluster: cpaas-kafka
 spec:
   topicName: ALAUDA_AUDIT_TOPIC
   partitions: 30
