@@ -586,7 +586,15 @@ The OpenSearch Secret does not carry a `tls.ca` field. The platform connects to 
 
 `PlatformLogForward` (PLF) is the cluster-scoped CR that `log-storage-operator` watches to build the data path. It is always named `platform-default`, and there is exactly one per storage cluster.
 
-**For ClickHouse:**
+:::warning Edit before you apply
+Three sections are environment-specific — pick values that match your cluster size before `kubectl apply`:
+
+- **`externalStorage.shards` / `.replicas`** must match the ClickHouse profile you picked in Section 1.1.2. Setting these lower than the ClickHouse topology silently leaves nodes unused; setting them higher makes the data path reach for nodes that do not exist. Single-node evaluation = `1 / 1`; three-node HA = `1 / 3`; six-node scale-out = `2 / 3`; nine-node scale-out = `3 / 3`.
+- **`aggregateVector.replicas`** scales the Kafka→ClickHouse ingest tier. Evaluation = `1`; production = `3` (operator default) and up for high ingest throughput.
+- **`razor.replicas` and `razor.resources`** scale the query-plane serving razor-api. Example values below are a reasonable per-pod baseline; production sites with heavy query load should raise replicas (3+) and tune the limits for the expected concurrent-query budget.
+
+Apply only after the three sizing choices match your target topology.
+:::
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
@@ -608,9 +616,24 @@ spec:
     secretRef:
       name: platform-default-mq-conn
       namespace: cpaas-system
+  aggregateVector:
+    replicas: 1                                     # Kafka→CH ingest tier; raise to 3+ for production throughput
+  razor:
+    replicas: 1                                     # query-plane serving tier; raise for heavier query load
+    resources:
+      limits:
+        cpu: "4"
+        memory: 2Gi
+      requests:
+        cpu: "1"
+        memory: 512Mi
 ```
 
 **For OpenSearch:**
+
+:::warning Edit before you apply
+`externalStorage.shards` / `.replicas` are still accepted on the OpenSearch branch for consistency with the ClickHouse schema, even though OpenSearch manages its own shard/replica allocation on each index. Setting them to `1 / 1` is safe for every topology — the fields are informational for the operator, not propagated to the OpenSearch cluster. Scale `aggregateVector.replicas` and `razor.replicas` the same way as the ClickHouse branch above.
+:::
 
 ```yaml
 apiVersion: log.alauda.io/v1alpha1
@@ -627,6 +650,8 @@ spec:
   # by `externalStorage.type`.
   externalStorage:
     type: opensearch
+    shards: 1                                       # informational on the OS branch; keep as 1
+    replicas: 1                                     # informational on the OS branch; keep as 1
     secretRef:
       name: platform-default-os-conn
       namespace: cpaas-system
@@ -635,6 +660,17 @@ spec:
     secretRef:
       name: platform-default-mq-conn
       namespace: cpaas-system
+  aggregateVector:
+    replicas: 1                                     # Kafka→OS ingest tier; raise to 3+ for production throughput
+  razor:
+    replicas: 1                                     # query-plane serving tier; raise for heavier query load
+    resources:
+      limits:
+        cpu: "4"
+        memory: 2Gi
+      requests:
+        cpu: "1"
+        memory: 512Mi
 ```
 
 Save the file as `platform-log-forward.yaml` and apply:
