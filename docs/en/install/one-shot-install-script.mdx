@@ -1,0 +1,220 @@
+---
+weight: 16
+---
+
+# One-shot install script
+
+## Why this exists
+
+The chapter at [Installation](./index.mdx) walks through every CR by hand, which is the right level of detail the first time you set up a logging stack. For repeat setups — PoC clusters, scratch environments, matrix testing — writing those YAMLs over and over wastes time. This page describes a helper script that drives the same install end-to-end from a single parameters file.
+
+The script does not invent anything new: every CR it applies is one of the YAML blocks already documented in the Installation chapter. If something fails, open that chapter at the matching section and the hand-written form is the authoritative reference.
+
+**Scope.** ClickHouse backend only (fresh install). OpenSearch backend and upgrade/adopt paths are out of scope for the current revision.
+
+## What it takes care of
+
+Five stages, applied in order. Each stage waits for the previous stage's readiness signal before continuing; a failed wait prints the latest `Event`s from the stuck object and exits non-zero so you can resume from the same stage after fixing the parameters.
+
+| # | Stage | Objects created | Readiness gate |
+|---|---|---|---|
+| 0 | **Operators** | 4 OLM `Subscription`s: ClickHouse operator, Kafka operator (Alauda strimzi fork), `log-storage-operator`, `log-collect-operator` | Each CSV reaches `.status.phase = Succeeded`, and each operator Deployment reports `Available` |
+| 1 | **Data plane CRs** | `RdsKafka` + `ClickHouseInstallation` | Kafka Pods Ready + CHI `.status.status = Completed` |
+| 2 | **Kafka user & topics** | `RdsKafkaUser` (SASL/SCRAM) + 3 `RdsTopic`s (`ALAUDA_LOG_TOPIC`, `ALAUDA_EVENT_TOPIC`, `ALAUDA_AUDIT_TOPIC`) | strimzi entity-operator writes the user-password Secret; all 3 topics reach `.status.phase = Ready` |
+| 3 | **Connection Secrets** | `platform-default-mq-conn` + `platform-default-ch-conn` | — (immediate) |
+| 4 | **Pipeline** | `PlatformLogForward` | PLF `Ready = True` |
+
+Stage 3 pulls the Kafka password out of the Secret the `RdsKafkaUser` points at (through `spec.authentication.password.valueFrom.secretKeyRef`), decodes it, and stuffs it into `platform-default-mq-conn` for you. You never type that password twice.
+
+### Collect-only mode
+
+The storage cluster is the full flow above. Every **other** cluster that forwards logs still needs `log-collect-operator` to be installed. Run the same script with `ROLE=collect-only` on those clusters: it does only Stage 0 for `log-collect-operator` and nothing else.
+
+## Prerequisites
+
+- The ACP platform is already up: the OLM `CatalogSource` that fronts the 4 operator packages exists in `cpaas-system`, and `kubectl get packagemanifest` lists all four. The script does **not** install the catalog or push images; that is a platform-level responsibility.
+- You can reach the target cluster with a kubeconfig that has `cluster-admin` (needed for OLM `Subscription` + the cluster-scoped `ClickHouseInstallation`, `PlatformLogForward`, etc.).
+- `kubectl` ≥ 1.26 on your PATH. No other tooling is needed — no `helm`, no `yq`, no `jq`. `envsubst` ships with `gettext` and is used only to render the YAML templates.
+- You have the two passwords you intend to use. See [Password handling](#password-handling).
+
+## Parameters
+
+The script reads one file, `install.env`. Only two values have no default; everything else uses a sensible one.
+
+#### Required
+
+```bash
+# Required. SASL password for the Kafka user the script creates.
+KAFKA_SASL_PASSWORD=""
+
+# Required. Plain-text password for the ClickHouse user the script creates.
+# The script also computes sha256_hex(password) and embeds it in the CHI.
+CK_ADMIN_PASSWORD=""
+```
+
+#### Naming and scope
+
+```bash
+NAMESPACE="cpaas-system"             # Namespace for every CR
+ROLE="storage"                       # "storage" = full flow;
+                                     # "collect-only" = only Stage 0 (log-collect-operator)
+DRY_RUN="false"                      # "true" = render YAML to stdout and exit
+```
+
+#### OLM subscriptions
+
+```bash
+OLM_CATALOG="cpaas-operator-catalog"
+OLM_CATALOG_NAMESPACE="cpaas-system"
+
+# Channels — pin to the versions bundled with your ACP release.
+OLM_CHANNEL_CK="stable-v0.21"
+OLM_CHANNEL_KAFKA="stable-v0.48"
+OLM_CHANNEL_LOG_STORAGE="stable-v4.4"
+OLM_CHANNEL_LOG_COLLECT="stable-v4.4"
+```
+
+#### Kafka
+
+```bash
+KAFKA_NAME="cpaas-kafka"
+KAFKA_USER="platform-logging"
+KAFKA_REPLICAS=3                      # broker replicas; controllers follow the same count
+
+# Storage. Leave KAFKA_STORAGE_CLASS empty for LocalVolume (evaluation only).
+KAFKA_STORAGE_CLASS=""
+KAFKA_STORAGE_SIZE="100Gi"
+KAFKA_CONTROLLER_STORAGE_SIZE="5Gi"   # KRaft metadata, kept small on purpose
+
+# Resources (per broker Pod).
+KAFKA_CPU_REQUEST="500m"
+KAFKA_CPU_LIMIT="2"
+KAFKA_MEM_REQUEST="2Gi"
+KAFKA_MEM_LIMIT="4Gi"
+```
+
+#### ClickHouse
+
+```bash
+CK_NAME="cpaas-clickhouse"
+CK_USER="platform-logging"
+
+# CK_NODES must be a multiple of 3 (shards = CK_NODES / 3).
+CK_NODES=3
+CK_REPLICAS_PER_SHARD=2
+
+# Storage. Leave CK_STORAGE_CLASS empty for LocalVolume (evaluation only).
+CK_STORAGE_CLASS=""
+CK_STORAGE_SIZE="300Gi"
+
+# Resources (per CK Pod).
+CK_CPU_REQUEST="2"
+CK_CPU_LIMIT="8"
+CK_MEM_REQUEST="8Gi"
+CK_MEM_LIMIT="32Gi"
+```
+
+#### Optional / TLS
+
+```bash
+# false → RdsKafka exposes only the plain SASL listener on :9092.
+# true  → RdsKafka also exposes :9093 with the same SCRAM user,
+#         and mq-conn is written with tls.ca pulled from the strimzi-maintained
+#         Secret <KAFKA_NAME>-cluster-ca-cert.
+ENABLE_TLS="false"
+
+# Set to "true" only for CK HTTPS endpoints whose certificate is not system-trusted
+# and whose CA you do not want to embed. Avoid in production.
+CK_INSECURE_SKIP_VERIFY="false"
+```
+
+:::note
+Everything else that the install needs is written into the YAML templates by the script itself and is not configurable: topic names (`ALAUDA_LOG_TOPIC` / `ALAUDA_EVENT_TOPIC` / `ALAUDA_AUDIT_TOPIC`), partition count (30), broker `message.max.bytes` / `replica.fetch.max.bytes` (10 MiB), SASL mechanism (`SCRAM-SHA-512`), CH cluster name (`replicated`), CH database (`observability`), the KafkaUser ACL set, and the Kafka version. These are contract defaults the operators and `razor` expect; changing them one-off will break the pipeline. If you need to deviate, drive the install by hand from the Installation chapter instead.
+:::
+
+### Password handling
+
+- **`KAFKA_SASL_PASSWORD`** is written into one Secret owned by the script (`<KAFKA_USER>-password`), and the `RdsKafkaUser` references it with `spec.authentication.password.valueFrom`. Entity-operator picks it up from there and provisions the SASL credential inside Kafka. For Stage 3 the script reads the same Secret, base64-decodes the password, and embeds it in `platform-default-mq-conn`.
+- **`CK_ADMIN_PASSWORD`** is used twice. The script computes `sha256_hex(password)` and sets `.spec.configuration.users.<CK_USER>/password_sha256_hex` on the `ClickHouseInstallation` (the ClickHouse server itself only stores the digest). It then writes the plain-text form into `platform-default-ch-conn` so the operator and `razor-api` can connect. **Keep the plain-text safe** — ClickHouse does not surface it back, so if you lose it you have to rotate.
+
+Set both passwords with `read -s` or export from a vault entry; never commit them to git.
+
+## Usage
+
+### 1 — Grab the script
+
+```bash
+# Replace <ref> with the branch or tag that matches your ACP release.
+curl -sSL -o install.sh \
+  https://raw.githubusercontent.com/alauda/logs-docs/<ref>/scripts/quickstart/install.sh
+curl -sSL -o install.env.example \
+  https://raw.githubusercontent.com/alauda/logs-docs/<ref>/scripts/quickstart/install.env.example
+chmod +x install.sh
+cp install.env.example install.env
+```
+
+### 2 — Fill `install.env`
+
+Open `install.env` in an editor and set at least `KAFKA_SASL_PASSWORD` and `CK_ADMIN_PASSWORD`. Review the storage, replica, and resource settings against your cluster capacity.
+
+### 3 — Dry-run first
+
+```bash
+DRY_RUN=true ./install.sh install.env | less
+```
+
+This writes every rendered YAML to stdout grouped by stage, applies nothing, and exits 0. Read it. If you cannot explain a block, open the matching section in the [Installation](./index.mdx) chapter before continuing.
+
+### 4 — Apply
+
+```bash
+./install.sh install.env
+```
+
+The script prints progress per stage and shells out to `kubectl apply -f -` and `kubectl wait` for each one. On a 3-node evaluation cluster, Stage 0 takes ~2 min (CSV install), Stage 1 ~3-5 min (Kafka Pods + CHI), Stage 2 <1 min, Stage 3 instant, Stage 4 ~1-2 min (PLF reconciliation). Total ~7-10 min end-to-end.
+
+To re-run after a transient failure, call the script again with the same `install.env`: every `apply` is idempotent, and stages that are already Ready are skipped by the readiness probe at the top of each stage.
+
+### 5 — Verify
+
+Follow [How to Verify a Fresh Install of the Logging Stack](./post-install-verification.mdx). The script does not duplicate those checks — on purpose, so the verification step stays decoupled from the installer.
+
+## Collect-only clusters
+
+On every cluster that forwards logs **but does not host the storage stack**, run only Stage 0 for `log-collect-operator`:
+
+```bash
+ROLE=collect-only ./install.sh install.env
+```
+
+That installs the `log-collect-operator` Subscription and nothing else. Credentials, topics, CRs — none of them apply.
+
+## Failure handling
+
+Each stage emits one of three outcomes:
+
+- **PASS** — readiness gate reached within the timeout. Script moves on.
+- **FAIL (gate)** — gate did not pass within the timeout. The script prints `kubectl describe` + the last 20 `Event`s of the stuck object and exits 1. Fix the issue (storage class name, resource quota, image pull, etc.) and re-run — the script is idempotent.
+- **FAIL (apply)** — `kubectl apply` itself errored (schema violation, admission webhook denial, RBAC). The script prints the server message and exits 1. Fix `install.env` and re-run.
+
+Common failure modes:
+
+| Symptom | Likely cause |
+|---|---|
+| Stage 0 CSV `Installing` forever | Catalog image pull error, or the channel pinned in `install.env` does not exist in the catalog. Check `kubectl -n openshift-marketplace get catalogsource` (or `cpaas-system`) and `kubectl -n <ns> get installplan`. |
+| Stage 1 Kafka Pods `Pending` | SC name typo, size exceeds node capacity, or control-plane taint. Default tolerations handle `operator: Exists`, so a nodeSelector mismatch is usually the cause. |
+| Stage 1 CHI stuck in `InProgress` | ClickHouse operator CSV not yet Ready (Stage 0 regressed), or SC name typo. Check `kubectl -n <ns> get chi <name> -o jsonpath='{.status}'`. |
+| Stage 2 RdsTopic `.status.phase = Failed` with "belongs to another cluster" | A previous install was torn down without clearing the KafkaTopic finalizer. See the uninstall how-to. |
+| Stage 4 PLF stuck in `Provisioning` | `platform-default-mq-conn` password did not match the broker-side user. Verify the Secret and the KafkaUser-ref Secret are byte-identical (the script writes both). |
+
+## Teardown
+
+Not implemented yet. If you need to tear down the stack for repeat testing, follow the uninstall how-to; it covers the correct CR deletion order.
+
+## When not to use this script
+
+- **Upgrade / adopt scenarios.** The script assumes a clean cluster. The upgrade path is driven by `log-storage-operator`'s auto-migration flow, not by this script.
+- **Production rollouts that need capacity planning.** Resource defaults are evaluation-grade. See [Capacity planning](../architecture/capacity_planning.mdx) and derive your own numbers.
+- **TLS or mTLS requirements beyond the single `ENABLE_TLS` switch.** External CA integration, SAN customization, and client-cert auth remain hand-written.
+
+The script covers the smallest useful set — fresh install, SASL/plaintext or SASL/TLS, local or dynamic storage — and nothing more. If your scenario does not fit, drive the install from the Installation chapter directly.
