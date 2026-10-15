@@ -174,12 +174,12 @@ spec:
     authorization:
       type: simple
     listeners:                      # MAP keyed by `plain` / `tls` / `external`, NOT a list
-      plain:
+      plain:                        # SASL/SCRAM over plain TCP on :9092
         authentication:
           type: scram-sha-512
-      tls:
-        authentication:
-          type: scram-sha-512
+      # To enable SASL-over-TLS on :9093, add a `tls:` entry here (same
+      # `authentication` block as `plain:`) and set `tls.ca` + bootstrap
+      # port 9093 in the mq-conn Secret below.
     template:
       pod:
         tolerations:
@@ -401,11 +401,11 @@ Every command in this section runs on the storage cluster.
 Required for both backends.
 
 :::warning Edit before you apply
-- `bootstrap`: the FQDN:port of your Kafka's bootstrap Service. The example `cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093` only works if you used the exact `RdsKafka` name from Section 1.1.1; adjust for your actual installation.
+- `bootstrap`: the FQDN:port of your Kafka's bootstrap Service. The example `cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9092` matches the plain SASL listener on the RdsKafka from Section 1.1.1; change the hostname if your RdsKafka has a different name, and change the port to `:9093` only if you additionally enabled a `tls:` listener in the RdsKafka.
 - `kafkaClusterName`: the `metadata.name` of your `RdsKafka` CR.
 - `username`: the SASL account you created with `RdsKafkaUser` (Section 1.1.1 uses `platform-logging`).
-- `password`: replace `<kafka-password>` with the real password you put into `Secret platform-logging-password` (plaintext here — operator reads this Secret, not the K8s SASL Secret the broker reads).
-- `tls.ca`: only when the SASL listener runs over TLS with a certificate your K8s pods do not already trust. Replace `<kafka-ca-certificate>` with the PEM block, or remove the whole `tls.ca` key if you use a plaintext listener (`:9092`) or a system-trusted CA.
+- `password`: resolve from `KafkaUser.spec.authentication.password.valueFrom` (plaintext — operator reads this Secret, not the K8s SASL Secret the broker reads). The retrieval command is below the manifest.
+- **TLS is off by default** in this example (plain SASL on `:9092`). If you enabled the `tls:` listener in the RdsKafka, add a `tls.ca:` key with the broker CA PEM (readable from Secret `<RdsKafka name>-cluster-ca-cert`, key `ca.crt`) and point `bootstrap` at `:9093`.
 
 Apply only after every placeholder above is substituted.
 :::
@@ -418,11 +418,10 @@ metadata:
   namespace: cpaas-system
 type: Opaque
 stringData:
-  # Required. Comma-separated host:port. Read the bootstrap Service name from
-  # the Kafka installation, for example:
-  #   cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093  (SASL over TLS)
-  #   cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9092  (SASL without TLS)
-  bootstrap: "cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093"
+  # Required. Comma-separated host:port. The bootstrap Service name is
+  # `<RdsKafka name>-kafka-bootstrap` and the plain SASL listener runs on
+  # :9092. Defaults in this example match the RdsKafka in Section 1.1.
+  bootstrap: "cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9092"
 
   # Required. Name of the Kafka cluster CR.
   kafkaClusterName: "cpaas-kafka"
@@ -442,12 +441,11 @@ stringData:
   topics.event: "ALAUDA_EVENT_TOPIC"
   topics.audit: "ALAUDA_AUDIT_TOPIC"
 
-  # Optional. TLS CA for a TLS listener whose certificate is not
-  # system-trusted. Omit for a plain listener (:9092) or a trusted CA.
-  tls.ca: |-
-    -----BEGIN CERTIFICATE-----
-    <kafka-ca-certificate>
-    -----END CERTIFICATE-----
+  # SASL-over-TLS is optional. If you enabled the `tls:` listener in the
+  # RdsKafka above, change `bootstrap` to port :9093 and add a `tls.ca` key
+  # here with the broker CA PEM — read it from the strimzi-maintained
+  # Secret `<RdsKafka name>-cluster-ca-cert` (key `ca.crt`). Omit `tls.ca`
+  # entirely for the plain :9092 listener shown above.
 ```
 
 Read the values you do not have at hand:
@@ -460,9 +458,10 @@ kubectl -n cpaas-system get svc cpaas-kafka-kafka-bootstrap
 kubectl -n cpaas-system get secret platform-logging-password \
   -o jsonpath='{.data.password}' | base64 -d
 
-# Kafka CA (only for a TLS listener with a private CA)
-kubectl -n cpaas-system get secret cpaas-kafka-cluster-ca-cert \
-  -o jsonpath='{.data.ca\.crt}' | base64 -d
+# Kafka CA — ONLY needed if you enabled a `tls:` listener on the RdsKafka.
+# Omit this step for the plain :9092 listener used by the default example.
+#   kubectl -n cpaas-system get secret cpaas-kafka-cluster-ca-cert \
+#     -o jsonpath='{.data.ca\.crt}' | base64 -d
 ```
 
 Save the manifest as `platform-default-mq-conn.yaml` and apply it:
