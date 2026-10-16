@@ -454,9 +454,20 @@ Read the values you do not have at hand:
 # Bootstrap Service and its port
 kubectl -n cpaas-system get svc cpaas-kafka-kafka-bootstrap
 
-# Kafka SASL password (from the Secret you created in Section 1.1.1)
-kubectl -n cpaas-system get secret platform-logging-password \
-  -o jsonpath='{.data.password}' | base64 -d
+# Kafka SASL password — resolve the real source Secret from the KafkaUser
+# `spec.authentication.password.valueFrom`, then read `.data.<key>` from it.
+# This works whether the SRE picked a custom name in Section 1.1.1 or let
+# strimzi auto-generate the password (in which case the password lands in
+# the Secret whose name equals the KafkaUser name).
+NS=cpaas-system
+USER=platform-logging                              # KafkaUser name
+SRC=$(kubectl -n $NS get kafkausers.kafka.strimzi.io $USER \
+      -o jsonpath='{.spec.authentication.password.valueFrom.secretKeyRef.name}')
+KEY=$(kubectl -n $NS get kafkausers.kafka.strimzi.io $USER \
+      -o jsonpath='{.spec.authentication.password.valueFrom.secretKeyRef.key}')
+: "${SRC:=$USER}"                                   # auto-generated path
+: "${KEY:=password}"
+kubectl -n $NS get secret "$SRC" -o jsonpath="{.data.$KEY}" | base64 -d; echo
 
 # Kafka CA — ONLY needed if you enabled a `tls:` listener on the RdsKafka.
 # Omit this step for the plain :9092 listener used by the default example.
