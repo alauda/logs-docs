@@ -1,0 +1,100 @@
+---
+weight: 24
+---
+
+# How to Set the Default Log Retention Time
+
+Platform-default retention controls how long each log category stays in ClickHouse before it is deleted. Values are set on the `PlatformLogForward` resource and apply to every project that doesn't declare its own override.
+
+For per-project overrides, see [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx).
+
+## Before You Begin
+
+Confirm the target storage cluster:
+
+1. Uses **Alauda Container Platform Log Storage Management** with `PlatformLogForward.spec.externalStorage.type: clickhouse` (OpenSearch is covered at the end of this page).
+2. Has `PlatformLogForward` named `platform-default` already provisioned.
+3. Is accessed by an account that can edit `platformlogforwards.log.alauda.io`.
+
+## About the Field
+
+Retention lives at `spec.clickhouse.ttl.*` on the `PlatformLogForward` resource. One field per log category, unit **days**, `0 = keep forever`.
+
+| Field | Category | Default (days) |
+| --- | --- | --- |
+| `audit` | Audit logs | `0` |
+| `event` | Kubernetes events | `0` |
+| `logPlatform` | Platform component logs | `0` |
+| `logWorkload` | User workload logs | `0` |
+| `logKubernetes` | kubelet / kube-system logs | `0` |
+| `logSystem` | Node system logs (journald / host) | `0` |
+| `meter` | Metering logs | `0` |
+
+`0` means never delete, so a fresh install retains everything until an explicit retention is set. Pick values that match your disk budget and compliance window.
+
+## Edit the PlatformLogForward Resource
+
+1. Log in to the **storage** cluster (the cluster that hosts ClickHouse).
+2. Open the `PlatformLogForward` resource:
+
+   ```bash
+   kubectl edit platformlogforward platform-default
+   ```
+
+3. Set or update `spec.clickhouse.ttl`:
+
+   ```yaml
+   apiVersion: log.alauda.io/v1alpha1
+   kind: PlatformLogForward
+   metadata:
+     name: platform-default
+   spec:
+     clickhouse:
+       ttl:
+         audit:         30
+         event:         30
+         logPlatform:   30
+         logWorkload:    7
+         logKubernetes:  7
+         logSystem:      7
+         meter:         90
+   ```
+
+Save and exit. No pod restart is needed.
+
+## How Changes Take Effect
+
+1. The log-storage operator reconciles `platform-default` and regenerates the `aiops-logging-ttl-config` ConfigMap.
+2. The `razor` deployment reads the new ConfigMap on its next sync cycle (within a minute).
+3. `razor` runs `ALTER TABLE <table> MODIFY TTL toDateTime(time) + INTERVAL <N> DAY DELETE` against each log table on ClickHouse.
+4. ClickHouse applies the TTL to existing data on its next merge; rows older than the new retention are removed automatically.
+
+The whole cycle completes well under five minutes on a healthy cluster.
+
+## Project-Level Override
+
+Platform-default retention is the fallback for every project. Any project that needs a different value takes precedence via project labels; see [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx). Project labels only override `audit`, `event`, workload-related, and system-related data for that project — categories not listed in the project label fall back to the platform default.
+
+## Hot + Cold Tiering (Optional)
+
+If hot / cold tiering is enabled, `spec.clickhouse.ttl.*` controls **hot** retention; set `spec.clickhouse.coldTTL.*` to move expired data to the cold volume instead of deleting it. See [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx) for the tiered-policy setup. Without tiering, `ttl` is a hard delete.
+
+## Migrating from the Legacy chart
+
+Clusters that were installed from the v4.3 era `chart-alauda-log-clickhouse` carried retention under `values.logging.ttl.*`. v4.4 Log Storage Management moves this field to `PlatformLogForward` 1:1 (same field names, same unit, same semantics). Upgraded clusters have the values auto-propagated by the operator's `derive-plf` step; verify with:
+
+```bash
+kubectl get platformlogforward platform-default -o jsonpath='{.spec.clickhouse.ttl}' | jq
+```
+
+If the output is empty after an upgrade, re-apply the values from the previous chart `values.yaml`.
+
+:::warning OpenSearch backend uses ISM policies, not PLF TTL
+On the **OpenSearch** backend, retention is controlled by Index State Management (ISM) policies, not by `spec.clickhouse.ttl`. The `razor-api` component ships default ISM policies and the operator applies them against the OpenSearch cluster at install time. To change OpenSearch retention, modify the ISM policies directly on the OpenSearch cluster. `spec.clickhouse.ttl` is ignored on OpenSearch deployments; the `clickhouse` sub-object only applies when `spec.externalStorage.type: clickhouse`.
+:::
+
+## Related Topics
+
+- [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx) — per-project override of these defaults.
+- [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx) — enable hot / cold tiering so `coldTTL` becomes meaningful.
+- [Installation](../install/index.mdx) — PLF provisioning flow.
