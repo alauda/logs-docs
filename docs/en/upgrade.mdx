@@ -4,22 +4,34 @@ weight: 15
 
 # Upgrade
 
-This chapter covers the supported upgrade paths for the ACP 4.4 logging stack. If the cluster still uses **Alauda Container Platform Log Storage for Elasticsearch**, follow [Upgrade from Log Storage for Elasticsearch](./upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](./migration/index.mdx). The other paths are the one-shot **From ACP 4.3 to 4.4** transition (the chart-to-operator pivot with an auto-migration Runnable that keeps SRE effort to two steps) and every **After ACP 4.4** upgrade thereafter (plain OLM channel bumps).
+This chapter covers the supported upgrade paths for the ACP 4.4 logging stack. If the cluster still uses **Alauda Container Platform Log Storage for Elasticsearch**, follow [Upgrade from Log Storage for Elasticsearch](./upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](./migration/index.mdx). The other paths are the one-shot **From ACP 4.2 or 4.3 to 4.4** transition (the chart-to-operator pivot with an auto-migration Runnable that keeps SRE effort to two steps) and every **After ACP 4.4** upgrade thereafter (plain OLM channel bumps).
 
-## From ACP 4.3 to 4.4
+## From ACP 4.2 or 4.3 to 4.4
 
-The ACP 4.4 logging stack replaces the ACP 4.3 chart-based ClickHouse and Kafka deployments with the **Alauda Container Platform Log Storage Management** operator plus user-owned external endpoints. The operator ships an auto-migration Runnable that turns the upgrade into a **two-step, zero-touch** flow for the SRE team:
+The ACP 4.4 logging stack replaces the chart-based ClickHouse and Kafka deployments shipped by ACP 4.2 and 4.3 with the **Alauda Container Platform Log Storage Management** operator plus user-owned external endpoints. The operator ships an auto-migration Runnable that turns the upgrade into a **two-step, zero-touch** flow for the SRE team:
 
 1. Author one Secret before you install the operator (`platform-default-mq-conn`).
 2. Install the operator.
 
 Everything else — patching the legacy chart resources so `helm uninstall` cannot destroy them, deriving a `PlatformLogForward` CR from the running chart values, seeding the storage-side Secret from the chart's ClickHouse credentials, and driving the retry loop until the new stack is `Ready` — is run by the operator on startup.
 
-This section names the exact contract the operator relies on. If your upgrade skips the shape below (for example if you already ran `helm uninstall` on the 4.3 chart before deploying the 4.4 operator, so the chart values are no longer discoverable), you will need to hand-write the PLF as if it were a fresh install; see [Installation](./install/index.mdx).
+**Scope**: this section covers upgrades from either ACP 4.2 or ACP 4.3. The auto-migration flow is identical for both because the operator adopts whatever legacy chart (`chart-alauda-log-center`, `chart-alauda-log-clickhouse`, `chart-alauda-log-agent`) is currently running on the cluster — it probes live Services, Secrets, PVCs, and chart values rather than keying off a specific chart version. The only difference is the pre-flight platform upgrade path; see § *Pre-flight for ACP 4.2* below.
+
+This section names the exact contract the operator relies on. If your upgrade skips the shape below (for example if you already ran `helm uninstall` on the legacy chart before deploying the 4.4 operator, so the chart values are no longer discoverable), you will need to hand-write the PLF as if it were a fresh install; see [Installation](./install/index.mdx).
 
 :::warning Do not run `helm uninstall` before the operator startup completes
 The v4.4 operator's `patch-keep-legacy` step is what puts `helm.sh/resource-policy: keep` onto the chart's 30 kinds of resources. Uninstalling the chart before the operator has started will delete data. The correct sequence is: install the operator, wait for `PlatformLogForward.status.conditions[type=Ready].status=True`, then optionally uninstall the old chart.
 :::
+
+### Pre-flight for ACP 4.2
+
+ACP does not support cross-major-version platform upgrades: a 4.2 cluster cannot jump directly to 4.4. Before you touch the logging stack:
+
+1. Upgrade the ACP platform **4.2 → 4.3** through the standard platform upgrade (ReleaseRun / ModuleInfo). Keep the ACP 4.2 logging chart running throughout — the chart adopts cleanly across the platform upgrade and no data is lost.
+2. Upgrade the ACP platform **4.3 → 4.4** through the same platform upgrade mechanism. At this point your cluster is on ACP 4.4 but the logging stack is still chart-based (ACP 4.3 chart shape).
+3. Follow the pre-flight step below and install the ACP 4.4 Log Storage Management operator. The auto-migration Runnable will adopt the chart resources regardless of whether the chart was the 4.2 or 4.3 variant.
+
+ACP 4.3 users skip this section and go straight to the mandatory pre-flight step below.
 
 ### Pre-flight: what SRE must do before starting
 
@@ -41,7 +53,7 @@ Install the **Alauda Container Platform Log Storage Management** operator (binar
 
 The AutoMigrationRunnable runs these steps every tick until `.status.migrationPhase == Converged`. Each step is idempotent: it short-circuits if the state it would create already exists.
 
-#### 1. Detect the 4.3 → 4.4 transition
+#### 1. Detect the chart → operator transition (4.2 or 4.3 → 4.4)
 
 The detection heuristic matches when:
 
