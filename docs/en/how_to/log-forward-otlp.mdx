@@ -1,0 +1,221 @@
+---
+weight: 37
+---
+
+# How to Forward Logs to an OpenTelemetry (OTLP) Endpoint
+
+`LogForward` has no typed `otlp` output. To ship platform logs to an OpenTelemetry backend (an OpenTelemetry Collector, or any vendor that accepts OTLP/HTTP), use an `advancedSink` output with:
+
+1. one `rawTransforms` `remap` entry that turns each platform log record into a complete OTLP `ExportLogsServiceRequest` (`resourceLogs` → `scopeLogs` → `logRecords`), and
+2. an `http` sink with `encoding.codec: otlp`, which serialises that structure as OTLP protobuf and POSTs it to `/v1/logs`.
+
+For the general `advancedSink` / `rawTransforms` contract, see [How to Forward Logs with `advancedSink` and `rawTransforms`](./log_forward_advanced_sink.mdx).
+
+## Prerequisites
+
+- **Alauda Container Platform Log Storage Management** installed, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
+- The storage operator carries `advancedSink.rawTransforms` (v4.4 release).
+- The destination exposes **OTLP/HTTP** (default port `4318`). OTLP/gRPC (port `4317`) is not supported.
+
+:::warning `LogForward` lives in `cpaas-system` only
+The admission webhook `validate-lf.log.alauda.io` rejects any `LogForward` outside `cpaas-system`. Secrets referenced by the CR must also live in `cpaas-system`.
+:::
+
+## How It Works
+
+```
+nevermore → Razor → Kafka (log topic)
+                       │
+                       ▼
+  Deployment cpaas-system/logforward-<name>   (rendered by the storage operator)
+    Kafka source + metadata strip              operator-managed
+    rawTransforms: to-otlp (remap)             flat record → resourceLogs
+    sink: http, encoding.codec = otlp          batched POST, application/x-protobuf
+                       │
+                       ▼
+             OTLP/HTTP endpoint  :4318/v1/logs
+```
+
+### Why protobuf (`codec: otlp`) rather than JSON
+
+| | `codec: otlp` (this page) | `codec: json` |
+|---|---|---|
+| Batching | Any `batch.max_events` | `batch.max_events: 1` only |
+| `rawTransforms` needed | One `remap` | `remap` + `reduce` + `remap` |
+| `Content-Type` | Set automatically to `application/x-protobuf` | Must be set by hand in `request.headers` |
+
+When the `http` sink batches JSON events, it serialises the batch as a JSON **array** (`[{...},{...}]`). OTLP/HTTP JSON requires a single top-level `{"resourceLogs": [...]}` object, so any batch larger than one event is rejected by the receiver. Protobuf has no such restriction: concatenating encoded messages of the same type is equivalent to merging their repeated fields, so a batch of N concatenated `ExportLogsServiceRequest` messages decodes as one valid request carrying N `resourceLogs`.
+
+:::info `codec: otlp` does not map events for you
+The `otlp` codec only encodes events that already have the OTLP structure at the top level. A platform log record that reaches the sink without being reshaped fails with `Log event does not contain OTLP top-level fields` and is **dropped**. The operator's `vector validate` pre-flight does not catch this — it only appears at runtime in the Vector pod logs. The `remap` below is therefore mandatory.
+:::
+
+## Example
+
+```yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: LogForward
+metadata:
+  name: logs-to-otlp
+  namespace: cpaas-system
+spec:
+  replicas: 2
+  inputs:
+    - name: platform-log
+      type: log
+      initialOffset: Latest
+  pipelines:
+    - name: to-otlp
+      inputRefs: [platform-log]
+  output:
+    type: advancedSink
+    advancedSink:
+      componentType: http
+      parameters:
+        uri: https://otel-collector.example.com:4318/v1/logs
+        method: post
+        encoding:
+          codec: otlp               # OTLP protobuf; Content-Type is set automatically
+        framing:
+          method: bytes             # concatenate messages with no delimiter
+        batch:
+          max_events: 500
+          timeout_secs: 1
+      rawTransforms:
+        # one platform log record → one complete OTLP ExportLogsServiceRequest
+        - name: to-otlp
+          type: remap
+          spec:
+            source: |
+              # .timestamp is the collection time in nanoseconds, written by nevermore
+              ts_ns = to_int(.timestamp) ?? 0
+              if ts_ns <= 0 { ts_ns = to_unix_timestamp(now(), unit: "nanoseconds") }
+
+              body = to_string(.log_data) ?? ""
+              if body == "" { body = to_string(.message) ?? "" }
+
+              res_attrs = []
+              for_each({
+                "k8s.cluster.name":   .cluster,
+                "k8s.node.name":      .node,
+                "k8s.namespace.name": .namespace,
+                "k8s.pod.name":       .pod_name,
+                "k8s.pod.uid":        .pod_id,
+                "k8s.container.name": .container_name,
+                "container.id":       .container_id,
+                "acp.project":        .project,
+                "acp.application":    .application
+              }) -> |k, v| {
+                s = to_string(v) ?? ""
+                if s != "" {
+                  res_attrs = push(res_attrs, {"key": k, "value": {"stringValue": s}})
+                }
+              }
+
+              . = {
+                "resourceLogs": [{
+                  "resource": {"attributes": res_attrs},
+                  "scopeLogs": [{
+                    "scope": {"name": "acp-log-forward"},
+                    "logRecords": [{
+                      "timeUnixNano": ts_ns,
+                      "body": {"stringValue": body}
+                    }]
+                  }]
+                }]
+              }
+```
+
+### Sink parameters
+
+| Field | Value | Notes |
+|---|---|---|
+| `componentType` | `http` | The `opentelemetry` sink sends the same request, but nests its parameters under `protocol`. |
+| `uri` | `http(s)://<host>:4318/v1/logs` | The `/v1/logs` path is required. |
+| `encoding.codec` | `otlp` | Requires events shaped as `resourceLogs`, which the `remap` guarantees. |
+| `framing.method` | `bytes` | Messages in a batch are concatenated as-is. |
+| `batch.max_events` / `batch.timeout_secs` | Tune for throughput | A request is sent when either limit is reached first. |
+
+The operator adds the sink `buffer` and `acknowledgements` blocks itself; these keys are reserved and cannot be set in `parameters`.
+
+### Field mapping
+
+The `remap` receives platform log records from Kafka as written by nevermore, after the operator has stripped the Kafka metadata fields.
+
+| Platform field | OTLP location | Notes |
+|---|---|---|
+| `log_data` | `logRecords[].body.stringValue` | The log line. `message` is used only as a fallback. |
+| `timestamp` (nanoseconds, integer) | `logRecords[].timeUnixNano` | Collection time. The Kafka broker timestamp is kept out of this field by the operator, so it is not the ingest time. |
+| `cluster` | resource `k8s.cluster.name` | |
+| `node` | resource `k8s.node.name` | |
+| `namespace` | resource `k8s.namespace.name` | |
+| `pod_name` / `pod_id` | resource `k8s.pod.name` / `k8s.pod.uid` | |
+| `container_name` / `container_id` | resource `k8s.container.name` / `container.id` | |
+| `project` / `application` | resource `acp.project` / `acp.application` | ACP-specific attributes. |
+
+Notes on the mapping:
+
+- Attributes with an empty value are omitted, so records without pod metadata (for example node system logs) do not carry empty-string attributes.
+- Platform log records carry no severity field, so the example does not set `severityText` / `severityNumber`. To add one, parse it out of `log_data` in the same `remap`.
+- Every record carries its own copy of the resource attributes, so requests are larger than they would be if records were grouped by resource. The attributes on each record are the same either way.
+- The `remap` replaces the whole event (`. = {...}`). Keep it as the **last** `rawTransforms` entry, and read every field you need before that assignment. Platform `filters[]` and earlier `rawTransforms` entries (for example `filter` or `sample`) can run before it as usual.
+- Event (`type: event`) and audit (`type: audit`) inputs have different fields; this mapping does not apply to them.
+
+## Authentication
+
+Put the token in a Secret in `cpaas-system` under the `password` key, reference it with `authSecretRef`, and use `${OUTPUT_PASSWORD}` in a request header. The `username` key is not used by this sink and can be omitted.
+
+```bash
+kubectl -n cpaas-system create secret generic otlp-token --from-literal=password='<token>'
+```
+
+```yaml
+  output:
+    type: advancedSink
+    authSecretRef:
+      name: otlp-token              # Secret key: password (the token)
+    advancedSink:
+      componentType: http
+      parameters:
+        # ... as in the example above
+        request:
+          headers:
+            Authorization: "Bearer ${OUTPUT_PASSWORD}"
+            # or a vendor header, for example  DD-API-KEY: "${OUTPUT_PASSWORD}"
+```
+
+For an `https://` endpoint whose certificate is issued by a publicly trusted CA, no further TLS configuration is needed.
+
+:::warning Private CA and mTLS
+With `componentType: http`, setting `spec.output.tls` currently makes the operator pre-flight fail with `unknown field 'enabled'`, and the `LogForward` stays `Ready=False`. Until this is fixed, endpoints that require a private CA (`tls.caSecretRef`) or a client certificate (`tls.clientCertSecretRef`) cannot be configured through this page.
+:::
+
+## Verify
+
+```bash
+kubectl -n cpaas-system apply -f logs-to-otlp.yaml
+kubectl -n cpaas-system get logforward logs-to-otlp -w
+# wait for READY=True
+
+# the rendered Vector config
+kubectl -n cpaas-system get cm logforward-logs-to-otlp -o jsonpath='{.data.vector\.toml}'
+
+# sender-side errors; no output is expected
+kubectl -n cpaas-system logs deploy/logforward-logs-to-otlp --since=10m | grep -E 'ERROR|dropped'
+```
+
+`Ready=True` only means the Vector Deployment is running. Confirm delivery on the receiving side: before switching to the production backend, point `uri` at an OpenTelemetry Collector with the `debug` exporter enabled and check that records arrive with the expected resource attributes and timestamps.
+
+## Troubleshooting
+
+| Symptom in the `logforward-<name>` pod logs | Cause | Fix |
+|---|---|---|
+| `Log event does not contain OTLP top-level fields (resourceLogs or resourceMetrics)`, followed by `Events dropped` | The event reaching the sink is not OTLP-shaped: the `remap` is missing, is not the last `rawTransforms` entry, or misspells a field name. | Check `rawTransforms`. Field names must use the OTLP JSON camelCase form: `resourceLogs`, `scopeLogs`, `logRecords`, `timeUnixNano`, `stringValue`. |
+| HTTP `404` | `uri` lacks the `/v1/logs` path. | Add the path. |
+| HTTP `400` / `415` | The receiver does not accept protobuf, or the sink uses `codec: json` with `batch.max_events` greater than 1. | Use `encoding.codec: otlp`. |
+| Connection or protocol errors | `uri` points at the OTLP/gRPC port `4317`. | Use the OTLP/HTTP port, `4318` by default. |
+
+## Related Topics
+
+- [How to Forward Logs with `advancedSink` and `rawTransforms`](./log_forward_advanced_sink.mdx) — the full `advancedSink` contract and other recipes.
+- [How to Forward Logs to an External System with LogForward](./log_forward.mdx) — typed outputs and platform filters.
