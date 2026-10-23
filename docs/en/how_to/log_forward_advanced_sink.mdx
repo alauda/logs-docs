@@ -66,7 +66,7 @@ A free-form object whose keys mirror the chosen sink's Vector configuration. Nes
 
 Nested keys named the same (for example `{"resource": {"type": "gce_instance"}}`) are **not** rejected — the webhook only checks the parameters top level.
 
-**Previously reserved, now allowed**: `batch` and `request`. Both are per-sink knobs; the OTLP envelope recipe below needs `batch.max_events: 1` to work.
+**Previously reserved, now allowed**: `batch` and `request`. Both are per-sink knobs, for example batch sizing and custom request headers.
 
 ### `advancedSink.rawTransforms[]`
 
@@ -102,7 +102,7 @@ Mix them freely: the platform filters run first and do the easy field-level work
 
 ## Recipes
 
-Three worked examples, from simple to involved.
+Two worked examples, followed by a pointer to the OTLP guide.
 
 ### Recipe A — Forward audit records to Datadog, with pruning and enrichment
 
@@ -232,97 +232,9 @@ Points worth noting:
 - The `exclude` field on `sample` ensures every error survives — a common ask you cannot express with the platform `filter` filter.
 - Vector's `http` sink refuses to start if both `authSecretRef` and `parameters.request.headers.Authorization` are set. Pick one path (same rule as the typed HTTP output in [How to Forward Logs with LogForward](./log_forward.mdx)).
 
-### Recipe C — Forward platform logs as OTLP envelopes to an OpenTelemetry Collector
+### Forwarding to an OpenTelemetry (OTLP) endpoint
 
-Scenario: ship platform logs to an OTel Collector's `otlphttp` receiver. OTLP/HTTP wants a single top-level JSON object (`{resourceLogs: [...]}`), not an array — so the recipe uses `remap` + `reduce` + `remap` to build the envelope, and `batch.max_events: 1` on the sink so Vector does not re-batch the single produced envelope into an array.
-
-```yaml
-apiVersion: log.alauda.io/v1alpha1
-kind: LogForward
-metadata:
-  name: logs-to-otlp
-  namespace: cpaas-system
-spec:
-  replicas: 2
-  inputs:
-    - name: platform-log
-      type: log
-      initialOffset: Latest
-  pipelines:
-    - name: to-otlp
-      inputRefs: [platform-log]
-  output:
-    type: advancedSink
-    advancedSink:
-      componentType: http
-      parameters:
-        uri: https://otel-collector.example.com:4318/v1/logs
-        method: post
-        encoding:
-          codec: json
-        framing:
-          method: bytes
-        request:
-          headers:
-            Content-Type: application/json
-        batch:
-          max_events: 1              # one reduce output → one POST body (object, not array)
-      rawTransforms:
-        # 1) per-event: build one OTLP logRecord and attach a batch key for the reducer
-        - name: to-record
-          type: remap
-          spec:
-            source: |
-              body_str, _ = to_string(.message)
-              if body_str == null || body_str == "" {
-                body_str = encode_json(.)
-              }
-              rec = {
-                "timeUnixNano": "0",
-                "severityText": to_string(.level) ?? "INFO",
-                "body":         { "stringValue": body_str },
-                "attributes": [
-                  { "key": "k8s.namespace.name", "value": { "stringValue": to_string(.kubernetes_namespace) ?? "" } },
-                  { "key": "k8s.pod.name",       "value": { "stringValue": to_string(.kubernetes_pod_name)   ?? "" } },
-                  { "key": "k8s.container.name", "value": { "stringValue": to_string(.container_name)        ?? "" } }
-                ]
-              }
-              . = { "batchKey": "ALL", "rec": rec }
-        # 2) batch many records into one event with a .rec array
-        - name: wrap
-          type: reduce
-          spec:
-            group_by:        [batchKey]
-            expire_after_ms: 1000       # one POST per second
-            merge_strategies:
-              rec: array
-        # 3) shape the final OTLP envelope
-        - name: envelope
-          type: remap
-          spec:
-            source: |
-              recs = array!(.rec)
-              . = {
-                "resourceLogs": [{
-                  "resource": {
-                    "attributes": [
-                      { "key": "service.name", "value": { "stringValue": "acp-log-forward" } }
-                    ]
-                  },
-                  "scopeLogs": [{
-                    "scope":      { "name": "acp-lf", "version": "0.1" },
-                    "logRecords": recs
-                  }]
-                }]
-              }
-```
-
-Points worth noting:
-
-- `batch.max_events: 1` is **required** for OTLP/HTTP. Without it, Vector's `http` sink wraps the reducer's single envelope into a one-element array `[{...}]`, which the OTel Collector rejects with 400.
-- `expire_after_ms` trades latency against batch size. 1 second (shown) is a reasonable default; at very high volume reduce it to 500 ms, at very low volume raise it to 5 000 ms. Watch for the collector's `max_request_body_size` — if envelopes exceed it, cut `expire_after_ms`.
-- The timestamp (`timeUnixNano: "0"`) is a placeholder: the collector will use ingest time. To preserve the real event time, replace it with `to_string(to_unix_timestamp(parse_timestamp!(.timestamp, "%+")) * 1000000000)`.
-- If the collector needs auth, add it to `parameters.request.headers.Authorization` (`Bearer ${OUTPUT_PASSWORD}`) and set `authSecretRef` with the key in the Secret's `password`.
+OTLP has its own page: [How to Forward Logs to an OpenTelemetry (OTLP) Endpoint](./log-forward-otlp.mdx). It uses a single `remap` with `encoding.codec: otlp` (protobuf), which batches normally and needs neither a `reduce` stage nor `batch.max_events: 1`.
 
 ## Verify
 
@@ -360,6 +272,7 @@ To debug the actual on-wire payload the sink is emitting, point the sink `uri` a
 
 ## Related Topics
 
+- [How to Forward Logs to an OpenTelemetry (OTLP) Endpoint](./log-forward-otlp.mdx) — OTLP/HTTP with protobuf encoding.
 - [How to Forward Logs with LogForward](./log_forward.mdx) — typed outputs (`kafka`, `elasticsearch`, `opensearch`, `syslog`, `http`, `console`, `blackhole`, `clickhouse`) and the platform filter catalogue.
 - [How to Archive Logs to Third-Party Storage](./log_archive.mdx) — the `razor consumer --database-type=file` archival path, for NFS / S3 cold storage rather than real-time forwarding.
 - [Installation](../install/index.mdx) — storage operator install and the `logforward-` KafkaUser prefix ACL rule.
