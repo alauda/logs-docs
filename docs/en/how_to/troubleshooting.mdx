@@ -37,15 +37,31 @@ Regenerate any short password with `openssl rand -base64 24 | tr -d '\n'`, patch
 
 ## PlatformLogForward stays in `Provisioning` \{#platformlogforward-stays-in-provisioning}
 
-Under `.status.conditions`, look at which sub-condition is stuck at `False`. The condition name tells you which sub-step of the operator's reconcile has not finished, and you can usually pin the root cause with `kubectl describe`.
+While the operator is still working, the `Ready` condition is `False`, and its `reason` names the stage that has not finished. The `message` gives the detail.
 
-| Condition stuck at `False` | What the operator is waiting on | Where to look next |
+```bash
+kubectl get platformlogforward platform-default \
+  -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.reason}{"\t"}{.message}{"\n"}{end}'
+```
+
+| `Ready` reason | What the operator is waiting on | Where to look next |
 | --- | --- | --- |
-| `MessageQueueReady` | The `platform-default-mq-conn` Secret in `cpaas-system` — its `bootstrap`, `username`, `password`, `sasl_mechanism`, `topics.log`/`topics.event`/`topics.audit`, and (for TLS) `tls.ca` fields must resolve to a Kafka cluster the operator can reach, and the SCRAM preflight must succeed. | `kubectl get secret platform-default-mq-conn -o yaml` and the operator log for the `preflight` line. See the [Installation](../install/index.mdx) contract. |
-| `StorageReady` | The external storage endpoint the PLF references — the operator opens a plain HTTP or HTTPS handshake and, on ClickHouse, then runs the schema-migrations Job. | For ClickHouse: `kubectl -n cpaas-system get jobs -l job=schema-migrations` then `logs` on the newest run. For OpenSearch: `kubectl -n cpaas-system get jobs -l job=opensearch-init`. |
-| `CollectorReady` | The `aggregate-vector` Deployment has not reached the ready replica count. | Look at the init container `wait-for-schema-migrations` first; it blocks the pod until the schema-migrations Job is `Complete` (ClickHouse) or short-circuits (OpenSearch, per Bug 167). |
-| `RazorReady` | The `razor` Deployment on the storage cluster has not reached the ready replica count. | Common causes: the storage backend rejected razor's connection, or the `log-policy-config` ConfigMap it mounts is missing. |
-| `SchemaMigrated` | The auto-migration Runnable has not yet reported `Converged`. | `kubectl -n cpaas-system logs deploy/log-storage-operator` for the `AutoMigrationRunnable` retry loop's most recent tick reason. |
+| `ExternalMessageQueueRequired` | The PLF has no `spec.externalMessageQueue`. The operator does not create Kafka; you provide it. | Add `externalMessageQueue` as in [Installation](../install/index.mdx) § 1.4. |
+| `ExternalKafkaContractIncomplete` | The Kafka you provided is incomplete: a required key in `platform-default-mq-conn`, the `RdsKafkaUser` or one of its ACLs, or one of the three `RdsTopic` resources is missing or not `Ready`. The message lists what is missing. | Fix the listed item as in [Installation](../install/index.mdx) § 1.1.1 and § 1.3.1. The operator retries every 30 seconds. |
+| `WaitingForKafkaOperator` | The Alauda Kafka Operator CRDs are not registered yet. | `kubectl get crd \| grep -E 'rdskafka\|kafkatopic\|kafkauser'`. Install or wait for the Kafka operator. |
+| `KafkaTopicsNotReady` | A topic became not `Ready` after the first check, for example while a broker restarts. | `kubectl -n cpaas-system get rdstopic`. It usually clears by itself. |
+| `InstallModeMismatch` | The `installMode` and `output` combination is not valid. | Correct the PLF spec. |
+| `RazorPodsNotReady` | The `razor` Deployment has not reached its replica count. | `kubectl -n cpaas-system describe deploy razor` and the pod logs. A common cause is that the storage backend rejects Razor's connection. |
+| `AggregateVectorPodsNotReady` | The `aggregate-vector` Deployment has not reached its replica count. | Look at the init container `wait-for-schema-migrations` first. On ClickHouse it waits for the `schema-migrations` Job to complete. |
+| `AggregateVectorSilentExit` | `aggregate-vector` pods exit without an error. | The message contains the detail; check the pod logs and the Vector configuration. |
+| `ProvisioningFailed` | Another error during provisioning. | The message contains the error. For the operator side, run `kubectl -n cpaas-system logs deploy/log-storage-operator-controller-manager`. |
+
+When everything is provisioned, `Ready` is `True` with reason `Ready` and a message of the form `scenario=<scenario> provisioned`.
+
+The lag watchdog reports two more conditions after the install is `Ready`. They do not change `Ready`:
+
+- `AggvecHealthy`: `False` with reason `LagStall` or `NeverCommittedOffset` when `aggregate-vector` stops making progress on Kafka.
+- `ClickHouseBackpressure`: `True` when ClickHouse rejects inserts or has too many active parts or merges.
 
 Two upstream failure modes are worth calling out because they have historically confused this triage:
 
@@ -97,7 +113,7 @@ Common causes, in order of likelihood:
 
 **Symptom.** The PLF spec sets `tieredPolicy` with a `coldTTL`, but data in the ClickHouse `<log_data>` table does not move to the cold volume when the TTL expires. Data is DELETEd instead.
 
-**Root cause.** If razor's schema-init raced the operator's storage-policy config emit, the table was created without a `storage_policy` and the subsequent `ALTER ... TO VOLUME 'cold'` fails with CH `450`. razor's failure detection used to read from an `exception` column that CH 25.8 does not expose, so it silently logged "TTL updated successfully" (see [[project_v4_4_storage_policy_race]] in the operator repo notes).
+**Root cause.** If razor's schema-init raced the operator's storage-policy config emit, the table was created without a `storage_policy` and the subsequent `ALTER ... TO VOLUME 'cold'` fails with CH `450`. razor's failure detection used to read from an `exception` column that CH 25.8 does not expose, so it silently logged "TTL updated successfully".
 
 **Fix.** The v4.4.4 operator image runs schema-migrations with the storage-policy JSON injected per statement (Bug 188 v2 + Bug 189), and the AutoMigrationRunnable retries until CH reports the target policy on the table (Bug 190). If you are on an older beta, upgrade the operator image, then re-apply the PLF `tieredPolicy` field.
 
@@ -137,9 +153,9 @@ Common causes, in order of likelihood:
 
 When a symptom does not match anything above, walk the pipeline from the collection end and stop at the first hop that looks wrong:
 
-1. `nevermore` on the collection cluster: `kubectl -n cpaas-system logs -l app=nevermore --tail=200`. Look for VRL / target.json errors or "buffer full" messages.
-2. Kafka: `kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe` — verify the log topics exist with the expected partition count.
-3. `aggregate-vector` on the storage cluster: `kubectl -n cpaas-system logs -l app=aggregate-vector --tail=200`. Look for the kafka source's per-topic status and any sink 4xx/5xx.
+1. `nevermore` on the collection cluster: `kubectl -n cpaas-system logs -l app.kubernetes.io/name=nevermore --tail=200`. Look for VRL / target.json errors or "buffer full" messages.
+2. Kafka: `kubectl -n cpaas-system get rdstopic` — verify the three log topics exist and are `Ready`. For offsets and consumer lag, use the Kafka client described in [How to Pause Log Writes While Expanding ClickHouse Storage](./clickhouse-expand-storage.mdx).
+3. `aggregate-vector` on the storage cluster: `kubectl -n cpaas-system logs -l app.kubernetes.io/name=aggregate-vector --tail=200`. Look for the kafka source's per-topic status and any sink 4xx/5xx.
 4. Storage backend: `SELECT count() FROM <log_data>` on ClickHouse or `GET _cat/indices` on OpenSearch. Compare with an unbounded time range vs. a bounded one; a large gap between the two is the timestamp-overwrite symptom on OpenSearch (see [OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations)).
-5. `razor` on the storage cluster: `kubectl -n cpaas-system logs -l app=razor --tail=200`. 401s here are the token-sync issue above.
-6. `razor-api` on the global cluster: `kubectl -n cpaas-system logs -l app=razor-api --tail=200`. `parseDatabase` misidentifying the backend (`log-clickhouse` vs `log-opensearch`) will show up as SQL errors against the wrong dialect.
+5. `razor` on the storage cluster: `kubectl -n cpaas-system logs -l app.kubernetes.io/name=razor --tail=200`. 401s here are the token-sync issue above.
+6. `razor-api` on the global cluster: `kubectl -n cpaas-system logs -l service_name=razor-api --tail=200`. `parseDatabase` misidentifying the backend (`log-clickhouse` vs `log-opensearch`) will show up as SQL errors against the wrong dialect.
