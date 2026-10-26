@@ -1,0 +1,326 @@
+---
+weight: 16
+---
+
+# How to Pause Log Writes While Expanding ClickHouse Storage
+
+This guide explains how to stop `aggregate-vector` from writing to ClickHouse while you expand the ClickHouse data volumes on TopoLVM, and how to resume writes afterwards.
+
+When you raise the volume size on a `ClickHouseInstallation`, the ClickHouse operator recreates each replica's StatefulSet and restarts the replicas one at a time. Pausing writes for that window keeps `aggregate-vector` from inserting into replicas that are restarting.
+
+While writes are paused:
+
+- Log collection continues. The collectors keep pushing to Kafka, and Kafka holds the records.
+- `aggregate-vector` stops consuming from Kafka, so new logs, events, and audit records do not appear in queries until you resume.
+- `LogForward` instances keep forwarding. They consume Kafka with their own consumer groups.
+- After you resume, `aggregate-vector` continues from its last committed offset and writes the backlog.
+
+No records are lost, **as long as Kafka keeps every record that has not been consumed yet**. Kafka deletes old data by size (`retention.bytes`) and by age (`retention.ms`) whether or not it has been consumed. Step 1 estimates how long the pause can last before that happens. Do not skip it.
+
+:::warning
+The pause uses the `log.alauda.io/user-managed` escape hatch described in [How to Override the aggregate-vector Configuration](./vector-cm-override.mdx). It is meant for a maintenance window. Remove the annotation as soon as the expansion is finished.
+:::
+
+## Before You Begin
+
+The commands below assume the default names: Kafka `cpaas-kafka`, ClickHouse `ClickHouseInstallation/cpaas-clickhouse`, everything in `cpaas-system`. Replace them if your installation differs.
+
+1. The ClickHouse StorageClass allows expansion:
+
+   ```bash
+   kubectl get sc $(kubectl -n cpaas-system get pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse \
+     -o jsonpath='{.items[0].spec.storageClassName}') -o jsonpath='{.allowVolumeExpansion}{"\n"}'
+   ```
+
+   The output must be `true`.
+
+2. Every node that runs a ClickHouse replica has enough free TopoLVM capacity for the increase:
+
+   ```bash
+   kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse \
+     -o custom-columns=POD:.metadata.name,NODE:.spec.nodeName
+   kubectl get node <node> -o jsonpath='{.metadata.annotations}' | tr ',' '\n' | grep capacity.topolvm
+   ```
+
+   The `capacity.topolvm.cybozu.com/<device-class>` annotation is the free capacity in bytes. It must be larger than the increase on every node. If it is not, add disks to the TopoLVM device class on that node first.
+
+3. Prepare a Kafka client inside a broker pod. Steps 1, 3 and 5 use this `kafka` shell function:
+
+   ```bash
+   NS=cpaas-system
+   BROKER=$(kubectl -n $NS get pod -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true -o name | head -1)
+   field() { kubectl -n $NS get secret platform-default-mq-conn -o jsonpath="{.data.$1}" | base64 -d; }
+   printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="%s" password="%s";\n' \
+     "$(field username)" "$(field password)" \
+     | kubectl -n $NS exec -i $BROKER -- sh -c 'cat > /tmp/client.properties'
+   kafka() { kubectl -n $NS exec $BROKER -- /opt/kafka/bin/"$@" --bootstrap-server localhost:9092 --command-config /tmp/client.properties; }
+   ```
+
+## Step 1: Estimate how long Kafka can hold the backlog
+
+The following script measures the current write rate into each log topic and compares it with the topic's retention settings. Run it at the busiest time of day, because the backlog grows with the write rate. `SAMPLE_SECONDS` is the measurement window; the default is 300 seconds.
+
+<details>
+<summary>kafka-pause-headroom.sh</summary>
+
+```bash
+#!/usr/bin/env bash
+# Estimate how long aggregate-vector can stay paused before Kafka deletes
+# records that have not been consumed yet.
+#
+# Usage: SAMPLE_SECONDS=300 ./kafka-pause-headroom.sh
+set -euo pipefail
+
+NS=${NS:-cpaas-system}
+SECRET=${SECRET:-platform-default-mq-conn}
+GROUP=${GROUP:-alauda_log}
+SAMPLE_SECONDS=${SAMPLE_SECONDS:-300}
+
+field() { kubectl -n "$NS" get secret "$SECRET" -o jsonpath="{.data.$1}" | base64 -d; }
+CLUSTER=$(field kafkaClusterName)
+TOPICS="$(field 'topics\.log') $(field 'topics\.event') $(field 'topics\.audit')"
+BROKERS=$(kubectl -n "$NS" get pod -l "strimzi.io/cluster=$CLUSTER,strimzi.io/broker-role=true" -o name)
+BROKER=$(echo "$BROKERS" | head -1)
+
+# Client config for the in-pod SASL listener on localhost:9092.
+printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="%s" password="%s";\n' \
+  "$(field username)" "$(field password)" \
+  | kubectl -n "$NS" exec -i "$BROKER" -- sh -c 'cat > /tmp/pause-headroom.properties'
+trap 'kubectl -n "$NS" exec "$BROKER" -- rm -f /tmp/pause-headroom.properties' EXIT
+
+kx() { kubectl -n "$NS" exec "$BROKER" -- sh -c "$1"; }
+K="--bootstrap-server localhost:9092 --command-config /tmp/pause-headroom.properties"
+offsets() { kx "for t in $TOPICS; do /opt/kafka/bin/kafka-get-offsets.sh $K --topic \$t --time $1; done"; }
+
+echo "Sampling end offsets for ${SAMPLE_SECONDS}s ..."
+END1=$(offsets -1); sleep "$SAMPLE_SECONDS"; END2=$(offsets -1)
+EARLIEST=$(offsets -2)
+LAG=$(kx "/opt/kafka/bin/kafka-consumer-groups.sh $K --describe --group $GROUP 2>/dev/null")
+SIZES=$(kx "cd /var/lib/kafka/data && for t in $TOPICS; do du -sb kafka-log*/\$t-* 2>/dev/null; done")
+CONFIGS=$(kx "for t in $TOPICS; do /opt/kafka/bin/kafka-topics.sh $K --describe --topic \$t | head -1; /opt/kafka/bin/kafka-configs.sh $K --describe --all --entity-type topics --entity-name \$t; done")
+FREE=$(for b in $BROKERS; do kubectl -n "$NS" exec "${b#pod/}" -- df -B1 --output=avail /var/lib/kafka/data | tail -1; done | sort -n | head -1)
+
+awk -v sample="$SAMPLE_SECONDS" -v free="$FREE" -v nbrokers="$(echo "$BROKERS" | wc -l)" '
+  FNR == 1 { f++ }
+  f == 1 { split($0, a, ":"); e1[a[1] ":" a[2]] = a[3] }
+  f == 2 { split($0, a, ":"); e2[a[1] ":" a[2]] = a[3]; topic[a[1]] = 1 }
+  f == 3 { split($0, a, ":"); e0[a[1] ":" a[2]] = a[3] }
+  f == 4 && ($2 in topic) && $4 ~ /^[0-9]+$/ { lag[$2 ":" $3] = $6 }
+  f == 5 { n = split($2, a, "/"); t = a[n]; i = t; sub(/-[0-9]+$/, "", t); sub(/.*-/, "", i)
+           bytes[t] += $1; span[t] += e2[t ":" i] - e0[t ":" i] }
+  f == 6 && /^Topic:/ { cur = $2; for (j = 1; j <= NF; j++) if ($j == "ReplicationFactor:") rf[cur] = $(j + 1) }
+  f == 6 && /^ +(retention\.bytes|retention\.ms|segment\.bytes)=/ {
+           split($1, kv, "="); cfg[cur, kv[1]] = kv[2] }
+  END {
+    printf "%-20s %8s %10s %12s %12s %10s %14s %13s\n", "TOPIC", "MiB/min", "bytes/rec", "max-lag/part", "retention.MiB", "segment.MiB", "by-size(min)", "by-time(min)"
+    for (t in topic) {
+      maxrate = 0; maxlag = 0; sum = 0
+      for (k in e2) { split(k, a, ":"); if (a[1] != t) continue
+        r = (e2[k] - e1[k]) * 60 / sample; sum += r; if (r > maxrate) maxrate = r
+        # A partition the group has never committed counts as fully unconsumed.
+        l = (k in lag) ? lag[k] : e2[k] - e0[k]; if (l > maxlag) maxlag = l }
+      avg = span[t] > 0 ? bytes[t] / span[t] : 0
+      total += sum * avg; repl += sum * avg * rf[t]
+      rb = cfg[t, "retention.bytes"]; seg = cfg[t, "segment.bytes"]; rms = cfg[t, "retention.ms"]
+      lag_min = maxrate > 0 ? maxlag / maxrate : 0
+      by_time = rms > 0 ? sprintf("%d", rms / 60000 - lag_min) : "unlimited"
+      if (rb < 0) by_size = "unlimited"
+      else if (maxrate * avg <= 0) by_size = "no-writes"
+      else by_size = sprintf("%d", (rb - seg - maxlag * avg) / (maxrate * avg))
+      printf "%-20s %8.1f %10d %12d %12s %10d %14s %13s\n", t, sum * avg / 1048576, avg, maxlag,
+             (rb < 0 ? "-1" : sprintf("%d", rb / 1048576)), seg / 1048576, by_size, by_time
+    }
+    printf "\nWrite rate: %.1f MiB/min, %.1f MiB/min with replicas.\n", total / 1048576, repl / 1048576
+    printf "Smallest free space on a broker data volume: %.1f GiB (%d brokers).\n", free / 1073741824, nbrokers
+    if (repl > 0) printf "by-disk(min): %d\n", free / (repl / nbrokers)
+  }' <(echo "$END1") <(echo "$END2") <(echo "$EARLIEST") <(echo "$LAG") <(echo "$SIZES") <(echo "$CONFIGS")
+```
+
+</details>
+
+Example output:
+
+```text
+TOPIC                 MiB/min  bytes/rec max-lag/part retention.MiB segment.MiB   by-size(min)  by-time(min)
+ALAUDA_LOG_TOPIC         90.7       2121          936          100         32             21          2879
+ALAUDA_AUDIT_TOPIC        1.1       7321            4          100         32           1770          2879
+ALAUDA_EVENT_TOPIC        0.1      20128            1          100         32           7082          2878
+
+Write rate: 91.8 MiB/min, 275.5 MiB/min with replicas.
+Smallest free space on a broker data volume: 7.9 GiB (3 brokers).
+by-disk(min): 88
+```
+
+How to read it:
+
+- `by-size(min)`: minutes until the busiest partition of the topic starts deleting unconsumed records because of `retention.bytes`. The script reserves one segment (`segment.bytes`) as a margin, because Kafka deletes whole segments.
+- `by-time(min)`: the same limit for `retention.ms`.
+- `by-disk(min)`: minutes until the fullest broker volume runs out of space, assuming that everything written during the pause is kept. This limit applies while the topics are still below their `retention.bytes`, which is always the case when `retention.bytes` is `-1` or larger than the volume can hold. The installation example sets `log.retention.bytes` to about 4.6 GiB per partition, so on a default installation the disk is usually the tighter limit. A topic that has already reached its `retention.bytes` does not grow any further.
+
+The pause can last at most the smallest of these numbers. In the example, the limit is about 21 minutes, set by `ALAUDA_LOG_TOPIC`.
+
+Compare it with the planned pause, which has three parts:
+
+| Part | Typical duration |
+| --- | --- |
+| Pause takes effect | About 1 minute |
+| ClickHouse expansion | About 2 to 3 minutes per replica, because replicas restart one at a time |
+| Resume until consumers rejoin | About 5 minutes |
+
+Keep the planned pause below **half** of the limit, so that a burst of writes, for example collectors that replay their own backlog, does not reach it. If the limit is too short:
+
+- Raise `retention.bytes` on the topics before the maintenance window. Edit `spec.config.retention.bytes` on the `RdsTopic` resources, and make sure the broker volumes can hold `partitions × replicas × (retention.bytes + segment.bytes)` divided by the number of brokers.
+- Or expand fewer ClickHouse replicas per window.
+
+## Step 2: Pause writes
+
+1. Back up the current configuration:
+
+   ```bash
+   kubectl -n cpaas-system get cm aggregate-vector-config \
+     -o jsonpath='{.data.vector\.toml}' > aggregate-vector-before.toml
+   ```
+
+2. Write an idle configuration to `paused.toml`. It keeps the API on port 8686, which the pod probes check, and has no Kafka source and no ClickHouse sink:
+
+   ```toml
+   data_dir = "/var/lib/vector"
+
+   [api]
+   address = "0.0.0.0:8686"
+   enabled = true
+
+   [sources.pause_metrics]
+   type = "internal_metrics"
+
+   [sinks.pause_blackhole]
+   type = "blackhole"
+   inputs = ["pause_metrics"]
+   ```
+
+   Every component name in a Vector configuration must be unique, including across sources and sinks. If a source and a sink share a name, `aggregate-vector` fails to start.
+
+3. Pin the ConfigMap and replace its content:
+
+   ```bash
+   kubectl -n cpaas-system annotate cm/aggregate-vector-config log.alauda.io/user-managed=true
+
+   kubectl -n cpaas-system create cm aggregate-vector-config \
+     --from-file=vector.toml=paused.toml --dry-run=client -o yaml \
+     | kubectl -n cpaas-system patch cm aggregate-vector-config --patch-file=/dev/stdin
+   ```
+
+The operator detects the changed ConfigMap and rolls `aggregate-vector` within about a minute. You do not need to restart it.
+
+## Step 3: Confirm that writes have stopped
+
+Wait until the rollout is complete and the consumer group has no members:
+
+```bash
+kubectl -n cpaas-system rollout status deploy/aggregate-vector
+kafka kafka-consumer-groups.sh --describe --group alauda_log --members
+```
+
+The second command must print `Consumer group 'alauda_log' has no active members.` Run `rollout status` again if the first call returns before the new pods have started.
+
+From this point, `kubectl get platformlogforward platform-default` still shows `Ready=True`. The operator's lag watchdog checks every 10 minutes; once it sees the growing lag, it sets the condition `AggvecHealthy` to `False` with reason `LagStall`. This is expected during the pause.
+
+## Step 4: Expand the ClickHouse volumes
+
+Raise the size in the `ClickHouseInstallation` volume claim template. Do not edit the PVCs directly; the ClickHouse operator reconciles the PVCs from the template.
+
+```bash
+kubectl -n cpaas-system get chi cpaas-clickhouse \
+  -o jsonpath='{range .spec.templates.volumeClaimTemplates[*]}{.name}{"\t"}{.spec.resources.requests.storage}{"\n"}{end}'
+
+# Replace 0 with the index of the data volume template, and 24Gi with the new size.
+kubectl -n cpaas-system patch chi cpaas-clickhouse --type=json \
+  -p='[{"op":"replace","path":"/spec/templates/volumeClaimTemplates/0/spec/resources/requests/storage","value":"24Gi"}]'
+```
+
+The ClickHouse operator expands each PVC, recreates the StatefulSet of each replica, and restarts the replicas one after another. Watch the progress:
+
+```bash
+kubectl -n cpaas-system get chi cpaas-clickhouse -w
+```
+
+The status changes to `InProgress` and returns to `Completed` when every replica is done. Then verify the new size on every replica:
+
+```bash
+kubectl -n cpaas-system get pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+for p in $(kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse -o name); do
+  kubectl -n cpaas-system exec $p -- df -h /var/lib/clickhouse | tail -1
+done
+```
+
+Every PVC must show the new `CAPACITY`, and every `df` line must show the new size. All ClickHouse pods must be `Running` and ready.
+
+## Step 5: Resume writes
+
+1. Remove the annotation:
+
+   ```bash
+   kubectl -n cpaas-system annotate cm/aggregate-vector-config log.alauda.io/user-managed-
+   ```
+
+   On its next reconcile, typically within two minutes, the operator rewrites the ConfigMap from `PlatformLogForward/platform-default` and rolls `aggregate-vector` again.
+
+2. Confirm that the configuration is back to the original:
+
+   ```bash
+   kubectl -n cpaas-system get cm aggregate-vector-config -o jsonpath='{.data.vector\.toml}' \
+     | diff - aggregate-vector-before.toml && echo restored
+   ```
+
+3. Confirm that the consumers are back and the backlog is shrinking:
+
+   ```bash
+   kafka kafka-consumer-groups.sh --describe --group alauda_log --members
+   kafka kafka-consumer-groups.sh --describe --group alauda_log | awk 'NR > 1 && $6 ~ /^[0-9]+$/ { lag[$2] += $6 } END { for (t in lag) print t, lag[t] }'
+   ```
+
+   The first command lists one member per `aggregate-vector` replica. Repeat the second command; the lag per topic must go down.
+
+4. Confirm that no unconsumed records were deleted during the pause. Run this before the backlog has been consumed:
+
+   ```bash
+   for t in $(field 'topics\.log') $(field 'topics\.event') $(field 'topics\.audit'); do
+     kafka kafka-get-offsets.sh --topic $t --time -2
+   done > earliest.txt
+   kafka kafka-consumer-groups.sh --describe --group alauda_log > committed.txt
+   awk 'FNR == NR { split($0, a, ":"); e[a[1] ":" a[2]] = a[3]; next }
+        $4 ~ /^[0-9]+$/ && e[$2 ":" $3] > $4 { n++; lost += e[$2 ":" $3] - $4 }
+        END { printf "partitions with deleted unconsumed records: %d, records: %d\n", n, lost }' earliest.txt committed.txt
+   ```
+
+   The output must report `0` partitions. A non-zero count means Kafka deleted those records before `aggregate-vector` consumed them; the `aggregate-vector` log then shows `offset reset` warnings. Use a larger margin in Step 1 next time.
+
+5. Remove the Kafka client configuration from the broker pod:
+
+   ```bash
+   kubectl -n $NS exec $BROKER -- rm -f /tmp/client.properties
+   ```
+
+`AggvecHealthy` returns to `True` on the lag watchdog's next check after the backlog has been consumed, which takes up to about 10 minutes.
+
+## Reference timeline
+
+On a test cluster with three ClickHouse replicas, 91 MiB/min written to the log topic, and an expansion from 20 Gi to 24 Gi:
+
+| Time | Event |
+| --- | --- |
+| 06:08:35 | ConfigMap pinned and replaced. |
+| 06:09:59 | `aggregate-vector` rollout complete; no consumer group members. |
+| 06:10:11 | `ClickHouseInstallation` patched. |
+| 06:12 to 06:17 | The three replicas restarted one after another, about 2 minutes apart. |
+| 06:17:14 | `ClickHouseInstallation` back to `Completed`; PVCs and file systems at 24 Gi. |
+| 06:20:30 | Annotation removed. |
+| 06:21:50 | ConfigMap restored, identical to the backup. |
+| 06:25:22 | Three consumers back in the group; the backlog of about 610,000 records was written within 2 minutes. |
+
+No partition had deleted unconsumed records.
+
+## Related Topics
+
+- [How to Override the aggregate-vector Configuration](./vector-cm-override.mdx): the escape hatch used for the pause.
+- [Installation](../install/index.mdx): the Kafka broker and topic retention settings.

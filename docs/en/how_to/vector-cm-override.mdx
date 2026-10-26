@@ -21,7 +21,7 @@ Only two families of ConfigMap consume this annotation:
 | ConfigMap | Derived from |
 | --- | --- |
 | `aggregate-vector-config` in `cpaas-system` | `PlatformLogForward/platform-default` |
-| `logforward-<name>-config` in `cpaas-system` | Each `LogForward` CR |
+| `logforward-<name>` in `cpaas-system` | Each `LogForward` CR |
 
 Every other resource the operator manages — Razor Deployment, Kafka resources, ServiceAccount, Ingress, and side resources — ignores the annotation and continues to reconcile normally.
 
@@ -43,7 +43,7 @@ kubectl annotate cm/aggregate-vector-config -n cpaas-system \
   log.alauda.io/user-managed=true
 
 # For a LogForward
-kubectl annotate cm/logforward-<name>-config -n cpaas-system \
+kubectl annotate cm/logforward-<name> -n cpaas-system \
   log.alauda.io/user-managed=true
 ```
 
@@ -59,17 +59,21 @@ kubectl edit cm/aggregate-vector-config -n cpaas-system
 skip reconcile: ConfigMap is user-managed (log.alauda.io/user-managed=true)
 ```
 
-## Roll the pod so your edit takes effect
+## Your edit rolls the pods automatically
 
-Vector pods do not restart automatically when a user-managed ConfigMap changes, because the operator only computes its rollout hash from the resources it manages. Restart the Deployment yourself:
+You do not need to restart anything. The operator includes the live content of the ConfigMap in the `log.alauda.io/rollout-hash` annotation on the pod template, so a changed ConfigMap rolls the Deployment on the next reconcile. A `LogForward` Deployment rolls within seconds of the edit; `aggregate-vector` rolls within about a minute.
+
+Check that the rollout has finished before you rely on the new configuration:
 
 ```bash
 # For aggregate-vector
-kubectl rollout restart deploy/aggregate-vector -n cpaas-system
+kubectl rollout status deploy/aggregate-vector -n cpaas-system
 
 # For a LogForward
-kubectl rollout restart deploy/logforward-<name> -n cpaas-system
+kubectl rollout status deploy/logforward-<name> -n cpaas-system
 ```
+
+Validate the file with `vector validate` before you apply it. If the configuration is invalid, the new pods fail to start. `aggregate-vector` uses a rolling update, so its old pods keep running until the new ones are ready. A `LogForward` Deployment uses the `Recreate` strategy: its old pod is stopped first, so an invalid configuration stops forwarding until you fix it.
 
 ## Turn the escape hatch off
 
@@ -80,7 +84,7 @@ kubectl annotate cm/aggregate-vector-config -n cpaas-system \
   log.alauda.io/user-managed-
 ```
 
-On the next reconcile the operator rebuilds the ConfigMap from the CR spec, discarding your edits.
+On the next reconcile the operator rebuilds the ConfigMap from the CR spec, discarding your edits, and rolls the Deployment again.
 
 ## How the platform interprets the annotation
 
@@ -99,7 +103,7 @@ The platform uses a handful of resource-level annotations for different purposes
 
 | Annotation | Prevents | Scope |
 | --- | --- | --- |
-| `log.alauda.io/user-managed=true` | The operator's patch of a Vector ConfigMap | `aggregate-vector-config`, `logforward-<name>-config` only |
+| `log.alauda.io/user-managed=true` | The operator's patch of a Vector ConfigMap | `aggregate-vector-config`, `logforward-<name>` only |
 | `skip-sync=true` | Sentry / cluster-transformer drift-back rewrites | Broad set of platform-managed resources |
 | `helm.sh/resource-policy=keep` | Helm's delete on uninstall | Any Helm-managed resource |
 
@@ -118,5 +122,5 @@ Remove the annotation on any ConfigMap that no longer needs it, verify the CR sp
 ## Related Topics
 
 - [How to Tune the aggregate-vector Sink](./aggvec-sink-tuning.mdx) — the supported knobs that most tuning requests fit into.
-- [How to Forward Logs to an External System with LogForward](./log_forward.mdx) — the CR that produces `logforward-<name>-config` ConfigMaps.
+- [How to Forward Logs to an External System with LogForward](./log_forward.mdx) — the CR that produces `logforward-<name>` ConfigMaps.
 - [Installation](../install/index.mdx) — the PLF creation flow.

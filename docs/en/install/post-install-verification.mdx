@@ -16,14 +16,14 @@ The single top-level readiness signal for the entire storage cluster is:
 kubectl -n cpaas-system get platformlogforward platform-default -o jsonpath='{.status.conditions}' | jq
 ```
 
-Every condition should be `status: "True"`. The single top-level signal is `Ready=True` with reason `AllComponentsReady`. Under it, the sub-conditions that a fresh install rolls through are `MessageQueueReady` (Kafka SASL and topic list validated), `StorageReady` (the external ClickHouse or OpenSearch endpoint is reachable and its schema is initialized), `CollectorReady` (aggregate-vector Deployment is at full ready-replicas), `RazorReady` (razor Deployment is at full ready-replicas), and `SchemaMigrated` (the auto-migration Runnable has converged). If any is `False`, the `message` names the sub-step that has not finished — see [Troubleshooting: PlatformLogForward stays in Provisioning](../how_to/troubleshooting.mdx#platformlogforward-stays-in-provisioning).
+The `Ready` condition must be `True` with reason `Ready`; its message has the form `scenario=<scenario> provisioned`. If `Ready` is `False`, its `reason` names the stage that has not finished — see [Troubleshooting: PlatformLogForward stays in Provisioning](../how_to/troubleshooting.mdx#platformlogforward-stays-in-provisioning). Not every condition is expected to be `True`: for example, the `LegacyRazor*` conditions report `False` with reason `Superseded` on a fresh install.
 
 ## 2. The data-plane pods are all running
 
 Even after the PLF is `Ready`, individual components can be in a soft restart. The one-shot check is:
 
 ```bash
-kubectl -n cpaas-system get pods -l 'app in (aggregate-vector,razor)' -o wide
+kubectl -n cpaas-system get pods -l 'app.kubernetes.io/name in (aggregate-vector,razor)' -o wide
 ```
 
 Every pod should be `1/1 Running`. `CrashLoopBackOff` on `aggregate-vector` at this point is almost always the schema-migrations init-container (ClickHouse) or the OpenSearch template PUT (OpenSearch) — see the matching entries in [Troubleshooting](../how_to/troubleshooting.mdx).
@@ -31,7 +31,7 @@ Every pod should be `1/1 Running`. `CrashLoopBackOff` on `aggregate-vector` at t
 On the collection cluster (which may or may not be the same cluster):
 
 ```bash
-kubectl -n cpaas-system get pods -l app=nevermore -o wide
+kubectl -n cpaas-system get pods -l app.kubernetes.io/name=nevermore -o wide
 ```
 
 Every node in the `Log.Kubernetes=true` collection scope should have a `nevermore` pod in `Running`.
@@ -82,14 +82,19 @@ Both should echo the object name. If either 404s, the runner Job did not complet
 The end of the collection pipeline pushes to Kafka. If aggregate-vector is idle, records are stuck upstream (in nevermore, or in the collector-side Kafka producer).
 
 ```bash
-kubectl -n cpaas-system exec sts/cpaas-kafka -- \
-  bin/kafka-run-class.sh kafka.tools.GetOffsetShell \
-    --bootstrap-server localhost:9092 \
-    --topic ALAUDA_LOG_DATA \
-    --time -1
+NS=cpaas-system
+BROKER=$(kubectl -n $NS get pod -l strimzi.io/cluster=cpaas-kafka,strimzi.io/broker-role=true -o name | head -1)
+field() { kubectl -n $NS get secret platform-default-mq-conn -o jsonpath="{.data.$1}" | base64 -d; }
+printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="%s" password="%s";\n' \
+  "$(field username)" "$(field password)" \
+  | kubectl -n $NS exec -i $BROKER -- sh -c 'cat > /tmp/client.properties'
+
+kubectl -n $NS exec $BROKER -- /opt/kafka/bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 --command-config /tmp/client.properties \
+  --topic "$(field 'topics\.log')" --time -1
 ```
 
-Repeat after 30 seconds. The offset should climb. If it does not, `nevermore` is not producing — check `kubectl -n cpaas-system logs -l app=nevermore --tail=200` on the collection cluster.
+Repeat the last command after 30 seconds. The offsets should climb. If they do not, `nevermore` is not producing — check `kubectl -n cpaas-system logs -l app.kubernetes.io/name=nevermore --tail=200` on the collection cluster. Remove `/tmp/client.properties` from the broker pod when you are done.
 
 ## 6. A synthetic log appears end-to-end
 
