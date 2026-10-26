@@ -86,13 +86,8 @@ The external Kafka, external ClickHouse, and external OpenSearch are all owned b
 ### External Kafka
 
 ```bash
-# Delete the log topics
-kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_LOG_DATA'
-kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_EVENT'
-kubectl -n cpaas-system exec sts/cpaas-kafka -- bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --delete --topic 'ALAUDA_AUDIT'
+# Delete the log topics (the RdsTopic resources from Installation § 1.1.1)
+kubectl -n cpaas-system delete rdstopic alauda-log-topic alauda-event-topic alauda-audit-topic
 # Delete the SASL user (Alauda Kafka Operator variant)
 kubectl -n cpaas-system delete rdskafkauser platform-logging
 ```
@@ -151,7 +146,7 @@ The Log Collector plugin does not persist state that outlives its own namespaced
 Before you close out the uninstall:
 
 - `kubectl -n cpaas-system get platformlogforward` returns `No resources found`.
-- `kubectl -n cpaas-system get pods -l 'app in (aggregate-vector,razor,log-storage-operator)'` returns `No resources found`.
+- `kubectl -n cpaas-system get pods -l 'app.kubernetes.io/name in (aggregate-vector,razor,log-storage-operator)'` returns `No resources found`.
 - On the storage cluster, `kubectl get feature log-center` returns `NotFound` (the CR was created by the operator on the storage cluster and swept by the finalizer).
 - The three external systems above have been either dropped or intentionally left as historical retention.
 
