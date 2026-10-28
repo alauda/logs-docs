@@ -1,0 +1,260 @@
+---
+weight: 10
+---
+
+# Fast Upgrade from ACP 4.3 via Quickstart Script
+
+This page covers the one-shot quickstart script that drives the ACP 4.3 → 4.4 upgrade on a storage cluster. For the manual `kubectl apply` walkthrough with every field explained, see [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx).
+
+Pick this path when:
+
+- The cluster currently runs the ACP 4.3 **Log Storage for ClickHouse** chart (`logclickhouse` / `logcenter`), with `ClickHouseInstallation/cpaas-clickhouse` in `cpaas-system`.
+- The upgrade target is ACP 4.4 with the operator-managed data path (`log-storage-operator`), reusing the existing ClickHouse data via adopt.
+- No OpenSearch migration is involved. OpenSearch upgrade is not covered by the script.
+
+If the ACP 4.3 install uses **Log Storage for Elasticsearch**, use [Upgrade from Log Storage for Elasticsearch](./legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx) instead. The script does not apply to that path.
+
+## 1. What the script does
+
+The script runs five stages on the storage cluster, in order:
+
+| Stage | Produces | Ready gate |
+| --- | --- | --- |
+| A | `strimzi-kafka-operator` OLM Subscription (`kafka-system` namespace + OperatorGroup + Subscription) | CSV `Succeeded` |
+| B | `RdsKafka` CR | Kafka broker pods Ready |
+| C | `RdsKafkaUser` + three `RdsTopic` CRs + user-password Secret | KafkaUser-mirrored Secret present, three topics `Ready` or `Active` |
+| D | `platform-default-mq-conn` Secret (including the strimzi cluster-ca-cert for SASL-over-TLS) | — (immediate) |
+| E | `log-storage-operator` OLM Subscription in `cpaas-system` | CSV `Succeeded` + Deployment rollout |
+
+Stage E is intentionally last. Kafka and the mq-conn Secret are already in place when the operator boots, so the first auto-migration pass derives `platform-default-ch-conn` and creates `PlatformLogForward/platform-default` cleanly, without going through the `suspiciousEmptyConnSecret` refuse branch that applies when the Secret is missing.
+
+### What the script does **not** do
+
+These are left to the operator or to the existing chart:
+
+- **ClickHouse Keeper, CHI**: the script reuses the ACP 4.3 chart-managed `cpaas-clickhouse` (adopt). No new CHI is created and no schema DDL is replayed.
+- **`platform-default-ch-conn` Secret**: `log-storage-operator` auto-migration derives it from the legacy `clickhouse-basic-auth` Secret and the ClickHouse Service once Stage E completes.
+- **`PlatformLogForward` CR**: Starting 2026-08-05, `log-storage-operator` creates `platform-default` from the discovered `AppRelease/logclickhouse` automatically; admins only verify and, when desired, patch it.
+- **chop (ClickHouse operator) Subscription**: it is a declared OLM dependency of `log-storage-operator`. OLM resolves it when Stage E applies. See Section 8 for the known side effect on upgrade clusters.
+
+## 2. Prerequisites
+
+### 2.1 ACP 4.3 logging stack is running
+
+```bash
+kubectl -n cpaas-system get chi cpaas-clickhouse
+kubectl -n cpaas-system get apprelease logclickhouse
+kubectl -n cpaas-system get secret clickhouse-basic-auth
+```
+
+All three objects must exist. If any is missing, the ACP 4.3 install is incomplete; repair it before upgrading.
+
+### 2.2 ClickHouse free space ≥ 30%
+
+```bash
+kubectl -n cpaas-system exec chi-cpaas-clickhouse-<shard>-0-0 -- df -h /var/lib/clickhouse
+```
+
+The `Available` column divided by `Size` must be at least 30%. The adopt path does not rewrite data, but any schema-migration step added by a later patch may need temporary space.
+
+### 2.3 Dynamic StorageClass (for the new Kafka)
+
+```bash
+kubectl get sc
+```
+
+At least one SC with a provisioner other than `no-provisioner`. Kafka broker PVCs will land on it. It does not have to match the SC the existing ClickHouse uses.
+
+### 2.4 OperatorHub registrations
+
+The script installs two operators through OLM. Both must be registered in the ACP `platform` CatalogSource:
+
+```bash
+kubectl -n cpaas-system get packagemanifest strimzi-kafka-operator log-storage-operator
+```
+
+Both rows must report a non-empty `AGE`. The chop operator is resolved by OLM as a dependency and does not need an explicit entry in this check (see Section 8).
+
+### 2.5 Full upgrade pre-flight
+
+This page covers the subset of pre-flight most relevant to the quickstart script. For the full seven-item pre-flight (SA tokens, Feature CRD, Kafka hostNetwork, OLM dependency placement, cross-namespace routing), review the manual [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx) guide and run a dry run against a staging environment before any production upgrade.
+
+## 3. Get the script bundle
+
+:::info Download
+Contact Alauda support to obtain the v4.4 logging quickstart script bundle. The upgrade and fresh-install scripts ship together (`upgrade.sh` + `install.sh` + `install.env.example` + `templates/`). The download link will be published here once released: **TBD**.
+:::
+
+Unpack on the jump host:
+
+```
+quickstart/
+  upgrade.sh                              ← used for this upgrade path
+  install.sh                              ← fresh install only; not used here
+  install.env.example
+  templates/
+    00u-strimzi-subscription.yaml         ← upgrade.sh Stage A
+    00u-log-storage-subscription.yaml     ← upgrade.sh Stage E
+    12-rdskafka.yaml                      ← upgrade.sh Stage B
+    20-kafka-user-topics.yaml             ← upgrade.sh Stage C
+    30-mq-conn-secret.yaml                ← upgrade.sh Stage D
+    # Other templates (10-keeper, 11-chi, 31-ch-conn, 40-plf) are for the fresh-install script only.
+```
+
+## 4. Configure `install.env`
+
+The upgrade script shares `install.env` with the fresh-install script. `CK_*` and `KEEPER_*` variables are present in the sample file and are safe to leave as-is for the upgrade path — `upgrade.sh` does not read them.
+
+```bash
+cp install.env.example install.env
+```
+
+Two required fields:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `STORAGE_CLASS` | The dynamic SC for Kafka (Section 2.3). | `topolvm-provisioner` |
+| `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix (`Mi` / `Gi` / `Ti`). | `100Gi` |
+
+`CK_STORAGE_SIZE` keeps the sample value (for example `300Gi`). `upgrade.sh` does not read or validate it.
+
+### 4.1 Optional — pin Kafka pods to a dedicated node pool
+
+Use the same `NODE_AFFINITY_*` and `TOLERATION_*` fields as in [Fast Install](../install/fast-install.mdx) § 3.1 "Optional — pin pods to a dedicated node pool". The upgrade script applies them to the three RdsKafka pod template groups (`kafka`, `controller`, `entityOperator`).
+
+### 4.2 Optional — Kafka SASL password
+
+`KAFKA_SASL_PASSWORD` defaults to empty, in which case the script derives a stable 40-hex value from `NAMESPACE` + `KAFKA_NAME` + `KAFKA_USER` via `sha256sum`. Reruns yield the same password. On Alauda OS / FIPS hosts this satisfies the ≥ 32-character requirement.
+
+## 5. Run
+
+### 5.1 Render, review, then apply (recommended)
+
+Render YAML into `./rendered-upgrade/` without touching the cluster:
+
+```bash
+./upgrade.sh install.env --render
+```
+
+Review the four files under `./rendered-upgrade/`. `platform-default-mq-conn` is intentionally omitted from the render output — it requires the live `cpaas-kafka-cluster-ca-cert` from strimzi, which only exists after Stage B's `RdsKafka` is Ready. The live run materializes it from the live Secret.
+
+When ready:
+
+```bash
+./upgrade.sh install.env
+```
+
+### 5.2 Direct live apply
+
+```bash
+./upgrade.sh install.env
+```
+
+### 5.3 Auto-migration takes over
+
+After Stage E, `log-storage-operator` starts and begins its auto-migration loop. Within one to three minutes it:
+
+1. Detects `AppRelease/logclickhouse` and runs the **AdoptCK** branch.
+2. Derives `platform-default-ch-conn` from `secret/clickhouse-basic-auth` and `svc/cpaas-clickhouse`.
+3. Derives `PlatformLogForward/platform-default`'s `spec.output.clickhouse` from `AppRelease.spec.values` and discovers `rdskafka/cpaas-kafka` for Kafka fields.
+4. Creates the PLF with label `log.alauda.io/auto-generated-by=log-storage-operator`.
+
+The PLF reaches `Ready=True` once the operator finishes building the data path. The admin does not need to `kubectl apply` any PLF manifest.
+
+:::info Idempotent
+Rerunning `upgrade.sh` with the same `install.env` is a no-op after the first successful run. All operations are server-side and every readiness wait short-circuits once the condition holds.
+:::
+
+## 6. Verify
+
+| Object | Command | Expected |
+| --- | --- | --- |
+| strimzi CSV | `kubectl -n kafka-system get csv` | `strimzi-cluster-operator*` row `Succeeded` |
+| log-storage CSV | `kubectl -n cpaas-system get csv` | `log-storage-operator*` row `Succeeded`; the chop CSV added by OLM resolution appears in `cpaas-logging` (see Section 8) |
+| RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka` | All Kafka pods Ready |
+| RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
+| Auto-migration products | `kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn ; kubectl -n cpaas-system get platformlogforward platform-default` | Both Secrets present, PLF `Ready=True` |
+
+Once PLF is `Ready=True`, log queries from the ACP console continue to serve historical data (adopt preserved every record) and the new ingest flows through the Kafka buffer into the same ClickHouse tables.
+
+## 7. Rollback
+
+If a problem appears after the upgrade and the cluster must return to the ACP 4.3 chart state:
+
+- ClickHouse side: no action. The ACP 4.3 chart's `cpaas-clickhouse` CHI was never modified. Data is intact.
+- Operator side: delete the PLF, then the log-storage-operator Subscription and CSV, then the Kafka resources (RdsKafka + Subscription + CSV).
+
+Delete in reverse Stage order (E → A): the log-storage-operator Subscription + CSV first (which releases the auto-generated `PlatformLogForward/platform-default` and `platform-default-ch-conn` Secret), then the Kafka resources (RdsKafka, RdsTopics, RdsKafkaUser, `platform-default-mq-conn`), and finally the strimzi Subscription + CSV. The auto-migration's writes are limited to the operator Deployment, the two derived Secrets, and the PLF; the ClickHouse data plane is independent.
+
+## 8. chop operator dependency (upgrade-cluster side effect)
+
+`log-storage-operator`'s OLM bundle declares `clickhouse-operator` (chop) as a dependency. When Stage E applies the Subscription, OLM resolves the dependency as follows:
+
+- OLM checks for an existing `ClusterServiceVersion` of chop.
+- The ACP 4.3 chart installs chop via **Helm**, not via OLM. There is no CSV for the Helm-installed chop.
+- OLM therefore considers chop as "not installed" and provisions a new OLM-managed chop CSV to `cpaas-logging`.
+
+The result is **two chop controllers coexisting** on the upgrade cluster: the Helm-installed one (in whichever namespace the ACP 4.3 chart placed it, typically `cpaas-system` or `cpaas-logging`) and the newly OLM-installed one in `cpaas-logging`. Both watch `ClickHouseInstallation/cpaas-clickhouse` and reconcile it concurrently.
+
+In practice the two chop versions agree on the reconciled state (both are Altinity chop), but the duplicate watchers produce visible side effects:
+
+- Repeated `resourceVersion` bumps on the CHI.
+- Doubled reconcile log output in both chop pods.
+- Occasional spurious `cpaas-clickhouse` events.
+
+To check:
+
+```bash
+kubectl get deploy -A -l app=clickhouse-operator
+```
+
+Two matching Deployment rows confirm the duplicate. Handle it either way:
+
+- **Keep the OLM-installed chop** (recommended, aligns with the ACP 4.4 architecture). Delete the Helm-installed Deployment, ServiceAccount, Role, and RoleBinding. The CRDs are shared and must stay.
+- **Keep the Helm-installed chop**. Delete the OLM Subscription from `cpaas-logging` and then its CSV.
+
+:::info Recommended pre-upgrade step
+Uninstall the Helm chop on the ACP 4.3 cluster **before** running `upgrade.sh`. This avoids the coexistence window entirely and lets the OLM-managed chop take over cleanly.
+:::
+
+## 9. Troubleshooting
+
+### Stage D fails with `cluster CA secret cpaas-kafka-cluster-ca-cert not found`
+
+Stage B's `RdsKafka` is Ready, but strimzi has not yet written the cluster CA Secret. Wait two minutes and rerun `./upgrade.sh install.env`. The script is idempotent.
+
+### After Stage E, `PlatformLogForward/platform-default` is not auto-created within five minutes
+
+Inspect the operator log:
+
+```bash
+kubectl -n cpaas-system logs deploy/log-storage-operator-controller-manager | grep -iE "auto-migration|derive-plf|refuse"
+```
+
+- `suspiciousEmptyConnSecret`: `platform-default-mq-conn` is missing. Verify with `kubectl -n cpaas-system get secret platform-default-mq-conn`. Rerun `./upgrade.sh install.env` if missing.
+- `AppRelease/logclickhouse not found`: the ACP 4.3 install is incomplete. Return to Section 2.1.
+- `AdoptCK` with `clickhouse.nodes[]` empty: the legacy `AppRelease.spec.values.clickhouse.nodes` is empty. The PLF enters `PhaseAwaitingUserInput`. See the "Troubleshooting the migration" section of [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx) for the manual patch command.
+
+### `PlatformLogForward` reports `Ready=False` with reason `ExternalMessageQueueSecretMissing`
+
+`platform-default-mq-conn` is not materialized. Stage D should have created it. Verify with:
+
+```bash
+kubectl -n cpaas-system get secret platform-default-mq-conn
+```
+
+Rerun `./upgrade.sh install.env` if missing.
+
+### `CHI reconcile` bumps `resourceVersion` repeatedly
+
+Two chop versions are coexisting. See Section 8 for the resolution options.
+
+For a wider troubleshooting index covering ingest and query failures, see [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
+
+## 10. Related
+
+- [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx) — Full manual walkthrough; the authoritative reference for every field this script sets.
+- [Upgrade from Log Storage for Elasticsearch](./legacy-elasticsearch.mdx) — For clusters that run the ACP 4.2 or 4.3 Elasticsearch backend instead.
+- [Historical Data Migration](../migration/index.mdx) — Required when migrating historical records out of the legacy Elasticsearch backend.
+- [Fast Install via Quickstart Script](../install/fast-install.mdx) — Counterpart script for fresh installs.
+- [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx) — Common failure index.

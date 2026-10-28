@@ -1,0 +1,262 @@
+---
+weight: 16
+---
+
+# Fast Install via Quickstart Script
+
+This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack on a fresh cluster. For the manual `kubectl apply` walkthrough that exposes every field, see [Installation](./index.mdx).
+
+Pick this path when:
+
+- The target cluster is a **fresh** ACP 4.4 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.3, see [Fast Upgrade from ACP 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
+- The backend is **ClickHouse** (OpenSearch backend is not covered by the script).
+- The default topology fits the deployment: **3-node KRaft Kafka** + **1 shard × 3 replica ClickHouse** + **3-pod ClickHouse Keeper quorum**, all on a single `cpaas-system` namespace on one storage cluster.
+
+If the deployment needs ClickHouse tiered storage, multi-shard scale-out, LocalVolume PVs, or any non-default knob, use the manual flow in [Installation](./index.mdx) instead; the script writes a fixed set of CRs and is not meant to replace manual tuning.
+
+## 1. Prerequisites
+
+### 1.1 Dynamic StorageClass
+
+Kafka, ClickHouse, and Keeper all request `ReadWriteOnce` dynamic PVCs. Verify at least one dynamic SC is available:
+
+```bash
+kubectl get sc
+```
+
+Pick one whose `PROVISIONER` column is not `no-provisioner`. The script does not support LocalVolume or hand-provisioned PV pools.
+
+### 1.2 OperatorHub PackageManifests
+
+The script installs three operators through OLM. All three must be registered in the ACP `platform` CatalogSource:
+
+| Operator | Target namespace |
+| --- | --- |
+| **Alauda Data Services Analytical Database E1** (`clickhouse-operator`) | `cpaas-logging` |
+| **Alauda Streaming Service for Kafka** (`strimzi-kafka-operator`) | `kafka-system` |
+| **Alauda Container Platform Log Storage Management** (`log-storage-operator`) | `cpaas-system` |
+
+Verify:
+
+```bash
+kubectl -n cpaas-system get packagemanifest \
+  clickhouse-operator strimzi-kafka-operator log-storage-operator
+```
+
+All three rows must report a non-empty `AGE`.
+
+### 1.3 Jump host
+
+The script runs from any host with `kubectl`, `bash`, `envsubst`, `base64`, and `sha256sum` (all standard on Linux distributions), configured with a kubeconfig that can reach the storage cluster.
+
+## 2. Get the script bundle
+
+:::info Download
+Contact Alauda support to obtain the v4.4 logging quickstart script bundle (`install.sh` + `check.sh` + `install.env.example` + `templates/`). The download link will be published here once released: **TBD**.
+:::
+
+Unpack it on the jump host:
+
+```
+quickstart/
+  install.sh
+  check.sh
+  install.env.example
+  templates/
+    00-subscriptions.yaml
+    10-keeper.yaml
+    11-chi.yaml
+    12-rdskafka.yaml
+    20-kafka-user-topics.yaml
+    30-mq-conn-secret.yaml
+    31-ch-conn-secret.yaml
+    40-plf.yaml
+```
+
+## 3. Configure `install.env`
+
+Copy the sample:
+
+```bash
+cp install.env.example install.env
+```
+
+Three required fields; everything else has a working default:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `STORAGE_CLASS` | The dynamic SC verified in Section 1.1. Used by Kafka, ClickHouse, and Keeper PVCs. | `topolvm-provisioner` |
+| `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix (`Mi` / `Gi` / `Ti`). | `100Gi` |
+| `CK_STORAGE_SIZE` | Per-ClickHouse-pod PVC size with a unit suffix. | `300Gi` |
+
+:::warning Unit suffix is mandatory
+A size without a unit (for example `100` instead of `100Gi`) parses as *bytes* in YAML. On topolvm this truncates to the SC minimum (around `300Mi`) and the broker crashes with `No space left on device` as soon as Kafka writes raft metadata.
+:::
+
+**Sizing guidance**:
+
+- `KAFKA_STORAGE_SIZE` ≈ daily ingest × retention days ÷ broker count. Common values: `100Gi` for small clusters, `500Gi`+ for large production clusters.
+- `CK_STORAGE_SIZE` ≈ daily ingest × TTL days. Common value: `300Gi` for a 30-day TTL default.
+
+### 3.1 Optional — pin pods to a dedicated node pool
+
+For production, pin all logging pods (Keeper, CHI, Kafka broker/controller/entity-operator) to a dedicated pool via `nodeAffinity` + `tolerations`:
+
+```ini
+NODE_AFFINITY_KEY="node-role.alauda.io/log-storage"
+NODE_AFFINITY_VALUE="true"
+TOLERATION_KEY="dedicated"
+TOLERATION_VALUE="log-storage"
+TOLERATION_EFFECT="NoSchedule"
+```
+
+Before running the script, label and taint the target nodes:
+
+```bash
+kubectl label node <n1> <n2> <n3> node-role.alauda.io/log-storage=true
+kubectl taint node <n1> <n2> <n3> dedicated=log-storage:NoSchedule
+```
+
+Leaving all five fields empty schedules pods anywhere and emits a fallback `tolerations: [{operator: Exists}]`.
+
+### 3.2 Optional — passwords
+
+`KAFKA_SASL_PASSWORD` and `CK_ADMIN_PASSWORD` default to empty, in which case the script derives a stable 40-hex (Kafka) or 32-hex (ClickHouse) value from `NAMESPACE` + the resource names via `sha256sum`. Reruns produce the same password, which keeps the install idempotent.
+
+Fill either one explicitly only when a specific password is required.
+
+:::info FIPS hosts
+On Alauda OS / FIPS-enforced hosts the Kafka SASL password must be at least 32 characters. The derived default (40 hex) satisfies this; a shorter manual value is rejected by the broker with `UnacceptableCredential`.
+:::
+
+## 4. Install
+
+### 4.1 Render, review, then apply (recommended)
+
+Render every YAML into `./rendered/` without touching the cluster:
+
+```bash
+./install.sh install.env --render
+```
+
+Review the seven files under `./rendered/`. Edit anything that needs cluster-specific tweaks (resources, labels, extra annotations). When ready:
+
+```bash
+./install.sh install.env
+```
+
+The live run reads each stage's YAML from `./rendered/` first and falls back to the template only for files that `--render` cannot produce. The main case is `platform-default-mq-conn`, which needs the live `strimzi cluster-ca-cert` and is therefore always rendered on the fly during the live run.
+
+Stage order:
+
+1. Three OLM `Subscription` objects (chop + strimzi + log-storage) wait for CSV `Succeeded`.
+2. ClickHouse Keeper quorum (`StatefulSet`) rolls out.
+3. `ClickHouseInstallation` + `RdsKafka` reach `Completed` / Ready.
+4. `RdsKafkaUser` + three `RdsTopic` CRs reach `Ready` or `Active`.
+5. `platform-default-mq-conn` + `platform-default-ch-conn` Secrets are written.
+6. `PlatformLogForward/platform-default` reaches `Ready=True`.
+
+### 4.2 Direct live apply
+
+Skip the render step:
+
+```bash
+./install.sh install.env
+```
+
+### 4.3 Acceptance check
+
+```bash
+./check.sh install.env
+```
+
+The checker runs eight assertions. All must report ✓ for the install to be considered complete.
+
+:::info Idempotent
+Rerunning the script with the same `install.env` against the same cluster is a no-op after the first successful run. Every `kubectl apply` is server-side, every readiness wait short-circuits when the condition already holds, and derived passwords are stable. On a mid-run failure, fix the configuration and rerun the same command — completed stages pass instantly.
+:::
+
+## 5. Verify
+
+In addition to `check.sh`, these commands cover the same ground manually:
+
+| Object | Command | Expected |
+| --- | --- | --- |
+| OLM CSVs | `kubectl -n cpaas-logging get csv ; kubectl -n kafka-system get csv ; kubectl -n cpaas-system get csv` | All `Succeeded` |
+| ClickHouseInstallation | `kubectl -n cpaas-system get chi cpaas-clickhouse` | `.status.status=Completed` |
+| RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka` | All Kafka pods Ready |
+| RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
+| Connection Secrets | `kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn` | Both exist |
+| PlatformLogForward | `kubectl -n cpaas-system get platformlogforward platform-default` | `Ready=True` |
+
+For an end-to-end verification of the full data path (collector → Kafka → aggregate-vector → ClickHouse → razor-api), continue with the seven-step [post-install verification](./post-install-verification.mdx).
+
+## 6. Uninstall
+
+```bash
+# Remove the PLF; this cascades through operator-derived Features, log-center, aggvec, razor.
+kubectl -n cpaas-system delete platformlogforward platform-default
+
+# Remove the CRs the script created.
+kubectl -n cpaas-system delete rdskafka cpaas-kafka
+kubectl -n cpaas-system delete chi cpaas-clickhouse
+kubectl -n cpaas-system delete sts keeper
+
+# Remove Subscriptions and CSVs.
+kubectl -n cpaas-system  delete sub log-storage-operator
+kubectl -n cpaas-logging delete sub clickhouse-operator
+kubectl -n kafka-system  delete sub strimzi-kafka-operator
+# Delete the matching CSVs per namespace afterwards.
+```
+
+PVCs stay bound by default. To reclaim storage:
+
+```bash
+kubectl -n cpaas-system delete pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka
+kubectl -n cpaas-system delete pvc -l app.kubernetes.io/name=clickhouse-keeper
+```
+
+## 7. Troubleshooting
+
+### `KAFKA_STORAGE_SIZE must carry a unit suffix`
+
+See the warning in Section 3. Add a `Mi` / `Gi` / `Ti` suffix.
+
+### A CSV stays `Pending` and never reaches `Succeeded`
+
+Inspect the CSV:
+
+```bash
+kubectl -n <ns> describe csv <name>
+```
+
+Most common causes: the operator's package is not in the ACP `platform` CatalogSource (fix at the platform level), or an existing `OperatorGroup` in the target namespace reports `InterOperatorGroupOwnerConflict` (fix by consolidating or removing the duplicate `OperatorGroup`).
+
+### `PlatformLogForward` reports `Ready=False` with reason `ExternalMessageQueueSecretMissing` or `ExternalStorageSecretMissing`
+
+The named Secret was not materialized. Confirm:
+
+```bash
+kubectl -n cpaas-system get secret platform-default-mq-conn platform-default-ch-conn
+```
+
+If `platform-default-mq-conn` is missing, re-run the live install (`./install.sh install.env`): the Stage 3 step requires the live `cpaas-kafka-cluster-ca-cert` from strimzi, and on a first run where `RdsKafka` has only just become Ready the CA may not be fully written when Stage 3 reads it.
+
+### A CR stays in `Terminating` during uninstall
+
+The owning operator is still reconciling. Confirm the operator Deployment is gone, then clear the finalizer directly:
+
+```bash
+kubectl -n cpaas-system patch chi cpaas-clickhouse --type=merge \
+  -p '{"metadata":{"finalizers":[]}}'
+```
+
+For a wider troubleshooting index covering ingest, query, and data-path failures, see [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
+
+## 8. Related
+
+- [Installation](./index.mdx) — Full manual `kubectl apply` walkthrough.
+- [Post-install Verification](./post-install-verification.mdx) — Seven-step end-to-end verification after any install path.
+- [Fast Upgrade from ACP 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx) — Counterpart script for ACP 4.3 → 4.4 upgrade.
+- [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx) — Common failure index.
