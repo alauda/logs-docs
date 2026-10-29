@@ -166,15 +166,16 @@ After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3
 
 The ClickHouse data plane (CHI, Keeper, PVs, the `cpaas-clickhouse` / `cpaas-clickhouse-keeper` Services, and `secret/clickhouse-basic-auth`) is already annotated `helm.sh/resource-policy=keep` by `log-storage-operator` during auto-migration, so a helm uninstall leaves it in place. No manual annotation step is needed.
 
-Uninstall is driven from the **global cluster** by deleting the `ModuleInfo` that installed the plugin on this storage cluster:
+Uninstall is driven from the **global cluster** by deleting the `ModuleInfo` (short name `minfo`, cluster-scoped) that installed the plugin on this storage cluster. Filter by the plugin's module-name label and the storage cluster's `cpaas.io/cluster-name` label:
 
 ```bash
 # On the global cluster
-kubectl get moduleinfo -A | grep logclickhouse
-kubectl -n <namespace> delete moduleinfo <name>
+kubectl get minfo \
+  -l cpaas.io/module-name=logclickhouse,cpaas.io/cluster-name=<storage-cluster>
+kubectl delete minfo <name>
 ```
 
-The cluster-plugin controller cascades the deletion to the workload cluster: it removes `AppRelease/logclickhouse`, which runs `helm uninstall` underneath. Resources carrying the keep annotation stay; the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
+The `ModuleInfo` carries a `moduleinfo` finalizer: the delete request blocks until the cluster-plugin controller cascades the uninstall to the workload cluster. It removes `AppRelease/logclickhouse`, which runs `helm uninstall` underneath. Resources carrying the keep annotation stay; the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
 
 Verify the data plane on the storage cluster:
 
