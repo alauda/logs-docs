@@ -8,7 +8,7 @@ This page covers the one-shot quickstart script that stands up the storage side 
 
 Pick this path when:
 
-- The target cluster is a **fresh** ACP 4.4 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.3, see [Fast Upgrade from ACP 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
+- The target cluster is a **fresh** ACP 4.4 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.2 or 4.3, see [Fast Upgrade from ACP 4.2 or 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
 - The backend is **ClickHouse** (OpenSearch backend is not covered by the script).
 - The default topology fits the deployment: **3-node KRaft Kafka** + **1 shard × 3 replica ClickHouse** + **3-pod ClickHouse Keeper quorum**, all on a single `cpaas-system` namespace on one storage cluster.
 
@@ -258,5 +258,5 @@ For a wider troubleshooting index covering ingest, query, and data-path failures
 
 - [Installation](./index.mdx) — Full manual `kubectl apply` walkthrough.
 - [Post-install Verification](./post-install-verification.mdx) — Seven-step end-to-end verification after any install path.
-- [Fast Upgrade from ACP 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx) — Counterpart script for ACP 4.3 → 4.4 upgrade.
+- [Fast Upgrade from ACP 4.2 or 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx) — Counterpart script for ACP 4.2 or 4.3 → 4.4 upgrade.
 - [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx) — Common failure index.
