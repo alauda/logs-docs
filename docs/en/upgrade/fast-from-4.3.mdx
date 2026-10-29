@@ -162,34 +162,21 @@ Once PLF is `Ready=True`, log queries from the ACP console continue to serve his
 
 ## 7. Decommission the ACP 4.2 or 4.3 CK helm plugin
 
-After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3 `logclickhouse` AppRelease so that the storage cluster is managed by `log-storage-operator` alone. The ClickHouse data plane (`ClickHouseInstallation/cpaas-clickhouse`, `ClickHouseKeeper/cpaas-keeper` when present, and `secret/clickhouse-basic-auth`) must survive the delete — the operator-managed PLF reads them in place.
+After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3 `logclickhouse` plugin so that the storage cluster is managed by `log-storage-operator` alone.
 
-### 7.1 Pin the data-plane objects
+The ClickHouse data plane (CHI, Keeper, PVs, the `cpaas-clickhouse` / `cpaas-clickhouse-keeper` Services, and `secret/clickhouse-basic-auth`) is already annotated `helm.sh/resource-policy=keep` by `log-storage-operator` during auto-migration, so a helm uninstall leaves it in place. No manual annotation step is needed.
 
-Before deleting the AppRelease, mark CHI, CHK (if the install includes a Keeper CR), and the credential Secret with `helm.sh/resource-policy=keep` so the helm uninstall driven by the AppRelease controller leaves them alone:
-
-```bash
-kubectl -n cpaas-system annotate chi/cpaas-clickhouse \
-  helm.sh/resource-policy=keep --overwrite
-
-kubectl -n cpaas-system annotate chk/cpaas-keeper \
-  helm.sh/resource-policy=keep --overwrite 2>/dev/null || true
-
-kubectl -n cpaas-system annotate secret/clickhouse-basic-auth \
-  helm.sh/resource-policy=keep --overwrite
-```
-
-The CHI-managed StatefulSets, PVCs, and the `cpaas-clickhouse` Service are produced by chop from the CHI spec, not by the helm chart, so they ride on the CHI's survival.
-
-### 7.2 Delete the AppRelease
+Uninstall is driven from the **global cluster** by deleting the `ModuleInfo` that installed the plugin on this storage cluster:
 
 ```bash
-kubectl -n cpaas-system delete appreleases.app.alauda.io logclickhouse
+# On the global cluster
+kubectl get moduleinfo -A | grep logclickhouse
+kubectl -n <namespace> delete moduleinfo <name>
 ```
 
-The AppRelease controller runs `helm uninstall` under the hood. Resources carrying the keep annotation stay; the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
+The cluster-plugin controller cascades the deletion to the workload cluster: it removes `AppRelease/logclickhouse`, which runs `helm uninstall` underneath. Resources carrying the keep annotation stay; the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
 
-### 7.3 Verify the data plane is intact
+Verify the data plane on the storage cluster:
 
 ```bash
 kubectl -n cpaas-system get chi cpaas-clickhouse
@@ -197,10 +184,10 @@ kubectl -n cpaas-system get secret clickhouse-basic-auth
 kubectl -n cpaas-system get platformlogforward platform-default
 ```
 
-All three must still exist and PLF must still report `Ready=True`. If PLF briefly flips to `Ready=False` while the AppRelease delete runs, wait one minute and recheck — the operator reconciles the derived `platform-default-ch-conn` Secret and re-converges on the preserved CHI.
+All three must still exist, and PLF must still report `Ready=True`. If PLF briefly flips to `Ready=False` while the uninstall runs, wait one minute and recheck — the operator reconciles the derived `platform-default-ch-conn` Secret and re-converges on the preserved CHI.
 
 :::warning Point of no return
-This step crosses out of the Rollback window in Section 8. Once `logclickhouse` is gone, re-installing it on a live CHI is non-trivial (helm would try to recreate the CHI and conflict with the preserved one). Do not run Section 7 until Section 6 passes and the environment has had enough live-ingest soak time for the upgrade decision to stick.
+This step crosses out of the Rollback window in Section 8. Once `logclickhouse` is gone, re-installing it on a live CHI is non-trivial (the chart would try to recreate the CHI and conflict with the preserved one). Do not run Section 7 until Section 6 passes and the environment has had enough live-ingest soak time for the upgrade decision to stick.
 :::
 
 ## 8. Rollback
