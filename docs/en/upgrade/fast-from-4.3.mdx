@@ -28,15 +28,6 @@ The script runs five stages on the storage cluster, in order:
 
 Stage E is intentionally last. Kafka and the mq-conn Secret are already in place when the operator boots, so the first auto-migration pass derives `platform-default-ch-conn` and creates `PlatformLogForward/platform-default` cleanly, without going through the `suspiciousEmptyConnSecret` refuse branch that applies when the Secret is missing.
 
-### What the script does **not** do
-
-These are left to the operator or to the existing chart:
-
-- **ClickHouse Keeper, CHI**: the script reuses the ACP 4.2 or 4.3 chart-managed `cpaas-clickhouse` (adopt). No new CHI is created and no schema DDL is replayed.
-- **`platform-default-ch-conn` Secret**: `log-storage-operator` auto-migration derives it from the legacy `clickhouse-basic-auth` Secret and the ClickHouse Service once Stage E completes.
-- **`PlatformLogForward` CR**: Starting 2026-08-05, `log-storage-operator` creates `platform-default` from the discovered `AppRelease/logclickhouse` automatically; admins only verify and, when desired, patch it.
-- **chop (ClickHouse operator) Subscription**: it is a declared OLM dependency of `log-storage-operator`. OLM resolves it when Stage E applies. See Section 8 for the known side effect on upgrade clusters.
-
 ## 2. Prerequisites
 
 ### 2.1 ACP 4.2 or 4.3 logging stack is running
