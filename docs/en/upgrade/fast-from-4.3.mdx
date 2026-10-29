@@ -56,7 +56,7 @@ The script installs two operators through OLM. Both must be registered in the AC
 kubectl -n cpaas-system get packagemanifest strimzi-kafka-operator log-storage-operator
 ```
 
-Both rows must report a non-empty `AGE`. The chop operator is resolved by OLM as a dependency and does not need an explicit entry in this check (see Section 8).
+Both rows must report a non-empty `AGE`. The chop operator is resolved by OLM as a dependency and does not need an explicit entry in this check (see Section 9).
 
 ### 2.4 Full upgrade pre-flight
 
@@ -153,23 +153,66 @@ Rerunning `upgrade.sh` with the same `install.env` is a no-op after the first su
 | Object | Command | Expected |
 | --- | --- | --- |
 | strimzi CSV | `kubectl -n kafka-system get csv` | `strimzi-cluster-operator*` row `Succeeded` |
-| log-storage CSV | `kubectl -n cpaas-system get csv` | `log-storage-operator*` row `Succeeded`; the chop CSV added by OLM resolution appears in `cpaas-logging` (see Section 8) |
+| log-storage CSV | `kubectl -n cpaas-system get csv` | `log-storage-operator*` row `Succeeded`; the chop CSV added by OLM resolution appears in `cpaas-logging` (see Section 9) |
 | RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka` | All Kafka pods Ready |
 | RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
 | Auto-migration products | `kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn ; kubectl -n cpaas-system get platformlogforward platform-default` | Both Secrets present, PLF `Ready=True` |
 
 Once PLF is `Ready=True`, log queries from the ACP console continue to serve historical data (adopt preserved every record) and the new ingest flows through the Kafka buffer into the same ClickHouse tables.
 
-## 7. Rollback
+## 7. Decommission the ACP 4.2 or 4.3 CK helm plugin
 
-If a problem appears after the upgrade and the cluster must return to the ACP 4.2 or 4.3 chart state:
+After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3 `logclickhouse` AppRelease so that the storage cluster is managed by `log-storage-operator` alone. The ClickHouse data plane (`ClickHouseInstallation/cpaas-clickhouse`, `ClickHouseKeeper/cpaas-keeper` when present, and `secret/clickhouse-basic-auth`) must survive the delete — the operator-managed PLF reads them in place.
+
+### 7.1 Pin the data-plane objects
+
+Before deleting the AppRelease, mark CHI, CHK (if the install includes a Keeper CR), and the credential Secret with `helm.sh/resource-policy=keep` so the helm uninstall driven by the AppRelease controller leaves them alone:
+
+```bash
+kubectl -n cpaas-system annotate chi/cpaas-clickhouse \
+  helm.sh/resource-policy=keep --overwrite
+
+kubectl -n cpaas-system annotate chk/cpaas-keeper \
+  helm.sh/resource-policy=keep --overwrite 2>/dev/null || true
+
+kubectl -n cpaas-system annotate secret/clickhouse-basic-auth \
+  helm.sh/resource-policy=keep --overwrite
+```
+
+The CHI-managed StatefulSets, PVCs, and the `cpaas-clickhouse` Service are produced by chop from the CHI spec, not by the helm chart, so they ride on the CHI's survival.
+
+### 7.2 Delete the AppRelease
+
+```bash
+kubectl -n cpaas-system delete appreleases.app.alauda.io logclickhouse
+```
+
+The AppRelease controller runs `helm uninstall` under the hood. Resources carrying the keep annotation stay; the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
+
+### 7.3 Verify the data plane is intact
+
+```bash
+kubectl -n cpaas-system get chi cpaas-clickhouse
+kubectl -n cpaas-system get secret clickhouse-basic-auth
+kubectl -n cpaas-system get platformlogforward platform-default
+```
+
+All three must still exist and PLF must still report `Ready=True`. If PLF briefly flips to `Ready=False` while the AppRelease delete runs, wait one minute and recheck — the operator reconciles the derived `platform-default-ch-conn` Secret and re-converges on the preserved CHI.
+
+:::warning Point of no return
+This step crosses out of the Rollback window in Section 8. Once `logclickhouse` is gone, re-installing it on a live CHI is non-trivial (helm would try to recreate the CHI and conflict with the preserved one). Do not run Section 7 until Section 6 passes and the environment has had enough live-ingest soak time for the upgrade decision to stick.
+:::
+
+## 8. Rollback
+
+If a problem appears after the upgrade and the cluster must return to the ACP 4.2 or 4.3 chart state, this is only safe **before Section 7 has run**. Once the `logclickhouse` AppRelease is deleted, treat the upgrade as committed and resolve any issue forward via Section 10 instead.
 
 - ClickHouse side: no action. The ACP 4.2 or 4.3 chart's `cpaas-clickhouse` CHI was never modified. Data is intact.
 - Operator side: delete the PLF, then the log-storage-operator Subscription and CSV, then the Kafka resources (RdsKafka + Subscription + CSV).
 
 Delete in reverse Stage order (E → A): the log-storage-operator Subscription + CSV first (which releases the auto-generated `PlatformLogForward/platform-default` and `platform-default-ch-conn` Secret), then the Kafka resources (RdsKafka, RdsTopics, RdsKafkaUser, `platform-default-mq-conn`), and finally the strimzi Subscription + CSV. The auto-migration's writes are limited to the operator Deployment, the two derived Secrets, and the PLF; the ClickHouse data plane is independent.
 
-## 8. chop operator dependency (upgrade-cluster side effect)
+## 9. chop operator dependency (upgrade-cluster side effect)
 
 `log-storage-operator`'s OLM bundle declares `clickhouse-operator` (chop) as a dependency. When Stage E applies the Subscription, OLM resolves the dependency as follows:
 
@@ -200,7 +243,7 @@ Two matching Deployment rows confirm the duplicate. Handle it either way:
 Uninstall the Helm chop on the ACP 4.2 or 4.3 cluster **before** running `upgrade.sh`. This avoids the coexistence window entirely and lets the OLM-managed chop take over cleanly.
 :::
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Stage D fails with `cluster CA secret cpaas-kafka-cluster-ca-cert not found`
 
@@ -230,11 +273,11 @@ Rerun `./upgrade.sh install.env` if missing.
 
 ### `CHI reconcile` bumps `resourceVersion` repeatedly
 
-Two chop versions are coexisting. See Section 8 for the resolution options.
+Two chop versions are coexisting. See Section 9 for the resolution options.
 
 For a wider troubleshooting index covering ingest and query failures, see [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
 
-## 10. Related
+## 11. Related
 
 - [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx) — Full manual walkthrough; the authoritative reference for every field this script sets.
 - [Upgrade from Log Storage for Elasticsearch](./legacy-elasticsearch.mdx) — For clusters that run the ACP 4.2 or 4.3 Elasticsearch backend instead.
