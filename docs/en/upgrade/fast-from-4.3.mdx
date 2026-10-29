@@ -40,15 +40,7 @@ kubectl -n cpaas-system get secret clickhouse-basic-auth
 
 All three objects must exist. If any is missing, the ACP 4.2 or 4.3 install is incomplete; repair it before upgrading.
 
-### 2.2 ClickHouse free space ≥ 30%
-
-```bash
-kubectl -n cpaas-system exec chi-cpaas-clickhouse-<shard>-0-0 -- df -h /var/lib/clickhouse
-```
-
-The `Available` column divided by `Size` must be at least 30%. The adopt path does not rewrite data, but any schema-migration step added by a later patch may need temporary space.
-
-### 2.3 Dynamic StorageClass (for the new Kafka)
+### 2.2 Dynamic StorageClass (for the new Kafka)
 
 ```bash
 kubectl get sc
@@ -56,7 +48,7 @@ kubectl get sc
 
 At least one SC with a provisioner other than `no-provisioner`. Kafka broker PVCs will land on it. It does not have to match the SC the existing ClickHouse uses.
 
-### 2.4 OperatorHub registrations
+### 2.3 OperatorHub registrations
 
 The script installs two operators through OLM. Both must be registered in the ACP `platform` CatalogSource:
 
@@ -66,7 +58,7 @@ kubectl -n cpaas-system get packagemanifest strimzi-kafka-operator log-storage-o
 
 Both rows must report a non-empty `AGE`. The chop operator is resolved by OLM as a dependency and does not need an explicit entry in this check (see Section 8).
 
-### 2.5 Full upgrade pre-flight
+### 2.4 Full upgrade pre-flight
 
 This page covers the subset of pre-flight most relevant to the quickstart script. For the full seven-item pre-flight (SA tokens, Feature CRD, Kafka hostNetwork, OLM dependency placement, cross-namespace routing), review the manual [Upgrade from ACP 4.2 or 4.3 to 4.4](../upgrade.mdx) guide and run a dry run against a staging environment before any production upgrade.
 
@@ -104,7 +96,7 @@ Two required fields:
 
 | Variable | Description | Example |
 | --- | --- | --- |
-| `STORAGE_CLASS` | The dynamic SC for Kafka (Section 2.3). | `topolvm-provisioner` |
+| `STORAGE_CLASS` | The dynamic SC for Kafka (Section 2.2). | `topolvm-provisioner` |
 | `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix (`Mi` / `Gi` / `Ti`). | `100Gi` |
 
 `CK_STORAGE_SIZE` keeps the sample value (for example `300Gi`). `upgrade.sh` does not read or validate it.
