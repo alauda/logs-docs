@@ -135,14 +135,14 @@ When ready:
 
 ### 5.3 Auto-migration takes over
 
-After Stage E, `log-storage-operator` starts and begins its auto-migration loop. Within one to three minutes it:
+After Stage E, `log-storage-operator` starts and runs its auto-migration loop. Within one to three minutes it:
 
 1. Detects `AppRelease/logclickhouse` and runs the **AdoptCK** branch.
 2. Derives `platform-default-ch-conn` from `secret/clickhouse-basic-auth` and `svc/cpaas-clickhouse`.
 3. Derives `PlatformLogForward/platform-default`'s `spec.output.clickhouse` from `AppRelease.spec.values` and discovers `rdskafka/cpaas-kafka` for Kafka fields.
 4. Creates the PLF with label `log.alauda.io/auto-generated-by=log-storage-operator`.
 
-The PLF reaches `Ready=True` once the operator finishes building the data path. The admin does not need to `kubectl apply` any PLF manifest.
+The admin does not need to `kubectl apply` any PLF manifest. Stage F of `upgrade.sh` blocks on PLF/platform-default materializing and reaching `Ready=True` before the script returns, so when the final `ALL STAGES PASS` prints, the operator-managed data path is already converged.
 
 :::info Idempotent
 Rerunning `upgrade.sh` with the same `install.env` is a no-op after the first successful run. All operations are server-side and every readiness wait short-circuits once the condition holds.
