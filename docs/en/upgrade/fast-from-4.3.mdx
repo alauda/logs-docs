@@ -176,12 +176,12 @@ For logclickhouse specifically, `moduleconfigs/logclickhouse-v4.2.2` ships with 
 
 ### 7.1 Retarget every logagent instance away from legacy CK
 
-**Prerequisite**: the ACP 4.4 `logagent` plugin must already be installed or upgraded in place — its ModuleConfig exposes `storage.type: Standard` as a radio option. Verify:
+**Prerequisite**: every `logagent` ModuleInfo on this storage cluster must already be at v4.4.x. The webhook only enforces `required` field validations — the `storage.type: Standard` value will be accepted even on a v4.2 ModuleInfo — but the v4.2 chart has no template branch for `Standard`, so a patched-but-not-upgraded `logagent` will fail to render or will not reconcile the new storage path. Verify:
 
 ```bash
-kubectl get mconfig -l cpaas.io/module-name=logagent \
-  -o custom-columns=NAME:.metadata.name,VERSION:.spec.version
-# Expect at least one v4.4.x row.
+kubectl get minfo -l cpaas.io/module-name=logagent \
+  -o custom-columns=NAME:.metadata.name,HOST:.metadata.labels.cpaas\.io/cluster-name,VERSION:.spec.version
+# Every row's VERSION must be v4.4.x before you continue.
 ```
 
 Enumerate every ModuleInfo still writing to the legacy `logclickhouse` on this storage cluster — the ACP console does not list this as a single page, so run the label lookup directly:
@@ -207,7 +207,7 @@ kubectl patch minfo <logagent-minfo-name> --type=merge -p '{
 }'
 ```
 
-The underlying ClickHouse cluster is still the same, but the plugin now resolves its storage via `log-storage-operator`'s `platform-default-ch-conn` on that cluster rather than via the legacy `logclickhouse` plugin. The patch goes through `vmoduleinfo.kb.io`'s UPDATE validation (`ValidateAgainstDescriptors`), which rejects it if logagent is still at v4.2.x — the prerequisite above matters.
+The underlying ClickHouse cluster is still the same, but the plugin now resolves its storage via `log-storage-operator`'s `platform-default-ch-conn` on that cluster rather than via the legacy `logclickhouse` plugin.
 
 cluster-transformer re-syncs and drops the `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` label from the ModuleInfo. Re-run the lookup until no rows return:
 
