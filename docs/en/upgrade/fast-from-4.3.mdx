@@ -162,17 +162,15 @@ Once PLF is `Ready=True`, log queries from the ACP console continue to serve his
 
 ## 7. Decommission the ACP 4.2 or 4.3 CK helm plugin
 
-After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3 `logclickhouse` plugin so that the storage cluster is managed by `log-storage-operator` alone.
+After the operator-managed data path passes Section 6, retire the ACP 4.2 or 4.3 `logclickhouse` plugin so that the storage cluster is managed by `log-storage-operator` alone. The flow is five steps, in strict order:
+
+1. Upgrade `logagent` to v4.4 on every workload cluster that still writes to this storage cluster (§7.1).
+2. Identify the legacy `logclickhouse` ModuleInfo on each storage cluster (§7.2).
+3. Retarget each `logagent` ModuleInfo on that storage cluster from legacy CK to Standard (§7.3).
+4. Uninstall `logclickhouse` (§7.4).
+5. Verify the ClickHouse data plane is intact (§7.5).
 
 The ClickHouse data plane (CHI, Keeper, PVs, the `cpaas-clickhouse` / `cpaas-clickhouse-keeper` Services, and `secret/clickhouse-basic-auth`) is already annotated `helm.sh/resource-policy=keep` by `log-storage-operator` during auto-migration, so a helm uninstall leaves it in place. No manual annotation step is needed.
-
-:::warning Hard prerequisite — upgrade `logagent` plugin to v4.4 first
-Every `logagent` ModuleInfo on every workload cluster that still writes to this storage cluster must be at v4.4.x **before** running §7.2. The admission webhook accepts the `storage.type: Standard` value even on a v4.2 ModuleInfo (radio enum is UI-only and not validated server-side), but the v4.2 `chart-alauda-log-agent` has no template branch for `Standard`, so a patched-but-not-upgraded plugin fails to render and leaves the workload cluster without a working collector. Upgrade the plugin through the standard **Platform Management → Cluster Plugin → Upgrade** flow before retiring the legacy CK.
-:::
-
-:::info The patch causes a brief log-collection reconfiguration
-The §7.2 patch rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the patch outside collection-sensitive windows.
-:::
 
 Every `ModuleInfo` DELETE — whether triggered by the console or by `kubectl` — is validated by the `vmoduleinfo.kb.io` admission webhook (backed by `cluster-transformer` in `cpaas-system`, `failurePolicy=Fail`). The webhook rejects the delete when:
 
@@ -180,9 +178,21 @@ Every `ModuleInfo` DELETE — whether triggered by the console or by `kubectl` �
 - Another `ModuleInfo` on the same storage cluster carries the dependency label `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` — set by any plugin whose `spec.config.crossClusterDependency.logclickhouse` still points at this cluster. Typically the ACP 4.2/4.3 `logagent` plugin.
 - A `ClusterPluginInstance` controller on the target cluster still claims the plugin.
 
-For logclickhouse specifically, `moduleconfigs/logclickhouse-v4.2.2` ships with `deleteable: true`, so the dependency check is the gate. Clear it with the three steps below.
+For logclickhouse specifically, `moduleconfigs/logclickhouse-v4.2.2` ships with `deleteable: true`, so the dependency check is the gate. Clear it with steps §7.1–§7.3.
 
-### 7.1 Identify the legacy logclickhouse installations
+### 7.1 Upgrade `logagent` to v4.4 on every workload cluster
+
+Before touching any `logagent` config, upgrade each workload cluster's `logagent` plugin to v4.4.x through the standard **Platform Management → Cluster Plugin → Upgrade** flow. Do not skip this step and attempt to patch directly to Standard: the admission webhook accepts the `storage.type: Standard` value even on a v4.2 ModuleInfo (the radio enum is a UI hint, not server-side validation), but the v4.2 `chart-alauda-log-agent` has no template branch for `Standard`, so a patched-but-not-upgraded plugin fails to render and leaves the workload cluster without a working collector.
+
+Verify every `logagent` ModuleInfo that still writes to this storage cluster is at v4.4.x:
+
+```bash
+kubectl get minfo -l cpaas.io/module-name=logagent \
+  -o custom-columns=NAME:.metadata.name,HOST:.metadata.labels.cpaas\.io/cluster-name,VERSION:.spec.version
+# Every row's VERSION must be v4.4.x before continuing.
+```
+
+### 7.2 Identify the legacy logclickhouse installations
 
 List every `logclickhouse` ModuleInfo and read the `CLUSTER` column — each row is one storage cluster whose legacy CK plugin needs retiring:
 
@@ -198,15 +208,11 @@ STORAGE_CLUSTER=<cluster-from-the-CLUSTER-column>
 LOGCLICKHOUSE_MINFO=<name-from-the-NAME-column>
 ```
 
-### 7.2 Retarget every logagent instance away from legacy CK
+### 7.3 Retarget every logagent instance away from legacy CK
 
-Confirm the hard prerequisite from the §7 preamble — every `logagent` ModuleInfo on this storage cluster must already be at v4.4.x:
-
-```bash
-kubectl get minfo -l cpaas.io/module-name=logagent \
-  -o custom-columns=NAME:.metadata.name,HOST:.metadata.labels.cpaas\.io/cluster-name,VERSION:.spec.version
-# Every row's VERSION must be v4.4.x before you continue.
-```
+:::info The patch causes a brief log-collection reconfiguration
+This step rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the patch outside collection-sensitive windows.
+:::
 
 Enumerate every ModuleInfo still writing to the legacy `logclickhouse` on this storage cluster — the ACP console does not list this as a single page, so run the label lookup directly:
 
@@ -245,7 +251,7 @@ kubectl get minfo -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER}
 
 Equivalent UI path for one workload cluster at a time: **Platform Management → Cluster Plugin**, open the `logagent` plugin configuration on the target workload cluster, change **Log Storage Plugin** (日志存储插件) from `ClickHouse` to `Standard`, enter the storage cluster name, save.
 
-### 7.3 Uninstall the logclickhouse plugin
+### 7.4 Uninstall the logclickhouse plugin
 
 With the dependency gate clear, the DELETE goes through the webhook unobstructed. Either path works — pick one:
 
@@ -254,7 +260,7 @@ With the dependency gate clear, the DELETE goes through the webhook unobstructed
 
 Both go through the same `vmoduleinfo.kb.io` validation. Once validation passes, `cluster-transformer` deletes the `ModuleInfo` server-side and the delete cascades to the workload cluster: `AppRelease/logclickhouse` is removed, `helm uninstall` runs under it, resources carrying the keep annotation stay, and the helm-shipped ConfigMaps, RBAC, and the helm chop Deployment (if Section 9's recommended pre-upgrade step did not remove it already) are deleted.
 
-### 7.4 Verify the data plane is intact
+### 7.5 Verify the data plane is intact
 
 ```bash
 kubectl -n cpaas-system get chi cpaas-clickhouse
