@@ -64,24 +64,42 @@ This page covers the subset of pre-flight most relevant to the quickstart script
 
 ## 3. Get the script bundle
 
+The v4.4 logging quickstart ships as a Helm chart tarball — `alauda-log-quickstart-v4.4.0.tgz` (OCI chart `ait/chart-alauda-log-quickstart`, version `v4.4.0`). The chart itself renders no Kubernetes resources; the upgrade/install scripts and CR templates are the payload, placed under `files/quickstart/` inside the tarball. The upgrade and fresh-install scripts ship together.
+
 :::info Download
-Contact Alauda support to obtain the v4.4 logging quickstart script bundle. The upgrade and fresh-install scripts ship together (`upgrade.sh` + `install.sh` + `install.env.example` + `templates/`). The download link will be published here once released: **TBD**.
+Contact Alauda support for the chart or for the ACP chart registry URL. If you have direct access to the registry, pull the tarball with:
+
+```bash
+helm pull oci://<ACP chart registry>/ait/chart-alauda-log-quickstart --version v4.4.0
+```
 :::
 
-Unpack on the jump host:
+Unpack on the jump host and change into the scripts directory — **every command on this page runs from `alauda-log-quickstart/files/quickstart/`**:
+
+```bash
+tar xzf alauda-log-quickstart-v4.4.0.tgz
+cd alauda-log-quickstart/files/quickstart/
+```
+
+Layout (upgrade-relevant files annotated; the rest ship for the fresh-install script):
 
 ```
-quickstart/
-  upgrade.sh                              ← used for this upgrade path
-  install.sh                              ← fresh install only; not used here
-  install.env.example
-  templates/
-    00u-strimzi-subscription.yaml         ← upgrade.sh Stage A
-    99u-log-storage-subscription.yaml     ← upgrade.sh Stage E
-    12-rdskafka.yaml                      ← upgrade.sh Stage B
-    20-kafka-user-topics.yaml             ← upgrade.sh Stage C
-    30-mq-conn-secret.yaml                ← upgrade.sh Stage D
-    # Other templates (10-keeper, 11-chi, 31-ch-conn, 40-plf) are for the fresh-install script only.
+alauda-log-quickstart/
+├── Chart.yaml
+├── values.yaml
+├── templates/NOTES.txt
+└── files/quickstart/           ← work from here
+    ├── upgrade.sh                            ← used for this upgrade path
+    ├── install.sh                            ← fresh install only; not used here
+    ├── install.env.example
+    ├── README.md
+    └── templates/
+        ├── 00u-strimzi-subscription.yaml     ← upgrade.sh Stage A
+        ├── 12-rdskafka.yaml                  ← upgrade.sh Stage B
+        ├── 20-kafka-user-topics.yaml         ← upgrade.sh Stage C
+        ├── 30-mq-conn-secret.yaml            ← upgrade.sh Stage D
+        ├── 99u-log-storage-subscription.yaml ← upgrade.sh Stage E
+        └── # 10-keeper, 11-chi, 31-ch-conn, 40-plf are for the fresh-install script only
 ```
 
 ## 4. Configure `install.env`
