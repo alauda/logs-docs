@@ -214,28 +214,28 @@ LOGCLICKHOUSE_MINFO=<name-from-the-NAME-column>
 This step rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the change outside collection-sensitive windows.
 :::
 
-First enumerate every ModuleInfo still writing to the legacy `logclickhouse` on this storage cluster — the console does not list this as a single page, so run the label lookup to know which workload clusters you need to touch:
+Run one command on the global cluster to list every workload cluster whose `logagent` still points at the old CK on this storage cluster:
 
 ```bash
-kubectl get minfo -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER}
+kubectl get minfo \
+  -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER},cpaas.io/module-name=logagent \
+  -o custom-columns=NAME:.metadata.name,WORKLOAD_CLUSTER:.metadata.labels.cpaas\.io/cluster-name,VERSION:.spec.version
 ```
 
-Most rows are `logagent` instances; the `cpaas.io/cluster-name` label on each row identifies the workload cluster it manages.
+Each row is one workload cluster that still needs attention:
 
-**Preferred path — ACP admin console**, one workload cluster at a time:
+- `WORKLOAD_CLUSTER` is the cluster to open in the console.
+- `VERSION` tells whether that cluster's `logagent` is already at v4.4.x. If it is below v4.4.x, upgrade the plugin first (§7.1) — the v4.4 chart is what adds the `Standard` option to the form.
 
-1. Open **Administrator → Marketplace → Cluster Plugins**, pick the workload cluster from the cluster switcher.
+For each row, in **Administrator → Marketplace → Cluster Plugins**:
+
+1. Switch the cluster scope to the listed `WORKLOAD_CLUSTER`.
 2. Open the `Log Collector` (`logagent`) entry and click **Update**.
-3. In the plugin form, change **Log Storage Plugin** (日志存储插件) from `ClickHouse` to **Standard**.
-4. In the storage cluster field, enter the name of the storage cluster running `log-storage-operator` (the same cluster that just passed Section 6).
-5. Save, and wait for the plugin status to return to Ready.
+3. Change **Log Storage Plugin** (日志存储插件) from `ClickHouse` to **Standard**.
+4. In the storage cluster field, enter `${STORAGE_CLUSTER}` (the cluster running `log-storage-operator`, which just passed Section 6).
+5. Save, wait for the plugin status to return to Ready.
 
-Repeat for every workload cluster that appeared in the label lookup above. After each save, the cluster-transformer reconciler clears `crossClusterDependency.logclickhouse` on that `logagent` ModuleInfo and drops the `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` label. Re-run the lookup until no rows return:
-
-```bash
-kubectl get minfo -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER}
-# No resources found
-```
+After each save, the cluster-transformer reconciler clears `crossClusterDependency.logclickhouse` on that `logagent` ModuleInfo and drops the `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` label. Re-run the discovery command until it returns no rows, then proceed to §7.4.
 
 <details>
 <summary>Scripted alternative for bulk retarget (kubectl patch)</summary>
