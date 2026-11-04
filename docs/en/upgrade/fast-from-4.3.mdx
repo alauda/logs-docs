@@ -210,17 +210,37 @@ LOGCLICKHOUSE_MINFO=<name-from-the-NAME-column>
 
 ### 7.3 Retarget every logagent instance away from legacy CK
 
-:::info The patch causes a brief log-collection reconfiguration
-This step rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the patch outside collection-sensitive windows.
+:::info The update causes a brief log-collection reconfiguration
+This step rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the change outside collection-sensitive windows.
 :::
 
-Enumerate every ModuleInfo still writing to the legacy `logclickhouse` on this storage cluster — the ACP console does not list this as a single page, so run the label lookup directly:
+Run one command on the global cluster to list every workload cluster whose `logagent` still points at the old CK on this storage cluster:
 
 ```bash
-kubectl get minfo -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER}
+kubectl get minfo \
+  -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER},cpaas.io/module-name=logagent \
+  -o custom-columns=NAME:.metadata.name,WORKLOAD_CLUSTER:.metadata.labels.cpaas\.io/cluster-name,VERSION:.spec.version
 ```
 
-Most rows are `logagent` instances. For each one, patch the config to switch to the operator-managed path:
+Each row is one workload cluster that still needs attention:
+
+- `WORKLOAD_CLUSTER` is the cluster to open in the console.
+- `VERSION` tells whether that cluster's `logagent` is already at v4.4.x. If it is below v4.4.x, upgrade the plugin first (§7.1) — the v4.4 chart is what adds the `Standard` option to the form.
+
+For each row, in **Administrator → Marketplace → Cluster Plugins**:
+
+1. Switch the cluster scope to the listed `WORKLOAD_CLUSTER`.
+2. Open the `Log Collector` (`logagent`) entry and click **Update**.
+3. Change **Log Storage Plugin** (日志存储插件) from `ClickHouse` to **Standard**.
+4. In the storage cluster field, enter `${STORAGE_CLUSTER}` (the cluster running `log-storage-operator`, which just passed Section 6).
+5. Save, wait for the plugin status to return to Ready.
+
+After each save, the cluster-transformer reconciler clears `crossClusterDependency.logclickhouse` on that `logagent` ModuleInfo and drops the `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` label. Re-run the discovery command until it returns no rows, then proceed to §7.4.
+
+<details>
+<summary>Scripted alternative for bulk retarget (kubectl patch)</summary>
+
+If many workload clusters must be retargeted at once, patch each `logagent` ModuleInfo directly on the global cluster. This produces the same result as the console update:
 
 ```bash
 kubectl patch minfo <logagent-minfo-name> --type=merge -p '{
@@ -236,20 +256,11 @@ kubectl patch minfo <logagent-minfo-name> --type=merge -p '{
 }'
 ```
 
-The underlying ClickHouse cluster is still the same, but the plugin now resolves its storage via `log-storage-operator`'s `platform-default-ch-conn` on that cluster rather than via the legacy `logclickhouse` plugin.
-
-`cluster-transformer` watches ModuleInfo changes and runs `processPluginDependices` whenever `spec.config` moves. That reconciler reads `spec.config.crossClusterDependency.logclickhouse`: an empty value triggers `delete(labels, key)`, so the `logclickhouse.plugins.cpaas.io/cluster=<storage-cluster>` label drops off the ModuleInfo within milliseconds. Re-run the lookup until no rows return:
-
-```bash
-kubectl get minfo -l logclickhouse.plugins.cpaas.io/cluster=${STORAGE_CLUSTER}
-# No resources found
-```
-
 :::warning Patch the config, do not just strip the label
-`kubectl label minfo <name> logclickhouse.plugins.cpaas.io/cluster-` on its own is pointless. The reconciler sees `spec.config.crossClusterDependency.logclickhouse` still set and re-adds the label in the same reconcile pass — tested on QA, the strip is reversed in under a second. The patch must change `spec.config` for the label removal to stick.
+`kubectl label minfo <name> logclickhouse.plugins.cpaas.io/cluster-` on its own is pointless. The reconciler sees `spec.config.crossClusterDependency.logclickhouse` still set and re-adds the label in the same reconcile pass. The patch must change `spec.config` for the label removal to stick.
 :::
 
-Equivalent UI path for one workload cluster at a time: **Platform Management → Cluster Plugin**, open the `logagent` plugin configuration on the target workload cluster, change **Log Storage Plugin** (日志存储插件) from `ClickHouse` to `Standard`, enter the storage cluster name, save.
+</details>
 
 ### 7.4 Uninstall the logclickhouse plugin
 
