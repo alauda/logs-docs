@@ -54,7 +54,9 @@ The script runs from any host with `kubectl`, `bash`, `envsubst`, `base64`, and 
 The v4.4 logging quickstart ships as a Helm chart tarball — `alauda-log-quickstart-v4.4.0.tgz` (OCI chart `ait/chart-alauda-log-quickstart`, version `v4.4.0`). The chart itself renders no Kubernetes resources; the install scripts and CR templates are the payload, placed under `files/quickstart/` inside the tarball.
 
 :::info Download
-Contact Alauda support for the chart or for the ACP chart registry URL. If you have direct access to the registry, pull the tarball with:
+Download the chart tarball from Alauda Cloud: **[cloud.alauda.io/app/915 — ACP Logging Quickstart Bundle](https://cloud.alauda.io/app/915)**. The page lists the published versions; pick the latest `v4.4.x`.
+
+If you have direct access to the ACP chart registry, `helm pull` works too:
 
 ```bash
 helm pull oci://<ACP chart registry>/ait/chart-alauda-log-quickstart --version v4.4.0
