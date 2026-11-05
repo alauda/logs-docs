@@ -92,6 +92,16 @@ alauda-log-quickstart/
         └── 40-plf.yaml
 ```
 
+Each file in `files/quickstart/` at a glance:
+
+| File | Purpose |
+| --- | --- |
+| `install.sh` | Main install runner. Reads `install.env`, renders each template with your values via `envsubst`, applies them stage by stage, and waits for each stage Ready. |
+| `check.sh` | Post-install verifier. Runs 8 acceptance checks (PLF Ready, CHI Completed, 3 RdsTopic Ready, aggregate-vector / razor Available, schema-migrations Complete). |
+| `install.env.example` | Sample env file. Copy to `install.env`, fill the three required fields (`STORAGE_CLASS`, `KAFKA_STORAGE_SIZE`, `CK_STORAGE_SIZE`); every other field is documented inline with a working default. |
+| `README.md` | Standalone reference of the layout and run modes. |
+| `templates/*.yaml` | CR manifests `install.sh` renders and applies, in the install Stage order (`00-` = OLM Subscriptions → `10-` keeper → `11-` CHI → `12-` RdsKafka → `20-` user + topics → `30-` mq-conn Secret → `31-` ch-conn Secret → `40-` PLF). You can run `./install.sh install.env --render` to produce `./rendered/`, inspect or edit the output, then `./install.sh install.env` live-applies by re-reading those files so hand-edits survive. |
+
 ## 3. Configure `install.env`
 
 Copy the sample:
