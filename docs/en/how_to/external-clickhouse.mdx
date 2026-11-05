@@ -1,0 +1,142 @@
+---
+weight: 12
+---
+
+# How to Integrate the Logging Stack with an External ClickHouse
+
+Use this page when you want the ACP v4.4 logging stack (`log-storage-operator` + `nevermore` + `razor` + `aggregate-vector`) to write to a ClickHouse cluster that your SRE team manages themselves, instead of the in-cluster `ClickHouseInstallation` the [quickstart install flow](../install/fast-install.mdx) provisions. Everything downstream of ClickHouse — schema migrations, TTL, aggregation, query API — remains managed by the operator via `PlatformLogForward`; only the storage engine moves outside.
+
+## When to pick this path
+
+- The storage cluster already runs a shared ClickHouse (DBaaS, on-prem managed CH, cross-cluster CH).
+- You want to decouple CH lifecycle (version upgrades, storage scaling, backup/restore) from the ACP logging operator.
+- You have Kafka externally managed as well, and want a fully external storage stack.
+
+If none of these apply, the in-cluster ClickHouseInstallation built by the quickstart script is the simpler choice.
+
+## 1. Hard requirements on the external ClickHouse
+
+These are non-negotiable — `razor` and the `schema-migrations` Job will refuse to run if any are missing.
+
+### 1.1 Engine and quorum
+
+- **`ReplicatedMergeTree` + Keeper (or ZooKeeper) is required, even on a single-node cluster.** Every table the operator creates uses the engine string `ENGINE = ReplicatedMergeTree('/clickhouse/{database}/tables/{shard}/<table>', '{replica}')`. Without Keeper, the `schema-migrations` Job fails immediately with `NO_ELEMENTS_IN_CONFIG`. The operator does not fall back to plain `MergeTree`.
+- **Cluster macro definition.** `{cluster}`, `{shard}`, and `{replica}` must be resolvable in the server config (`clickhouse-server` macros section). Any altinity `clickhouse-operator`-managed CHI handles this automatically; hand-rolled installs must configure the macros explicitly.
+- **`ON CLUSTER` DDL must succeed.** The `schema-migrations` Job issues `CREATE DATABASE … ON CLUSTER '<cluster>'` and `CREATE TABLE … ON CLUSTER '<cluster>'` for all 18 observability tables plus MVs. The `<cluster>` placeholder must resolve against `system.clusters`.
+
+### 1.2 Cluster name
+
+- The cluster name declared in `spec.configuration.clusters[0].name` of the CHI (or the equivalent `remote_servers` entry on a hand-rolled install) is a free string.
+- Default: `replicated` (matches the v4.3 `chart-clickhouse` convention and the operator's internal fallback).
+- The value **must match** the `cluster` key in the connection Secret (see §4) exactly; the operator passes it to `razor` and `schema-migrations` via `--clickhouse-cluster=<name>`.
+
+### 1.3 Database name
+
+- Default: `observability`.
+- Do not pre-create the database. The `schema-migrations` Job issues `CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'` on first run.
+- If you need a different name, override it in the connection Secret's `database` key; the operator will pass the override to all consumers.
+
+### 1.4 Supporting components (installed on the storage cluster, by the SRE)
+
+| Component | Minimum version | Notes |
+| --- | --- | --- |
+| `clickhouse-operator` (altinity `chop`) | v0.20 | Required for CHI reconciliation. Install cluster-wide or in a middleware namespace. |
+| ClickHouse server | v24.x or newer | Verified baseline: `clickhouse-server:v25.8.16.34-d6005b62`. |
+| `cert-manager` | any recent | Optional, recommended if you expose ClickHouse over HTTPS. |
+
+### 1.5 Network reachability
+
+- `aggregate-vector` and `razor` connect over `:8123` (HTTP) or `:8443` (HTTPS). Verify DNS resolution and TCP reachability from `cpaas-system` before applying `PlatformLogForward`:
+
+  ```bash
+  kubectl -n cpaas-system run ck-probe --rm -i --image=clickhouse/clickhouse-server:latest --restart=Never -- \
+    clickhouse-client -h <ch-host> --port 9000 -u admin --password <password> -q "SELECT 1"
+  ```
+
+  Replace the port with the native protocol port your CH exposes; the quickstart deploys the HTTP interface, so a plain `curl http://<ch-host>:8123/ping` is also acceptable.
+
+## 2. User and permissions
+
+ACP logging uses a single user to drive both schema migrations and runtime writes/queries. By convention this user is **`admin`** — the quickstart install flow and every SRE runbook default to it, and prior incidents have shown non-admin users hit `CREATE TABLE` or `MATERIALIZED VIEW` permission failures that surface only on the next schema migration.
+
+**Recommended grants** (database-scoped admin on `observability`):
+
+```sql
+CREATE USER 'admin' IDENTIFIED WITH sha256_password BY '<password>' ON CLUSTER 'replicated';
+GRANT ALL ON observability.* TO 'admin' ON CLUSTER 'replicated';
+GRANT SYSTEM DROP DNS CACHE ON *.* TO 'admin';
+```
+
+- `GRANT ALL ON observability.*` covers `SELECT`, `INSERT`, `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE`, `TRUNCATE`, `CREATE MATERIALIZED VIEW`, and `DROP VIEW` — everything `schema-migrations` and `razor` need, scoped to the `observability` database.
+- `SYSTEM DROP DNS CACHE` is required by the `razor` store cleaner; without it, DNS cache flushes during long-running TTL operations fail with `ACCESS_DENIED`.
+
+If your security policy forbids `GRANT ALL`, substitute the explicit grant list from the ecosystem team's SRE guide (link in §5).
+
+## 3. TTL and storage policy — leave these to the operator
+
+- **TTL** is managed by `razor` as a hot-reloaded config: it reads `/etc/policy/logging/ttl.json`, which the operator derives from `PlatformLogForward.spec.clickhouse.ttl.*`, and issues `ALTER TABLE … MODIFY TTL … ON CLUSTER '<cluster>'` every 15 seconds. Do not set TTL in your own DDL — `razor` will overwrite it on the next reconcile. Change retention by editing the PLF, not the tables.
+- **Storage policy** (hot/cold tiering with S3) is configured by the SRE in the ClickHouse server config XML (define the S3 disk + cold volume there). The operator's `schema-migrations` Job then appends `SETTINGS storage_policy='<policy-name>'` to new tables, and `razor` later issues `ALTER TABLE … MODIFY TTL … TO VOLUME 'cold'`.
+
+## 4. Connection Secret contract
+
+Create `platform-default-ch-conn` in `cpaas-system` before applying `PlatformLogForward`. The operator reads these keys from the secret (source: `log-storage-operator/controllers/external_mode.go` `effectiveStorageTarget`):
+
+| Key | Required | Default | Notes |
+| --- | --- | --- | --- |
+| `endpoint` | yes | — | `http://<host>:8123` or `https://<host>:8443`. |
+| `cluster` | optional | `replicated` | Must match the CH cluster name declared in `remote_servers` / CHI. |
+| `database` | optional | `observability` | Operator passes to all consumers; auto-created on first migration. |
+| `username` | optional | — | Default per convention: `admin`. |
+| `password` | optional | — | Plain-text. The CHI user XML takes the sha256 digest; the operator takes the plain-text here. |
+| `tls.ca` | optional | — | PEM CA bundle. Presence toggles TLS on (`TLSEnabled=true`). Omit on plain HTTP. |
+| `tls.insecure_skip_verify` | optional | `"false"` | Literal string. Only honored when `tls.ca` is present. |
+
+### 4.1 Plain HTTP example (quickstart-aligned)
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "http://clickhouse-cpaas-clickhouse.cpaas-system.svc:8123"
+  cluster: "replicated"
+  database: "observability"
+  username: "admin"
+  password: "<admin-password>"
+```
+
+This matches the Secret the quickstart script (`install.sh`) generates automatically for the in-cluster CH; the only field that changes for external CH is `endpoint`.
+
+### 4.2 HTTPS with self-signed CA
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "https://ch.internal.example.com:8443"
+  cluster: "replicated"
+  database: "observability"
+  username: "admin"
+  password: "<admin-password>"
+  tls.ca: |
+    -----BEGIN CERTIFICATE-----
+    MIIB...==
+    -----END CERTIFICATE-----
+  tls.insecure_skip_verify: "false"
+```
+
+Omit `tls.ca` on plain HTTP — writing it empty or without a CA PEM will cause the operator to probe for a CA volume that does not exist and fail the ClickHouse readiness check.
+
+## 5. Reference
+
+- Full external-mode SRE runbook (CHI topology recipes, LocalVolume vs StorageClass, hot/cold S3 tiering, Keeper co-location): `SRE_EXTERNAL_SETUP.md` in the `log-storage-operator` repository, published by the logging ecosystem team.
+- Operator-authoritative Secret contract (every field the operator reads from every connection Secret): `SECRET_CONTRACT.md` in the same repository.
+- Fresh-install quickstart script Secret shape (reference implementation): [Fast Install via Quickstart Script](../install/fast-install.mdx) and the template `templates/31-ch-conn-secret.yaml` inside the quickstart bundle.
+- Sample `PlatformLogForward` manifests, including external-ClickHouse-only and external-ClickHouse-plus-external-Kafka variants: `config/samples/platformlogforward_external_ch_only.yaml` and `config/samples/quickstart_external_ch_kafka.yaml` in the `log-storage-operator` repository.
