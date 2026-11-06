@@ -1,0 +1,204 @@
+---
+weight: 18
+---
+
+# Fast Upgrade from Legacy Elasticsearch to OpenSearch via Quickstart Script
+
+This page covers Phase 1 of the ES → OS migration path for clusters that currently run the legacy `chart-alauda-log-center` Elasticsearch stack (deployed via `AppRelease/logcenter`). The quickstart script stands up a parallel **OpenSearch** data path alongside the running legacy ES, and submits a `PlatformLogForward` carrying the `log.alauda.io/legacy-es-upgrade=true` annotation that activates the operator's legacy-ES handling (razor2 / Service switchover, PVC-delete-protection webhook, legacy-es-precapture Jobs, old-Kafka lag observer).
+
+The script **only automates Phase 1**. Phases 2–4 — ACP console uninstall of the legacy `logcenter` plugin, old Kafka consumer-group drain, creation of a `LegacyESMigration` CR plus the user-supplied data-migration tool pod, and acceptance / rollback / PVC cleanup — are hand-driven per `SRE_LEGACY_ES_MIGRATION.md` and are intentionally out of scope for the script.
+
+Pick this path when:
+
+- The target cluster has an existing legacy `chart-alauda-log-center` stack (`AppRelease/logcenter` + ES + old Kafka + lanaya + razor) running.
+- The migration target is **OpenSearch**, not ClickHouse. For ES → CK, see `SRE_LEGACY_ES_MIGRATION.md` directly; the quickstart script does not cover that target.
+
+## 1. What the script does and does not do
+
+**Script scope (Phase 1)**:
+
+- Installs the new operators (`strimzi-kafka-operator`, `opensearch-operator`, `log-storage-operator`) through OLM, skipping any that are already present.
+- Provisions a new `RdsKafka` (default `cpaas-kafka-new`, to avoid colliding with the legacy chart's own `cpaas-kafka` StatefulSet).
+- Provisions a new `OpenSearchCluster` (default `cpaas-opensearch`).
+- Mints `platform-default-mq-conn` + `platform-default-os-conn` Secrets.
+- Submits `PlatformLogForward/platform-default` with `installMode: Fresh`, `externalStorage.type=opensearch`, and the annotation `log.alauda.io/legacy-es-upgrade: "true"`.
+
+**Operator behavior after Phase 1 completes**:
+
+- The operator detects the existing `AppRelease/logcenter` and bypasses the ClickHouse auto-migration path.
+- The `legacyesmigration` controller starts watching for a `LegacyESMigration` CR.
+- An initial `legacy-es-precapture-<hash>-initial` Job runs to snapshot legacy ES index metadata.
+- Legacy Kafka's consumer-group lag is observed (new pipeline serves traffic; operator does not scale legacy pods).
+- PVC-delete-protection webhook refuses PVC/PV deletion on legacy ES until Phase 4 acceptance.
+
+**Phase 2–4 (hand-driven; the script does not touch these)**:
+
+- **Phase 2** — SRE uninstalls the `logcenter` plugin via the ACP admin console. The legacy lanaya stops consuming. Operator observes the switchover.
+- **Phase 3** — SRE waits for legacy Kafka consumer-group lag to reach zero.
+- **Phase 4** — SRE creates a `LegacyESMigration` CR and runs the user-supplied data-migration tool pod (reads legacy ES PVCs, writes new OpenSearch). Acceptance, rollback window closure, and PVC/PV cleanup follow.
+
+The authoritative reference for Phases 2–4 is `ait/log-storage-operator/docs/es-upgrade/SRE_LEGACY_ES_MIGRATION.md`, maintained by the logging ecosystem team.
+
+## 2. Prerequisites
+
+### 2.1 Legacy stack must be healthy
+
+```bash
+kubectl -n cpaas-system get apprelease logcenter
+kubectl -n cpaas-system get pod -l 'app in (cpaas-elasticsearch,cpaas-kafka,lanaya,razor)'
+```
+
+`AppRelease/logcenter` must report `Health=True`. ES / Kafka / lanaya / razor pods must be `Running`. If anything is already broken, fix it before starting the upgrade — do not attempt to migrate off a degraded source.
+
+### 2.2 Dynamic StorageClass for the new stack
+
+The new Kafka + OpenSearch PVCs request `ReadWriteOnce` dynamic. The legacy chart's static LocalVolume SC is not reused — new resources get their own PVCs on the dynamic SC verified here:
+
+```bash
+kubectl get sc
+```
+
+### 2.3 OperatorHub PackageManifests
+
+Same three operators as fresh install:
+
+```bash
+kubectl -n cpaas-system get packagemanifest \
+  opensearch-operator strimzi-kafka-operator log-storage-operator
+```
+
+The script skips any operator that already has a `Succeeded` CSV cluster-wide — safe on clusters that have one of these operators preinstalled by platform tooling.
+
+### 2.4 Jump host
+
+Standard Linux shell: `kubectl`, `bash`, `envsubst`, `base64`, `sha256sum`, configured with a kubeconfig that can reach the storage cluster.
+
+## 3. Get the script bundle
+
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
+
+Unpack on the jump host and change into `files/os/`:
+
+```bash
+tar xzf alauda-log-quickstart-v4.4.x.tgz
+cd alauda-log-quickstart/files/os/
+```
+
+The `upgrade-from-es.sh` script lives in the same directory as `install.sh`. For the layout and file-by-file walkthrough, see [Fast Install via Quickstart Script — OpenSearch Backend](../install/fast-install-opensearch.mdx) §2.
+
+## 4. Configure `install.env`
+
+Copy the sample:
+
+```bash
+cp install.env.example install.env
+```
+
+Three required fields; everything else has a working default:
+
+| Variable | Description |
+| --- | --- |
+| `STORAGE_CLASS` | The dynamic SC from Section 2.2. |
+| `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix. |
+| `OS_STORAGE_SIZE` | Per-OpenSearch-node PVC size. |
+
+`upgrade-from-es.sh` additionally overrides two defaults at script startup to avoid colliding with the legacy chart's hardcoded names:
+
+- `KAFKA_NAME=cpaas-kafka-new` (legacy chart hard-codes `cpaas-kafka` for its own `StatefulSet`; a strimzi `Kafka` CR of the same name triggers the Alauda strimzi fork's name-collision self-protection and sets `strimzi.io/pause-reconciliation=true`, blocking broker pod creation).
+- `OS_NAME=cpaas-opensearch` (legacy chart's ES is `cpaas-elasticsearch`, so no collision — set explicitly for symmetry).
+
+SRE can override either via `install.env`.
+
+See the [fresh-install page](../install/fast-install-opensearch.mdx) §3 for full field reference. The upgrade path uses the same `install.env` shape.
+
+## 5. Run
+
+```bash
+./upgrade-from-es.sh install.env
+```
+
+The script prints a Phase 1 banner, then delegates to `install.sh` with a `PLF_TEMPLATE` override that points at `templates/71u-plf-legacy-es.yaml` (adds the `log.alauda.io/legacy-es-upgrade=true` annotation to the submitted `PlatformLogForward`). Render mode is also supported:
+
+```bash
+./upgrade-from-es.sh install.env --render
+```
+
+When the pipeline finishes, the script prints a summary pointing at the SRE runbook's Phase 2–4 sections. Legacy ES, legacy Kafka, legacy lanaya, legacy razor are **not** touched anywhere in Phase 1 — they keep running and keep serving queries through the legacy Service until Phase 2 uninstall.
+
+## 6. Verify Phase 1 completion
+
+### 6.1 Operator acknowledged the legacy upgrade path
+
+```bash
+kubectl -n cpaas-system logs -l app.kubernetes.io/name=log-storage-operator \
+  | grep -i "legacy ES upgrade owns the logcenter resources"
+```
+
+Expect a log line similar to:
+
+```
+legacy ES upgrade owns the logcenter resources — skipping ClickHouse auto-migration: AppRelease/logcenter exists
+```
+
+If this line never appears, the annotation on the PLF is not being read. Re-check `PlatformLogForward/platform-default` metadata.
+
+### 6.2 Initial precapture Job completed
+
+```bash
+kubectl -n cpaas-system get job -l log.alauda.io/legacy-es-precapture=initial
+```
+
+A `legacy-es-precapture-<hash>-initial` Job must be `1/1 Complete`. This Job snapshots legacy ES index metadata; its output is what the Phase 4 `LegacyESMigration` CR will consume.
+
+### 6.3 PLF scenario and condition
+
+```bash
+kubectl get plf platform-default -o jsonpath='{.status.scenario}{"\n"}'
+kubectl get plf platform-default -o jsonpath='{range .status.conditions[*]}[{.type}={.status}] {.reason}{"\n"}{end}'
+```
+
+Scenario: `FreshOS`. `LegacyESUpgrade` condition present with reason `PipelineCutover` and message `new pipeline is serving traffic; waiting for old Kafka consumers to drain residual messages`. This is the Phase 1 → Phase 2 handoff point — Phase 1 is complete at this state, even though the PLF's `Ready` condition will **not** flip to `True` until the legacy consumers are drained (by Phase 2's logcenter uninstall).
+
+### 6.4 Legacy stack untouched
+
+```bash
+kubectl -n cpaas-system get pod -l 'app in (cpaas-elasticsearch,lanaya,razor)' --no-headers | awk '{print $1, $3}'
+```
+
+Legacy ES / lanaya / razor pods are still `Running`. Historical ES data is still query-able through the legacy Service until Phase 4 acceptance.
+
+### 6.5 New stack serving ingest
+
+```bash
+./check.sh install.env
+```
+
+`check.sh` passes `OpenSearchCluster green`, `3 RdsTopic Active`, `aggregate-vector / razor Available`, `opensearch-index-init Job Complete`. The script's first check surfaces the `log.alauda.io/legacy-es-upgrade=true` annotation on the PLF and prints a reminder that "passing check does not mean the migration is complete; follow SRE_LEGACY_ES_MIGRATION.md §5-§9".
+
+## 7. Next — Phase 2, 3, 4
+
+The script's trailing banner lays this out. In short:
+
+- **Phase 2 — Console uninstall of `logcenter`**. ACP admin console → Marketplace → Cluster Plugins → logcenter → Uninstall. Legacy lanaya stops; new OS pipeline keeps serving.
+- **Phase 3 — Observe legacy Kafka drain**. The operator records consumer-group lag on the old Kafka (it does not scale legacy pods). Wait for lag to reach zero.
+- **Phase 4 — `LegacyESMigration` CR + data-migration tool pod**. SRE creates a `LegacyESMigration` CR; the operator spawns the data-migration tool pod per PVC that reads legacy ES PVCs and writes new OpenSearch. Progress is reported on the CR's `status.workers[]`. Then acceptance, rollback-window closure, and PVC/PV cleanup.
+
+Each of these steps has site-specific inputs (uninstall timing, data-migration tool image and settings, acceptance criteria) that are not safe to automate from a quickstart script — follow `SRE_LEGACY_ES_MIGRATION.md` for the authoritative procedure.
+
+## 8. Troubleshooting
+
+### `strimzi.io/pause-reconciliation=true` on the new Kafka
+
+`KAFKA_NAME` was overridden back to `cpaas-kafka` in `install.env`, colliding with the legacy chart's own Kafka `StatefulSet`. Change `install.env` to `KAFKA_NAME=cpaas-kafka-new` (the `upgrade-from-es.sh` default) and re-run.
+
+### `aggvec SASL Authentication failed`
+
+Re-run `./upgrade-from-es.sh install.env`; Stage 4 re-materializes `platform-default-mq-conn` from the live strimzi user Secret.
+
+### Operator never logs "legacy ES upgrade owns the logcenter resources"
+
+Either `AppRelease/logcenter` does not exist (this is not a legacy ES cluster — use `fast-install-opensearch.mdx` instead), or the PLF is missing the `log.alauda.io/legacy-es-upgrade=true` annotation (the `--render`-edited copy may have dropped it — ensure `templates/71u-plf-legacy-es.yaml` is the PLF template that was applied).
+
+### I accidentally ran `install.sh` instead of `upgrade-from-es.sh`
+
+`install.sh` applies `templates/70-plf.yaml` (no annotation) so the operator treats the cluster as a FreshOS install. If `AppRelease/logcenter` exists, auto-migration will detect it but the ClickHouse path triggers, not the legacy-ES path. Fix: `kubectl delete plf platform-default`, then run `./upgrade-from-es.sh install.env`.
