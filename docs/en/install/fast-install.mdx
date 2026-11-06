@@ -54,11 +54,7 @@ The script runs from any host with `kubectl`, `bash`, `envsubst`, `base64`, and 
 The v4.4 logging quickstart ships as a Helm chart tarball — `alauda-log-quickstart-v4.4.0.tgz` (OCI chart `ait/chart-alauda-log-quickstart`, version `v4.4.0`). The chart itself renders no Kubernetes resources; the install scripts and CR templates are the payload, placed under `files/quickstart/` inside the tarball.
 
 :::info Download
-Contact Alauda support for the chart or for the ACP chart registry URL. If you have direct access to the registry, pull the tarball with:
-
-```bash
-helm pull oci://<ACP chart registry>/ait/chart-alauda-log-quickstart --version v4.4.0
-```
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
 :::
 
 Unpack on the jump host and change into the scripts directory — **every command on this page runs from `alauda-log-quickstart/files/quickstart/`**:
@@ -90,6 +86,16 @@ alauda-log-quickstart/
         ├── 31-ch-conn-secret.yaml
         └── 40-plf.yaml
 ```
+
+Each file in `files/quickstart/` at a glance:
+
+| File | Purpose |
+| --- | --- |
+| `install.sh` | Main install runner. Reads `install.env`, renders each template with your values via `envsubst`, applies them stage by stage, and waits for each stage Ready. |
+| `check.sh` | Post-install verifier. Runs 8 acceptance checks (PLF Ready, CHI Completed, 3 RdsTopic Ready, aggregate-vector / razor Available, schema-migrations Complete). |
+| `install.env.example` | Sample env file. Copy to `install.env`, fill the three required fields (`STORAGE_CLASS`, `KAFKA_STORAGE_SIZE`, `CK_STORAGE_SIZE`); every other field is documented inline with a working default. |
+| `README.md` | Standalone reference of the layout and run modes. |
+| `templates/*.yaml` | CR manifests `install.sh` renders and applies, in the install Stage order (`00-` = OLM Subscriptions → `10-` keeper → `11-` CHI → `12-` RdsKafka → `20-` user + topics → `30-` mq-conn Secret → `31-` ch-conn Secret → `40-` PLF). You can run `./install.sh install.env --render` to produce `./rendered/`, inspect or edit the output, then `./install.sh install.env` live-applies by re-reading those files so hand-edits survive. |
 
 ## 3. Configure `install.env`
 
