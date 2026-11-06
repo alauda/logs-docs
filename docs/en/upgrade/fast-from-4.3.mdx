@@ -67,11 +67,7 @@ This page covers the subset of pre-flight most relevant to the quickstart script
 The v4.4 logging quickstart ships as a Helm chart tarball — `alauda-log-quickstart-v4.4.0.tgz` (OCI chart `ait/chart-alauda-log-quickstart`, version `v4.4.0`). The chart itself renders no Kubernetes resources; the upgrade/install scripts and CR templates are the payload, placed under `files/quickstart/` inside the tarball. The upgrade and fresh-install scripts ship together.
 
 :::info Download
-Contact Alauda support for the chart or for the ACP chart registry URL. If you have direct access to the registry, pull the tarball with:
-
-```bash
-helm pull oci://<ACP chart registry>/ait/chart-alauda-log-quickstart --version v4.4.0
-```
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
 :::
 
 Unpack on the jump host and change into the scripts directory — **every command on this page runs from `alauda-log-quickstart/files/quickstart/`**:
@@ -101,6 +97,17 @@ alauda-log-quickstart/
         ├── 99u-log-storage-subscription.yaml ← upgrade.sh Stage E
         └── # 10-keeper, 11-chi, 31-ch-conn, 40-plf are for the fresh-install script only
 ```
+
+Each file in `files/quickstart/` at a glance (upgrade-relevant only):
+
+| File | Purpose |
+| --- | --- |
+| `upgrade.sh` | Main upgrade runner. Stages A → F: strimzi Subscription → RdsKafka → RdsKafkaUser + 3 RdsTopic → `platform-default-mq-conn` Secret → log-storage-operator Subscription → pin chop OLM Subscription (E.5) → wait for auto-migration `PlatformLogForward/platform-default` Ready (F). |
+| `install.sh` | Fresh-install runner. Not used on the upgrade path. |
+| `check.sh` | Post-install verifier. Use it after Section 5 to confirm the operator-managed data path is Ready (8 acceptance checks). |
+| `install.env.example` | Shared with fresh install. For the upgrade path the `STORAGE_CLASS`, `KAFKA_STORAGE_SIZE`, and `OLM_CHANNEL_*` fields matter; `CK_*` and `KEEPER_*` fields exist for the fresh-install script and are ignored by `upgrade.sh`. |
+| `README.md` | Standalone reference of the layout and run modes. |
+| `templates/*.yaml` | CR manifests `upgrade.sh` renders and applies, mapped to Stages A → E in the tree above. Run `./upgrade.sh install.env --render` first to produce `./rendered/`, inspect or edit the output, then `./upgrade.sh install.env` live-applies by re-reading those files so hand-edits survive. |
 
 ## 4. Configure `install.env`
 
