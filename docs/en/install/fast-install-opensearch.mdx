@@ -4,7 +4,7 @@ weight: 18
 
 # Fast Install via Quickstart Script — OpenSearch Backend
 
-This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack with an **OpenSearch** backend on a fresh cluster. For the ClickHouse backend fresh install, see [Fast Install via Quickstart Script](./fast-install.mdx); for migrating an existing legacy Elasticsearch stack to OpenSearch, see [Fast Upgrade from Legacy Elasticsearch to OpenSearch](../upgrade/fast-from-es.mdx).
+This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack with an **OpenSearch** backend on a fresh cluster. For the ClickHouse backend fresh install, see [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx); for migrating an existing legacy Elasticsearch stack to OpenSearch, see [Fast Upgrade from Legacy Elasticsearch to OpenSearch](../upgrade/fast-from-es.mdx).
 
 Pick this path when:
 
@@ -12,7 +12,7 @@ Pick this path when:
 - The backend is **OpenSearch**, not ClickHouse.
 - The default topology fits: **3-node KRaft Kafka** + **3-node OpenSearch cluster** (opster `clusters.opensearch.opster.io`) on a single `cpaas-system` namespace on one storage cluster.
 
-If the deployment needs an existing ClickHouse backend, use [Fast Install via Quickstart Script](./fast-install.mdx) instead; the two backends are mutually exclusive on a single `PlatformLogForward`.
+If the deployment needs an existing ClickHouse backend, use [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx) instead; the two backends are mutually exclusive on a single `PlatformLogForward`.
 
 ## 1. Prerequisites
 
