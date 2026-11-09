@@ -131,6 +131,22 @@ Common knobs you may want to touch:
 Opster auto-generates the admin username/password into a Secret `<OS_NAME>-admin-password` when the OpenSearchCluster is provisioned. Stage 1 waits for the cluster to be fully initialized (phase `RUNNING` + health `green` + `initialized=true`) and the `securityconfig-update` Job to complete, then reads the Secret and injects the values into `platform-default-os-conn` at Stage 5. You do not set an OS password in `install.env`.
 :::
 
+### 3.1 Required when installing on a `global` cluster that participates in a DR pair
+
+When the install target is a `global` cluster that will be paired with another `global` through etcd-sync for active-standby disaster recovery, both sites **must** set site-unique names for the connection Secrets. With the historical default names (`platform-default-mq-conn` / `platform-default-os-conn`) on both sites, the master's Secrets replicate across etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+
+```ini
+# master-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-a"
+OS_CONN_SECRET_NAME="platform-default-os-conn-site-a"
+
+# standby-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-b"
+OS_CONN_SECRET_NAME="platform-default-os-conn-site-b"
+```
+
+Workload clusters and single-site global installs keep the defaults. `PlatformLogForward` itself is already covered by the operator's etcd-sync ignore prefix (`/registry/log.alauda.io/`), so each site owns its own PLF pointing at its own Secret names.
+
 ## 4. Run
 
 ### 4.1 Render first, then apply (recommended)

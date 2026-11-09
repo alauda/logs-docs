@@ -111,6 +111,22 @@ SRE can override either via `install.env`.
 
 See the [fresh-install page](../install/fast-install-opensearch.mdx) §3 for full field reference. The upgrade path uses the same `install.env` shape.
 
+### 4.1 Required when upgrading a `global` cluster that participates in a DR pair
+
+When the upgrade target is a `global` cluster that will be paired with another `global` through etcd-sync for active-standby disaster recovery, both sites **must** set site-unique names for the connection Secrets. With the historical default names (`platform-default-mq-conn` / `platform-default-os-conn`) on both sites, the master's Secrets replicate across etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+
+```ini
+# master-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-a"
+OS_CONN_SECRET_NAME="platform-default-os-conn-site-a"
+
+# standby-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-b"
+OS_CONN_SECRET_NAME="platform-default-os-conn-site-b"
+```
+
+Workload clusters and single-site global installs keep the defaults. `PlatformLogForward` itself is already covered by the operator's etcd-sync ignore prefix (`/registry/log.alauda.io/`), so each site owns its own PLF pointing at its own Secret names.
+
 ## 5. Run
 
 ```bash

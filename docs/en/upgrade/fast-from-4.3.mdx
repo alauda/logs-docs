@@ -134,6 +134,22 @@ Use the same `NODE_AFFINITY_*` and `TOLERATION_*` fields as in [Fast Install](..
 
 `KAFKA_SASL_PASSWORD` defaults to empty, in which case the script derives a stable 40-hex value from `NAMESPACE` + `KAFKA_NAME` + `KAFKA_USER` via `sha256sum`. Reruns yield the same password. On Alauda OS / FIPS hosts this satisfies the ≥ 32-character requirement.
 
+### 4.3 Required when upgrading a `global` cluster that participates in a DR pair
+
+When the upgrade target is a `global` cluster that will be paired with another `global` through etcd-sync for active-standby disaster recovery, both sites **must** set a site-unique name for the Kafka connection Secret. With the historical default name (`platform-default-mq-conn`) on both sites, the master's Secret replicates across etcd-sync and overwrites the standby's; the standby's `aggregate-vector` then authenticates against the master's Kafka on failover.
+
+```ini
+# master-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-a"
+
+# standby-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-b"
+```
+
+`CH_CONN_SECRET_NAME` is **not** effective on this upgrade path — `platform-default-ch-conn` is created by `log-storage-operator` auto-migration deriving from the legacy `clickhouse-basic-auth` Secret, and its name is fixed at `${PLFName}-ch-conn` = `platform-default-ch-conn` regardless of `install.env`. The collision on the standby side is handled by the operator's etcd-sync ignore-equal rules, which already list the four default Secret names — no documentation action is needed on that Secret for this flow.
+
+Workload clusters and single-site global installs keep the defaults.
+
 ## 5. Run
 
 ### 5.1 Render, review, then apply (recommended)

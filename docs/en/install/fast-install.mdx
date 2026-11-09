@@ -153,6 +153,22 @@ Fill either one explicitly only when a specific password is required.
 On Alauda OS / FIPS-enforced hosts the Kafka SASL password must be at least 32 characters. The derived default (40 hex) satisfies this; a shorter manual value is rejected by the broker with `UnacceptableCredential`.
 :::
 
+### 3.3 Required when installing on a `global` cluster that participates in a DR pair
+
+When the install target is a `global` cluster that will be paired with another `global` through etcd-sync for active-standby disaster recovery, both sites **must** set site-unique names for the connection Secrets. With the historical default names (`platform-default-mq-conn` / `platform-default-ch-conn`) on both sites, the master's Secrets replicate across etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+
+```ini
+# master-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-a"
+CH_CONN_SECRET_NAME="platform-default-ch-conn-site-a"
+
+# standby-global install.env
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-site-b"
+CH_CONN_SECRET_NAME="platform-default-ch-conn-site-b"
+```
+
+Workload clusters and single-site global installs keep the defaults. `PlatformLogForward` itself is already covered by the operator's etcd-sync ignore prefix (`/registry/log.alauda.io/`), so each site owns its own PLF pointing at its own Secret names.
+
 ## 4. Install
 
 ### 4.1 Render, review, then apply (recommended)
