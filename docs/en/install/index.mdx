@@ -392,7 +392,13 @@ The `READY` column must show all replicas ready, for example `2/2`.
 
 ### 1.3 Create the connection Secrets
 
-Two Secrets in `cpaas-system` carry the endpoint and credentials for the external stack. `log-storage-operator` reads them by their default names (`platform-default-*`); do not rename them.
+Two Secrets in `cpaas-system` carry the endpoint and credentials for the external stack. `log-storage-operator` reads them by whatever name the `PlatformLogForward` points at through `spec.{externalMessageQueue,externalStorage}.secretRef.name`; the default names shown below (`platform-default-mq-conn`, `platform-default-ch-conn`, `platform-default-os-conn`) are a convention, not an operator contract. Standalone clusters and workload clusters can leave them as-is.
+
+:::warning Installing on the standby global cluster of a DR pair
+If this install is on the standby side of an active-standby `global` DR pair, rename the Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides, the master's Secrets replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+
+The master and any single-site global install keep the defaults.
+:::
 
 Every command in this section runs on the storage cluster.
 
