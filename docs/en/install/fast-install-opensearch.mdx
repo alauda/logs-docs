@@ -131,6 +131,17 @@ Common knobs you may want to touch:
 Opster auto-generates the admin username/password into a Secret `<OS_NAME>-admin-password` when the OpenSearchCluster is provisioned. Stage 1 waits for the cluster to be fully initialized (phase `RUNNING` + health `green` + `initialized=true`) and the `securityconfig-update` Job to complete, then reads the Secret and injects the values into `platform-default-os-conn` at Stage 5. You do not set an OS password in `install.env`.
 :::
 
+### 3.1 Installing on the standby global cluster of a DR pair
+
+If this install is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the master's defaults — otherwise the master's Secrets replicate over and overwrite the standby's.
+
+```ini
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
+OS_CONN_SECRET_NAME="platform-default-os-conn-standby"
+```
+
+The master and any single-site global install keep the defaults.
+
 ## 4. Run
 
 ### 4.1 Render first, then apply (recommended)

@@ -153,6 +153,17 @@ Fill either one explicitly only when a specific password is required.
 On Alauda OS / FIPS-enforced hosts the Kafka SASL password must be at least 32 characters. The derived default (40 hex) satisfies this; a shorter manual value is rejected by the broker with `UnacceptableCredential`.
 :::
 
+### 3.3 Installing on the standby global cluster of a DR pair
+
+If this install is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the master's defaults — otherwise the master's Secrets replicate over and overwrite the standby's.
+
+```ini
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
+CH_CONN_SECRET_NAME="platform-default-ch-conn-standby"
+```
+
+The master and any single-site global install keep the defaults.
+
 ## 4. Install
 
 ### 4.1 Render, review, then apply (recommended)

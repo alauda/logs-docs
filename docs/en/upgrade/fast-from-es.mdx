@@ -111,6 +111,17 @@ SRE can override either via `install.env`.
 
 See the [fresh-install page](../install/fast-install-opensearch.mdx) §3 for full field reference. The upgrade path uses the same `install.env` shape.
 
+### 4.1 Upgrading the standby global cluster of a DR pair
+
+If this upgrade is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the master's defaults — otherwise the master's Secrets replicate over and overwrite the standby's.
+
+```ini
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
+OS_CONN_SECRET_NAME="platform-default-os-conn-standby"
+```
+
+The master and any single-site global upgrade keep the defaults.
+
 ## 5. Run
 
 ```bash
