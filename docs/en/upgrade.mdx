@@ -57,6 +57,12 @@ Upload the **Alauda Container Platform Log Storage Management** package for ACP 
 
 Create the Secret **before** you install the operator. If the operator starts and the Secret does not exist, it writes its own `platform-default-mq-conn` from the Kafka it discovers, marks it as operator-managed (annotation `log.alauda.io/derived-by`), and refreshes it on every later start, overwriting manual edits. A Secret that you create without that annotation is never modified.
 
+:::warning Upgrading the standby global cluster of a DR pair
+If this upgrade is on the standby side of an active-standby `global` DR pair, name the Kafka connection Secret differently from the master's — for example `platform-default-mq-conn-standby` — and, when you later hand-create `PlatformLogForward/platform-default` on the operator-derived path, point `spec.externalMessageQueue.secretRef.name` at the renamed Secret. With identical names on both sides the master's Secret replicates over etcd-sync and overwrites the standby's, which then authenticates `aggregate-vector` against the master's Kafka on failover.
+
+`platform-default-ch-conn` is operator-derived by the migration (fixed name `platform-default-ch-conn`) — its standby-side collision is handled by the operator's etcd-sync ignore-equal rules; no SRE action for that Secret on this path.
+:::
+
 ### Step 3: Install the operator
 
 Install the operator on the storage cluster as in [Installation](./install/index.mdx) § 1.2. Skip the rest of the Installation chapter: do not create `platform-default-ch-conn` or a `PlatformLogForward`.

@@ -38,6 +38,12 @@ metadata:
 
 Keep `installMode: Fresh`; `Adopt` is not part of this flow.
 
+:::warning Upgrading the standby global cluster of a DR pair
+If this upgrade is on the standby side of an active-standby `global` DR pair, rename the connection Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides the master's Secrets replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+
+The master and any single-site global upgrade keep the defaults.
+:::
+
 Wait until `PlatformLogForward/platform-default` is `Ready` and the `LegacyESUpgrade` condition has reason `LegacyESUpgradeCompleted`:
 
 ```bash

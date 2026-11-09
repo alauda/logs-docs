@@ -138,5 +138,5 @@ Omit `tls.ca` on plain HTTP — writing it empty or without a CA PEM will cause 
 
 - Full external-mode SRE runbook (CHI topology recipes, LocalVolume vs StorageClass, hot/cold S3 tiering, Keeper co-location): `SRE_EXTERNAL_SETUP.md` in the `log-storage-operator` repository, published by the logging ecosystem team.
 - Operator-authoritative Secret contract (every field the operator reads from every connection Secret): `SECRET_CONTRACT.md` in the same repository.
-- Fresh-install quickstart script Secret shape (reference implementation): [Fast Install via Quickstart Script](../install/fast-install.mdx) and the template `templates/31-ch-conn-secret.yaml` inside the quickstart bundle.
+- Fresh-install quickstart script Secret shape (reference implementation): [Fast Install via Quickstart Script — ClickHouse Backend](../install/fast-install.mdx) and the template `templates/31-ch-conn-secret.yaml` inside the quickstart bundle.
 - Sample `PlatformLogForward` manifests, including external-ClickHouse-only and external-ClickHouse-plus-external-Kafka variants: `config/samples/platformlogforward_external_ch_only.yaml` and `config/samples/quickstart_external_ch_kafka.yaml` in the `log-storage-operator` repository.
