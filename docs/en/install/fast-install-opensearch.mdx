@@ -1,0 +1,204 @@
+---
+weight: 18
+---
+
+# Fast Install via Quickstart Script — OpenSearch Backend
+
+This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack with an **OpenSearch** backend on a fresh cluster. For the ClickHouse backend fresh install, see [Fast Install via Quickstart Script](./fast-install.mdx); for migrating an existing legacy Elasticsearch stack to OpenSearch, see [Fast Upgrade from Legacy Elasticsearch to OpenSearch](../upgrade/fast-from-es.mdx).
+
+Pick this path when:
+
+- The target cluster is a **fresh** ACP 4.4 install (no legacy `AppRelease/logcenter`, no existing `PlatformLogForward`).
+- The backend is **OpenSearch**, not ClickHouse.
+- The default topology fits: **3-node KRaft Kafka** + **3-node OpenSearch cluster** (opster `clusters.opensearch.opster.io`) on a single `cpaas-system` namespace on one storage cluster.
+
+If the deployment needs an existing ClickHouse backend, use [Fast Install via Quickstart Script](./fast-install.mdx) instead; the two backends are mutually exclusive on a single `PlatformLogForward`.
+
+## 1. Prerequisites
+
+### 1.1 Dynamic StorageClass
+
+OpenSearch, Kafka broker, and Kafka controller all request `ReadWriteOnce` dynamic PVCs. Verify at least one dynamic SC is available:
+
+```bash
+kubectl get sc
+```
+
+Pick one whose `PROVISIONER` column is not `no-provisioner`. The script does not support LocalVolume or hand-provisioned PV pools.
+
+### 1.2 OperatorHub PackageManifests
+
+The script installs three operators through OLM. All three must be registered in the ACP `platform` CatalogSource:
+
+| Operator | Target namespace |
+| --- | --- |
+| **opensearch-operator** (opster, `opensearch.opster.io/v1`) | `opensearch-operator` |
+| **Alauda Streaming Service for Kafka** (`strimzi-kafka-operator`) | `kafka-system` |
+| **Alauda Container Platform Log Storage Management** (`log-storage-operator`) | `cpaas-system` |
+
+Verify:
+
+```bash
+kubectl -n cpaas-system get packagemanifest \
+  opensearch-operator strimzi-kafka-operator log-storage-operator
+```
+
+All three rows must report a non-empty `AGE`.
+
+The script auto-detects operators that are already installed (`Succeeded` CSV) and skips the Subscription for each one — safe to re-run on clusters that already have any subset of the three operators.
+
+### 1.3 Jump host
+
+Standard Linux shell: `kubectl`, `bash`, `envsubst`, `base64`, `sha256sum`, configured with a kubeconfig that can reach the storage cluster.
+
+### 1.4 analysis-ik plugin (optional, Chinese tokenizer)
+
+`razor` log-query uses the `ik_smart` analyzer by default. If you need Chinese-word tokenization in the log search UI, the OpenSearch cluster needs the [analysis-ik](https://github.com/infinilabs/analysis-ik) plugin installed on every data node. The script does not install this plugin by default (hardcoding a plugin URL into the template is brittle — it may not be reachable from your cluster's air-gapped registry, or the published zip may not match the operand version).
+
+Two options:
+
+- **Opt in from the script**: mirror a matching `analysis-ik` zip (same OS major-minor-patch as the operand, e.g. `3.7.0.0` for OS `3.7.0`) to your internal registry and set `OS_PLUGINS_LIST=<url>` in `install.env` before running. Opster will install it per node before OpenSearch starts.
+- **Install out-of-band** after the fact per the SRE_EXTERNAL_SETUP §3b.0 runbook (requires a rolling restart of the OS data nodes).
+
+If neither is done, OpenSearch still comes up healthy and log ingest works end to end; only the log-query UI's Chinese-word search path breaks (razor queries return `400`).
+
+## 2. Get the script bundle
+
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
+
+Unpack on the jump host and change into `files/os/` — every command on this page runs from there:
+
+```bash
+tar xzf alauda-log-quickstart-v4.4.x.tgz
+cd alauda-log-quickstart/files/os/
+```
+
+Layout:
+
+```
+alauda-log-quickstart/
+├── Chart.yaml
+├── values.yaml
+├── templates/NOTES.txt
+└── files/os/                  ← work from here
+    ├── install.sh                             ← this page's runner
+    ├── upgrade-from-es.sh                     ← ES → OS migration; not used here
+    ├── check.sh                               ← post-install verifier
+    ├── install.env.example
+    ├── README.md
+    └── templates/
+        ├── 00-strimzi-subscription.yaml
+        ├── 50-opensearch-operator-subscription.yaml
+        ├── 51-opensearch-cluster.yaml
+        ├── 12-rdskafka.yaml
+        ├── 20-kafka-user-topics.yaml
+        ├── 30-mq-conn-secret.yaml
+        ├── 60-os-conn-secret.yaml
+        ├── 70-plf.yaml
+        ├── 71u-plf-legacy-es.yaml             ← ES → OS variant; not used on fresh install
+        └── 99-log-storage-subscription.yaml
+```
+
+The ClickHouse backend scripts live in a sibling directory, `files/ck/`, and are not consumed by this flow.
+
+## 3. Configure `install.env`
+
+Copy the sample:
+
+```bash
+cp install.env.example install.env
+```
+
+Three required fields; everything else has a working default:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `STORAGE_CLASS` | The dynamic SC verified in Section 1.1. Used by Kafka and OpenSearch PVCs. | `topolvm-provisioner` |
+| `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix (`Mi` / `Gi` / `Ti`). | `100Gi` |
+| `OS_STORAGE_SIZE` | Per-OpenSearch-node PVC size with a unit suffix. Size for ILM retention (operator defaults: `log-*` 7–30d, `event` 30d, `audit` 180d). | `200Gi` |
+
+Common knobs you may want to touch:
+
+- `OS_REPLICAS` default `3` (must be `>= 3` for the cluster-manager quorum).
+- `OS_VERSION` default `3.7.0`. Alauda ships only the single operand tag the opster bundle is pinned to; do not override unless you have mirrored a different operand image to the registry.
+- `OS_CPU_REQUEST` / `OS_CPU_LIMIT` / `OS_MEM_REQUEST` / `OS_MEM_LIMIT` — per OS node.
+- `KAFKA_REPLICAS` default `3`; topic replication factor auto-derives to `min(3, KAFKA_REPLICAS)`.
+- `KAFKA_RETENTION_MS` default 2 days; `KAFKA_SEGMENT_MS` default 1 day. Shrink both for PoC / demo environments on tight disks (see the sample file for exact values).
+- `OS_PLUGINS_LIST` empty by default. Space-separated install URLs; set to your mirrored `analysis-ik` zip URL to install Chinese tokenization.
+- `KAFKA_SASL_PASSWORD` leave empty to auto-derive (deterministic sha256 of `NAMESPACE|kafka|KAFKA_NAME|KAFKA_USER`, meets the FIPS ≥ 32-char requirement).
+
+:::info OpenSearch admin credentials are read from the cluster, not supplied
+Opster auto-generates the admin username/password into a Secret `<OS_NAME>-admin-password` when the OpenSearchCluster is provisioned. Stage 1 waits for the cluster to be fully initialized (phase `RUNNING` + health `green` + `initialized=true`) and the `securityconfig-update` Job to complete, then reads the Secret and injects the values into `platform-default-os-conn` at Stage 5. You do not set an OS password in `install.env`.
+:::
+
+## 4. Run
+
+### 4.1 Render first, then apply (recommended)
+
+```bash
+./install.sh install.env --render
+```
+
+Writes CR YAML into `./rendered/` without touching the cluster. Review, hand-edit if needed, then run live:
+
+```bash
+./install.sh install.env
+```
+
+The live run reads `./rendered/` per stage, so hand edits survive. It also mints the `mq-conn` and `os-conn` Secrets with real live data (strimzi cluster CA, opster admin credentials) — those are **not** written in render mode because they need a live cluster to be read from.
+
+### 4.2 Direct live apply
+
+Skip the render step if you accept the template defaults:
+
+```bash
+./install.sh install.env
+```
+
+### 4.3 What the script does, stage by stage
+
+| Stage | Action |
+| --- | --- |
+| 0 | Ensures three OLM Subscriptions exist: `strimzi-kafka-operator`, `opensearch-operator`, `log-storage-operator`. For each, if a `Succeeded` CSV already exists cluster-wide, the Subscription apply is skipped; otherwise applied and waited for. `opensearch-operator` is installed with `installPlanApproval=Manual` (platform webhook gate), so the script auto-approves the first InstallPlan. |
+| 1 | Applies `OpenSearchCluster/<OS_NAME>` and waits for `phase=RUNNING + health=green + initialized=true`, then waits for the `<OS_NAME>-securityconfig-update` Job to be `Complete`. Reads the admin credentials from the Secret `<OS_NAME>-admin-password` and exports them for Stage 5. |
+| 2 | Applies `RdsKafka/<KAFKA_NAME>` and waits for broker pods to be `Ready`. |
+| 3 | Applies `RdsKafkaUser/platform-logging` + three `RdsTopic` (log / event / audit) and waits for the strimzi-maintained `Secret/<KAFKA_USER>` and for each topic to reach `Ready` or `Active`. |
+| 4 | Materializes `platform-default-mq-conn` with the live strimzi `cluster-ca-cert` embedded in `tls.ca` (operator uses this as the sole trigger to flip `kafkaTLSEnabled=true`). |
+| 5 | Materializes `platform-default-os-conn` with the admin credentials read in Stage 1 and `endpoints=https://<OS_NAME>.<NAMESPACE>.svc:9200`. |
+| 6 | Applies `PlatformLogForward/platform-default` (`externalStorage.type=opensearch`, `externalMessageQueue.type=kafka`) and waits for `Ready=True` (up to 20 minutes). |
+
+Every apply is server-side (field-level merge), passwords are deterministic when auto-derived, and every wait short-circuits when the readiness condition already holds. The script is idempotent — a mid-run failure, fix the condition, re-run, resumes from the failing stage.
+
+## 5. Verify
+
+```bash
+./check.sh install.env
+```
+
+Seven acceptance checks, exits `0` if all pass:
+
+1. `PlatformLogForward/platform-default` `Ready=True`.
+2. `OpenSearchCluster/<OS_NAME>` `phase=RUNNING` + `health != red`.
+3. Three `RdsTopic` (log / event / audit) `phase=Ready|Active`.
+4. `KafkaUser` secret `<KAFKA_USER>` present.
+5. `aggregate-vector` + `razor` Deployments `Available=True`.
+6. At least two aggregate-vector / razor pods `Running`.
+7. `Job/opensearch-index-init` `Complete`.
+
+## 6. Troubleshooting
+
+### `check-subscription.cpaas.io` denies the opensearch-operator Subscription
+
+The platform webhook rejects `installPlanApproval=Automatic` for platform operators. The script templates the Subscription with `installPlanApproval=Manual` to work around this. If you see this error anyway, your `install.env` or the rendered output has been edited back to `Automatic`.
+
+### OpenSearchCluster health stuck at `unknown`
+
+The cluster is still bootstrapping (opster has not yet run the `securityconfig-update` Job). Wait — the Stage 1 wait covers this up to 20 minutes. If it genuinely fails to reach `green`, inspect `OpenSearchCluster` events and the bootstrap pod logs for node startup errors (common causes: `vm.max_map_count` not set on PSA-restricted namespaces; see `install.env.example` notes).
+
+### `cpaas-opensearch-nodes-0` CrashLoopBackOff with `Archive is not a ZIP archive`
+
+Opster failed to install a plugin from `OS_PLUGINS_LIST` — the URL is unreachable or the downloaded file is not a valid zip. Either fix the URL (ensure the zip is mirrored to a reachable registry and the OS version matches the operand) or clear `OS_PLUGINS_LIST` in `install.env` and `kubectl patch opensearchcluster <OS_NAME> --type=json -p '[{"op":"remove","path":"/spec/general/pluginsList"}]'` to unstick the live cluster.
+
+### aggvec reports `SASL Authentication failed`
+
+The `platform-default-mq-conn` Secret and the strimzi-maintained `Secret/<KAFKA_USER>` are out of sync. Re-run `./install.sh install.env` (Stage 4 re-materializes `mq-conn` from the live strimzi user Secret).
