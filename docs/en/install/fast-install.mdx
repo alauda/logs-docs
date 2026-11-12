@@ -244,13 +244,22 @@ kubectl -n kafka-system  delete sub strimzi-kafka-operator
 # Delete the matching CSVs per namespace afterwards.
 ```
 
-PVCs stay bound by default. To reclaim storage:
+PVCs stay bound by default — you must delete all three groups, or a later reinstall will reuse leftover data and fail with `Code: 253 REPLICA_ALREADY_EXISTS` on `schema-migrations` (see Troubleshooting below):
 
 ```bash
+# ClickHouse (chop-managed CHI)
 kubectl -n cpaas-system delete pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
+
+# Kafka (Alauda strimzi fork)
 kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka
-kubectl -n cpaas-system delete pvc -l app.kubernetes.io/name=clickhouse-keeper
+
+# ClickHouse Keeper quorum (quickstart-installed StatefulSet)
+kubectl -n cpaas-system delete pvc -l app=keeper
 ```
+
+:::warning Keeper PVC is frequently missed
+The Keeper quorum is a plain `StatefulSet` deployed by the quickstart script (not a chop sub-resource); its PVCs are labeled `app=keeper`, not the chop labels used by the ClickHouse PVCs. Leaving them behind makes a subsequent install hit `Code: 253 REPLICA_ALREADY_EXISTS` because ClickHouse-Keeper still remembers the previous replica identities.
+:::
 
 ## 7. Troubleshooting
 
@@ -286,6 +295,41 @@ The owning operator is still reconciling. Confirm the operator Deployment is gon
 kubectl -n cpaas-system patch chi cpaas-clickhouse --type=merge \
   -p '{"metadata":{"finalizers":[]}}'
 ```
+
+### `schema-migrations` fails with `Code: 253. REPLICA_ALREADY_EXISTS`
+
+Full error shape (seen in the `schema-migrations` Job pod log):
+
+```
+schema-migrations: bookkeeping tables: clickhouse 500: Code: 253. DB::Exception:
+There was an error on [chi-cpaas-clickhouse-replicated-0-1:9000]: Code: 253.
+DB::Exception: Replica /clickhouse/<database>/tables/0/schema_migrations/replicas/<replica-name>
+already exists.
+```
+
+Root cause: a previous install left the Keeper replica paths in place and a subsequent install reuses the same `shard-replica` identity. `CREATE TABLE IF NOT EXISTS` only checks local metadata; when local is empty but Keeper still has the old replica record, ClickHouse refuses with 253.
+
+Most common cause is a missed Keeper PVC during the previous uninstall (see the Section 6 warning above — `app=keeper`, not the chop label). After confirming the Keeper PVC is actually gone (`kubectl -n cpaas-system get pvc -l app=keeper` must return nothing), clear the orphan replica entries from ClickHouse-Keeper directly:
+
+```bash
+# Enumerate orphan replicas first — pick any CK pod
+POD=$(kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse -o name | head -1)
+kubectl -n cpaas-system exec "$POD" -- clickhouse-client -q "
+  SELECT path, name FROM system.zookeeper
+  WHERE path LIKE '/clickhouse/%/tables/%/schema_migrations%/replicas'"
+
+# For each replica name under each path, drop it
+for r in <replica-1> <replica-2> <replica-3>; do
+  kubectl -n cpaas-system exec "$POD" -- clickhouse-client -q "
+    SYSTEM DROP REPLICA '$r' FROM ZKPATH '/clickhouse/<database>/tables/0/schema_migrations';
+    SYSTEM DROP REPLICA '$r' FROM ZKPATH '/clickhouse/<database>/tables/0/schema_migrations_lock';"
+done
+
+# Let the operator retry the Job
+kubectl -n cpaas-system delete job schema-migrations
+```
+
+If `kubectl -n cpaas-system get pvc -l app=keeper` returns PVCs that should have been deleted, the previous uninstall skipped them — delete them now, delete the Keeper StatefulSet so it comes back on fresh PVCs, then redo the `SYSTEM DROP REPLICA` block above.
 
 For a wider troubleshooting index covering ingest, query, and data-path failures, see [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
 
