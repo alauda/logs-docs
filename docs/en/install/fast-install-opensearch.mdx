@@ -196,7 +196,40 @@ Seven acceptance checks, exits `0` if all pass:
 6. At least two aggregate-vector / razor pods `Running`.
 7. `Job/opensearch-index-init` `Complete`.
 
-## 6. Troubleshooting
+## 6. Uninstall
+
+```bash
+# Remove the PLF; this cascades through operator-derived Features, log-center, aggvec, razor.
+kubectl -n cpaas-system delete platformlogforward platform-default
+
+# Remove the CRs the script created.
+kubectl -n cpaas-system      delete rdskafka cpaas-kafka
+kubectl -n cpaas-system      delete opensearchcluster cpaas-opensearch
+
+# Remove Subscriptions and CSVs.
+kubectl -n cpaas-system        delete sub log-storage-operator
+kubectl -n opensearch-operator delete sub opensearch-operator
+kubectl -n kafka-system        delete sub strimzi-kafka-operator
+# Delete the matching CSVs per namespace afterwards.
+```
+
+PVCs stay bound by default — you must delete both groups, or a later reinstall will reuse leftover data and surface at wrong times (stale OS indices rejoining, stale Kafka offsets, etc.):
+
+```bash
+# OpenSearch (opster-managed)
+kubectl -n cpaas-system delete pvc -l opster.io/opensearch-cluster=cpaas-opensearch
+
+# Kafka (Alauda strimzi fork)
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka
+```
+
+Also clean the opster-generated admin Secret if you plan to reinstall with the same cluster name:
+
+```bash
+kubectl -n cpaas-system delete secret cpaas-opensearch-admin-password cpaas-opensearch-securityconfig cpaas-opensearch-http-cert cpaas-opensearch-transport-cert --ignore-not-found
+```
+
+## 7. Troubleshooting
 
 ### `check-subscription.cpaas.io` denies the opensearch-operator Subscription
 
