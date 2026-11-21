@@ -12,7 +12,7 @@ Pick this path when:
 - The backend is **ClickHouse** (OpenSearch backend is not covered by the script).
 - The default topology fits the deployment: **3-node KRaft Kafka** + **1 shard × 3 replica ClickHouse** + **3-pod ClickHouse Keeper quorum**, all on a single `cpaas-system` namespace on one storage cluster.
 
-If the deployment needs ClickHouse tiered storage, multi-shard scale-out, LocalVolume PVs, or any non-default knob, use the manual flow in [Installation](./index.mdx) instead; the script writes a fixed set of CRs and is not meant to replace manual tuning.
+If the deployment needs ClickHouse tiered storage, multi-shard scale-out, `LocalVolume` PVs (deprecated), or any non-default knob, use the manual flow in [Installation](./index.mdx) instead; the script writes a fixed set of CRs and is not meant to replace manual tuning.
 
 ## 1. Prerequisites
 
