@@ -16,7 +16,7 @@ This guide explains the planning considerations for running Logging storage comp
 
 The storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
 
-- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), use the **Advanced Configuration** section of the operator install form to set the node selector and tolerations. See [Installation](../install/index.mdx).
+- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), which is an Operator, set the node selector and tolerations of `log-storage-operator` itself on its OLM `Subscription` (`spec.config.nodeSelector` and `spec.config.tolerations`). See [Installation](../install/index.mdx), section 1.2.
 - For **Alauda Container Platform Log Collector** (a DaemonSet), use the Cluster Plugin install form on the collector cluster; the same **Advanced Configuration** section applies.
 - For **Alauda Container Platform Log Storage for Elasticsearch** (legacy), configure placement through `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` and `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` in the ACP 4.3 documentation for that Cluster Plugin.
 

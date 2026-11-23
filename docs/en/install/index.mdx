@@ -18,7 +18,7 @@ At the end, the ACP console can query the collected data in **Operations Center*
 
 ## What you install
 
-The stack ships as three cluster components — two Cluster Plugins (Log Essentials and Log Collector) and one operator (Log Storage Management). Install only the components that match your topology.
+The stack ships as three cluster components — two Cluster Plugins (Log Essentials and Log Collector) and one Operator (Log Storage Management). Install only the components that match your topology.
 
 | Component | Kind | Where to install | Purpose |
 | --- | --- | --- | --- |
@@ -369,26 +369,45 @@ If you already run a ClickHouse cluster, ensure the database and the logging acc
 If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, follow the Alauda Container Platform OpenSearch product documentation.
 
 
-### 1.2 Install the Log Storage operator
+### 1.2 Install the Log Storage Operator
 
-**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the operator install form.
+**Alauda Container Platform Log Storage Management** is an Operator (package `log-storage-operator`, from the `platform` CatalogSource). Install it through OperatorHub on the storage cluster; it deploys `log-storage-operator` in `cpaas-system`. One Operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the Operator install form.
 
 #### Console
 
-1. Navigate to **Marketplace** > **Cluster Plugins** and select the storage cluster.
-2. Find **Alauda Container Platform Log Storage Management** and click **Install** in its row.
-3. Accept the defaults. Optionally set the node selector and tolerations to pin `log-storage-operator` to infra nodes.
-4. Click **Install**.
+1. In the **Administrator** view, navigate to **Marketplace** > **OperatorHub** and select the storage cluster.
+2. Find **Alauda Container Platform Log Storage Management**.
+   If its status is **Absent**, upload the Log Storage Management package for your ACP version to the platform first, the same way as other Operator packages.
+3. Click **Install**. Set the installation namespace to `cpaas-system`, and keep the defaults for the channel and the upgrade strategy.
+4. Click **Install**, then wait until the Operator status is **Succeeded**.
 
-{/* verify against live console: confirm the plugin install form does not require connection details (endpoint, credentials) — those are supplied later as PlatformLogForward + connection Secrets, not as install form fields. */}
+#### Optional: pin the Operator to infra nodes
+
+The placement of `log-storage-operator` itself is set on its OLM `Subscription`, through `spec.config.nodeSelector` and `spec.config.tolerations`. Find the Subscription name with `kubectl -n cpaas-system get subscriptions`, then patch it, for example:
+
+```bash
+kubectl -n cpaas-system patch subscription <subscription-name> --type merge -p '
+spec:
+  config:
+    nodeSelector:
+      node-role.kubernetes.io/infra: ""
+    tolerations:
+    - key: node-role.kubernetes.io/infra
+      operator: Exists
+      effect: NoSchedule
+'
+```
+
+OLM rolls the Operator Deployment with the new placement. This setting does not move the storage-side workloads that the Operator derives from `PlatformLogForward`.
 
 #### Verify
 
 ```bash
+kubectl -n cpaas-system get csv | grep log-storage-operator
 kubectl -n cpaas-system get deployment log-storage-operator-controller-manager
 ```
 
-The `READY` column must show all replicas ready, for example `2/2`.
+The CSV `PHASE` must be `Succeeded`, and the Deployment `READY` column must show all replicas ready, for example `2/2`.
 
 ### 1.3 Create the connection Secrets
 
