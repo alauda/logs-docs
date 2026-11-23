@@ -38,10 +38,10 @@ metadata:
 
 Keep `installMode: Fresh`; `Adopt` is not part of this flow.
 
-:::warning Upgrading the standby global cluster of a DR pair
-If this upgrade is on the standby side of an active-standby `global` DR pair, rename the connection Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides the master's Secrets replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+:::warning Upgrading the standby `global` cluster of a DR pair
+If this upgrade is on the standby side of an active-standby `global` DR pair, rename the connection Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides the Secrets of the primary `global` cluster replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the primary's credentials on failover.
 
-The master and any single-site global upgrade keep the defaults.
+The primary `global` cluster and any `global` cluster without disaster recovery keep the defaults.
 :::
 
 Wait until `PlatformLogForward/platform-default` is `Ready` and the `LegacyESUpgrade` condition has reason `LegacyESUpgradeCompleted`:
@@ -87,9 +87,9 @@ PVC/PV protection must pass. Any failure must stop the procedure; contact Alauda
 
 Run the following two deletes in order without interruption; do not wait for `ModuleInfo` to disappear, check `AppRelease`, or perform any other check between them.
 
-**On the global cluster**
+**On the `global` cluster**
 
-Set `CLUSTER` to the workload cluster name as registered in the global cluster, then run:
+Set `CLUSTER` to the workload cluster name as registered in the `global` cluster, then run:
 
 ```bash
 set -euo pipefail
@@ -137,7 +137,7 @@ kubectl delete clusterplugininstance logcenter --ignore-not-found
 
 **Wait for the legacy data path to be removed**
 
-Switch back to the global cluster:
+Switch back to the `global` cluster:
 
 ```bash
 CLUSTER="<workload-cluster-name>"   # the workload cluster name as registered in the global cluster
@@ -160,7 +160,7 @@ kubectl -n cpaas-system wait --for=delete "apprelease/logcenter" --timeout=10m
 
 Wait 60 seconds, then verify that the resources stayed gone.
 
-**On the global cluster**
+**On the `global` cluster**
 
 ```bash
 kubectl get moduleinfo -l 'cpaas.io/module-name=logcenter,cpaas.io/cluster-name=<workload-cluster-name>' --ignore-not-found
@@ -187,7 +187,7 @@ Resource reappearance handling:
 - For `ClusterPluginInstance/logcenter`, delete it first, then delete any new `ModuleInfo`, and repeat the 60-second check.
 - Do not restore the cleared discovery fields manually.
 - `AppRelease/logcenter` removal must complete. Do not remove finalizers; contact Alauda support.
-- A global-cluster sequence failure before `ModuleInfo` deletion must be fixed and the global sequence rerun. Do not run the workload-cluster sequence for that attempt.
+- A failure in the `global` cluster sequence before `ModuleInfo` deletion must be fixed and the `global` cluster sequence rerun. Do not run the workload-cluster sequence for that attempt.
 :::
 
 ## Retain the source volumes

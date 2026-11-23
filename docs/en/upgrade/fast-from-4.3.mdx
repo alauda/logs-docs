@@ -134,15 +134,15 @@ Use the same `NODE_AFFINITY_*` and `TOLERATION_*` fields as in [Fast Install](..
 
 `KAFKA_SASL_PASSWORD` defaults to empty, in which case the script derives a stable 40-hex value from `NAMESPACE` + `KAFKA_NAME` + `KAFKA_USER` via `sha256sum`. Reruns yield the same password. On Alauda OS / FIPS hosts this satisfies the ≥ 32-character requirement.
 
-### 4.3 Upgrading the standby global cluster of a DR pair
+### 4.3 Upgrading the standby `global` cluster of a DR pair
 
-If this upgrade is on the standby side of an active-standby `global` DR pair, change the Kafka Secret name in `install.env` so it differs from the master's default:
+If this upgrade is on the standby side of an active-standby `global` DR pair, change the Kafka Secret name in `install.env` so it differs from the default on the primary `global` cluster:
 
 ```ini
 MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
 ```
 
-The master and any single-site global upgrade keep the default.
+The primary `global` cluster and any `global` cluster without disaster recovery keep the default.
 
 > `CH_CONN_SECRET_NAME` is not effective on this upgrade path — `platform-default-ch-conn` is derived by `log-storage-operator` auto-migration with a fixed name. The standby-side collision is handled by the operator's etcd-sync ignore rules; no action needed.
 
@@ -251,7 +251,7 @@ LOGCLICKHOUSE_MINFO=<name-from-the-NAME-column>
 This step rewrites `spec.config` on each `logagent` ModuleInfo. The plugin controller re-renders the chart, which triggers a `nevermore` / `aggregate-vector` rollout on that workload cluster. Expect seconds to a few minutes where new log lines on that cluster are buffered or momentarily dropped. Schedule the change outside collection-sensitive windows.
 :::
 
-Run one command on the global cluster to list every workload cluster whose `logagent` still points at the old CK on this storage cluster:
+Run one command on the `global` cluster to list every workload cluster whose `logagent` still points at the old CK on this storage cluster:
 
 ```bash
 kubectl get minfo \
@@ -277,7 +277,7 @@ After each save, the cluster-transformer reconciler clears `crossClusterDependen
 <details>
 <summary>Scripted alternative for bulk retarget (kubectl patch)</summary>
 
-If many workload clusters must be retargeted at once, patch each `logagent` ModuleInfo directly on the global cluster. This produces the same result as the console update:
+If many workload clusters must be retargeted at once, patch each `logagent` ModuleInfo directly on the `global` cluster. This produces the same result as the console update:
 
 ```bash
 kubectl patch minfo <logagent-minfo-name> --type=merge -p '{
