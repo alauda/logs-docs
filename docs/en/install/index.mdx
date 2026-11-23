@@ -30,7 +30,7 @@ A single storage cluster picks ClickHouse **or** OpenSearch as its backend and s
 
 **Where to place the storage cluster.** By default, install log storage in every cluster, so that each cluster stores and queries its own logs. If you need to search the logs of several clusters in one place, or you do not want to run a full log storage stack (Kafka plus ClickHouse or OpenSearch) in every cluster, you can point the collectors of several clusters at one storage cluster. In that case:
 
-- Do not use a `global` cluster as the storage cluster for workload clusters. Each `global` cluster of a disaster recovery pair keeps its own log storage and does not share it with the other `global` cluster, because log data is not replicated between them.
+- If the `global` cluster is deployed with disaster recovery, do not use the primary or the standby `global` cluster as the storage cluster for workload clusters: log data is not replicated between them and would be unavailable after a failover. Each `global` cluster of the pair keeps its own log storage and does not share it with the other `global` cluster. In other cases, the `global` cluster can host the storage cluster.
 - The total log volume sent to one storage cluster must stay within the largest profile in [Log Component Capacity Planning](../architecture/capacity_planning.mdx).
 
 :::warning Local storage is deprecated
