@@ -4,10 +4,10 @@ weight: 15
 
 # Upgrade from Log Storage for Elasticsearch
 
-Upgrade an existing ACP deployment from the legacy Elasticsearch log storage plugin to ClickHouse or OpenSearch.
+Upgrade an existing ACP deployment from the legacy Elasticsearch log storage Cluster Plugin to ClickHouse or OpenSearch.
 
 :::warning
-Do not uninstall the legacy plugin, stop the legacy data path, or delete or unprotect its PVCs and PVs before this procedure requires it. Do not stop or scale the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads.
+Do not uninstall the legacy Cluster Plugin, stop the legacy data path, or delete or unprotect its PVCs and PVs before this procedure requires it. Do not stop or scale the legacy Elasticsearch, Kafka, ZooKeeper, lanaya, or Razor workloads.
 :::
 
 ## Before you start
@@ -68,12 +68,12 @@ kubectl -n cpaas-system get platformlogforward platform-default \
 
 ## Decide on historical data
 
-Uninstalling the legacy plugin is the point of no return for the pre-cutover history. The new data path already carries everything written after cutover, but the older data still lives only on the legacy Elasticsearch volumes.
+Uninstalling the legacy Cluster Plugin is the point of no return for the pre-cutover history. The new data path already carries everything written after cutover, but the older data still lives only on the legacy Elasticsearch volumes.
 
 - If you need that history in the new storage, set it up now: follow [Historical Data Migration](../migration/index.mdx) to create the migration resource and wait until it reports `PrecaptureReady`, which captures the source. Then return here to uninstall.
 - If you do not need it, continue.
 
-## Uninstall the legacy Elasticsearch plugin
+## Uninstall the legacy Elasticsearch Cluster Plugin
 
 :::warning
 Before this step, verify all of the following:
@@ -196,4 +196,4 @@ Keep the protected legacy Elasticsearch PVCs and PVs until new-storage verificat
 
 Only the Elasticsearch PVCs and PVs are retained by this upgrade. Legacy Kafka and ZooKeeper volumes are not retained.
 
-If you set up historical data migration, the worker starts copying now that the plugin is gone. Return to [Historical Data Migration](../migration/index.mdx) to watch it reach `Succeeded` and verify the data before these volumes are released.
+If you set up historical data migration, the worker starts copying now that the Cluster Plugin is gone. Return to [Historical Data Migration](../migration/index.mdx) to watch it reach `Succeeded` and verify the data before these volumes are released.
