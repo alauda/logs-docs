@@ -22,7 +22,7 @@ If you skip it, the data written before cutover stays only in the legacy Elastic
 
 `source.indexScope` supports exact index names and globs and must match at least one index.
 
-Create `LegacyESMigration` while the legacy plugin is still installed, before you uninstall it. The operator then captures the source Elasticsearch volumes automatically, so you do not list them by hand.
+Create `LegacyESMigration` while the legacy Cluster Plugin is still installed, before you uninstall it. The operator then captures the source Elasticsearch volumes automatically, so you do not list them by hand.
 
 :::warning
 The source PVCs and PVs must still exist. Once the source PVCs are deleted, or their PVs are released and cleaned up, the historical data cannot be migrated.
@@ -108,7 +108,7 @@ kubectl apply -f legacy-es-migration.yaml
 </Tabs>
 
 :::tip
-Fallback for an already-uninstalled plugin: if the legacy plugin was uninstalled before this resource was created, the operator can no longer capture the source volumes for you. Add `source.pvcRefs` listing every retained PVC that backed the legacy Elasticsearch StatefulSets (`cpaas-elasticsearch`, `cpaas-elasticsearch-master`); find them with `kubectl -n cpaas-system get pvc` before they are released. Prefer creating the resource before uninstalling, which avoids this.
+Fallback for an already-uninstalled Cluster Plugin: if the legacy Cluster Plugin was uninstalled before this resource was created, the operator can no longer capture the source volumes for you. Add `source.pvcRefs` listing every retained PVC that backed the legacy Elasticsearch StatefulSets (`cpaas-elasticsearch`, `cpaas-elasticsearch-master`); find them with `kubectl -n cpaas-system get pvc` before they are released. Prefer creating the resource before uninstalling, which avoids this.
 :::
 
 ## Wait for PrecaptureReady
@@ -121,7 +121,7 @@ kubectl -n cpaas-system get legacyesmigration platform-es-history -w
 
 Wait for the resource to reach `PrecaptureReady`. Data copy has not started at this phase.
 
-`PrecaptureReady` means the source is captured and the volumes are protected. Now uninstall the legacy plugin: follow [Upgrade](../upgrade/legacy-elasticsearch.mdx), "Uninstall the legacy Elasticsearch plugin", then return here. (If it was already uninstalled, the copy proceeds on its own.)
+`PrecaptureReady` means the source is captured and the volumes are protected. Now uninstall the legacy Cluster Plugin: follow [Upgrade](../upgrade/legacy-elasticsearch.mdx), "Uninstall the legacy Elasticsearch Cluster Plugin", then return here. (If it was already uninstalled, the copy proceeds on its own.)
 
 :::warning
 If the phase is `Blocked` or `Failed`, do not delete or recreate the migration resource, Jobs, source volumes, or new-storage data. Read the condition message and contact Alauda support.
@@ -129,7 +129,7 @@ If the phase is `Blocked` or `Failed`, do not delete or recreate the migration r
 
 ## Wait for the migration to succeed
 
-After the legacy plugin is uninstalled, the worker starts copying data. Watch the same resource until the phase is `Succeeded`:
+After the legacy Cluster Plugin is uninstalled, the worker starts copying data. Watch the same resource until the phase is `Succeeded`:
 
 ```bash
 kubectl -n cpaas-system get legacyesmigration platform-es-history \
