@@ -11,9 +11,9 @@ When installing log component, the platform provides two log storage components 
 
 - You can only choose one of ElasticSearch or Clickhouse for the cluster log storage component installation.
 - Any cluster's log storage component can be selected for log collection to interface with the storage data.
-- Now DevOps product does not support archiving Jenkins pipeline execution records using Clickhouse. If you need to use the Jenkins pipeline features, please choose the ACP Log Storage with Clickhouse plugin cautiously.
-- Now ServiceMesh product does not support integration with Clickhouse. If you need to use the service mesh features, please choose the ACP Log Storage with Clickhouse plugin cautiously.
-- Now ACP Log Storage with Clickhouse plugin does not support IPv6 single stack or IPv6 dual stack workload clusters.
+- Now DevOps product does not support archiving Jenkins pipeline execution records using Clickhouse. If you need to use the Jenkins pipeline features, please choose the ACP Log Storage with Clickhouse Cluster Plugin cautiously.
+- Now ServiceMesh product does not support integration with Clickhouse. If you need to use the service mesh features, please choose the ACP Log Storage with Clickhouse Cluster Plugin cautiously.
+- Now ACP Log Storage with Clickhouse Cluster Plugin does not support IPv6 single stack or IPv6 dual stack workload clusters.
 
 :::
 
@@ -50,8 +50,8 @@ Clickhouse is a high-performance columnar database designed for Online Analytica
 
 ## Selection Recommendations
 
-- If you are accustomed to using Elasticsearch and have a high dependency on the Lucene language, it is recommended that you continue to use the ACP Log Storage with ElasticSearch plugin.
+- If you are accustomed to using Elasticsearch and have a high dependency on the Lucene language, it is recommended that you continue to use the ACP Log Storage with ElasticSearch Cluster Plugin.
 
-- If you depend on the platform's Jenkins pipeline or service mesh features, it is recommended that you continue to use the ACP Log Storage with ElasticSearch plugin.
+- If you depend on the platform's Jenkins pipeline or service mesh features, it is recommended that you continue to use the ACP Log Storage with ElasticSearch Cluster Plugin.
 
-- If you have high requirements for the performance and resource consumption of the log component but only have basic needs for log querying, it is recommended that you choose to use the ACP Log Storage with Clickhouse plugin.
+- If you have high requirements for the performance and resource consumption of the log component but only have basic needs for log querying, it is recommended that you choose to use the ACP Log Storage with Clickhouse Cluster Plugin.
