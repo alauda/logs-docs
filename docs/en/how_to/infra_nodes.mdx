@@ -45,7 +45,7 @@ Do not patch the generated StatefulSets, Deployments, or ClickHouseInstallation 
 ## Before You Configure Placement
 
 1. Plan the infra nodes according to the infra node planning topic in the Alauda Container Platform documentation.
-2. Confirm whether your storage uses LocalVolume or other PVs with `spec.nodeAffinity`.
+2. Confirm whether your storage uses LocalVolume (deprecated; use a `StorageClass` or `PV` for new installations) or other PVs with `spec.nodeAffinity`.
 3. Make sure the selected infra nodes can satisfy both the scheduling rules and the storage placement constraints.
 
 :::info

@@ -107,7 +107,7 @@ The Kafka buffer is mandatory for both backends; the direct-write and buffer-mod
 
 **Description**: The ClickHouse storage placement model that controls where table data lives. In ACP Logging, ClickHouse supports:
 
-- **Default**: Table data on local host paths or a StorageClass.
+- **Default**: Table data on a StorageClass, or on local host paths (deprecated).
 - **Hot and cold separation**: Recent data on local storage, cold data on S3. Configured on the `PlatformLogForward` through `spec.clickhouse.tieredPolicy`, `spec.clickhouse.coldTTL`, and `spec.clickhouse.s3ColdSecretRef`.
 
 ### Hot and Cold Separation

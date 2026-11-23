@@ -78,7 +78,7 @@ Before interfacing, you need to prepare the required credential information.
     address: http://fake:9200                # External ES access address, e.g., http://192.168.143.252:11780/es_proxy
     basicAuthSecretName: elasticsearch-basic-auth # Credentials required for interfacing with external Elasticsearch created in the prerequisites.
   storageClassConfig:
-    type: "LocalVolume"   # Default is LocalVolume. Options are "LocalVolume" or "StorageClass".
+    type: "LocalVolume"   # Default is LocalVolume (deprecated). Options are "LocalVolume" or "StorageClass".
   kafka:
     auth: true                               # Whether to enable authentication.
     k8sNodes:

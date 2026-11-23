@@ -151,7 +151,7 @@ spec:
 
 :::warning
 - Even in S3-only mode, ClickHouse metadata still lives on local storage (or the ClickHouseInstallation's `StorageClass`). Metadata performance still matters: plan for sustained `≥ 200 MiB/s` read and write throughput on the metadata volume to keep merges and inserts healthy.
-- Prefer `LocalVolume` for metadata whenever possible; if you must use a `StorageClass`, pick a high-performance backend.
+- Put the metadata volume on a high-performance `StorageClass` or `PV`. `LocalVolume` is deprecated; see [Installation](../install/index.mdx).
 :::
 
 ## Project-level cold retention
