@@ -394,10 +394,10 @@ The `READY` column must show all replicas ready, for example `2/2`.
 
 Two Secrets in `cpaas-system` carry the endpoint and credentials for the external stack. `log-storage-operator` reads them by whatever name the `PlatformLogForward` points at through `spec.{externalMessageQueue,externalStorage}.secretRef.name`; the default names shown below (`platform-default-mq-conn`, `platform-default-ch-conn`, `platform-default-os-conn`) are a convention, not an operator contract. Standalone clusters and workload clusters can leave them as-is.
 
-:::warning Installing on the standby global cluster of a DR pair
-If this install is on the standby side of an active-standby `global` DR pair, rename the Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides, the master's Secrets replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+:::warning Installing on the standby `global` cluster of a DR pair
+If this install is on the standby side of an active-standby `global` DR pair, rename the Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides, the Secrets of the primary `global` cluster replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the primary's credentials on failover.
 
-The master and any single-site global install keep the defaults.
+The primary `global` cluster and any `global` cluster without disaster recovery keep the defaults.
 :::
 
 Every command in this section runs on the storage cluster.
@@ -841,7 +841,7 @@ Every collector cluster's row must show `STATUS=Running`.
 ### YAML
 
 :::warning Edit before you apply
-Replace `spec.version: v4.4.0` with the actual version registered in your cluster: `kubectl get moduleconfigs | grep log-api` and copy a `log-api-v4.4.x` name. If the version is not registered, cluster-transformer rejects the ModuleInfo with `moduleconfig <name> not found`. The `metadata.name` (`global-log-api`) and `metadata.labels.cpaas.io/cluster-name` (`global`) are fixed — the log-api plugin is a global-cluster-only component.
+Replace `spec.version: v4.4.0` with the actual version registered in your cluster: `kubectl get moduleconfigs | grep log-api` and copy a `log-api-v4.4.x` name. If the version is not registered, cluster-transformer rejects the ModuleInfo with `moduleconfig <name> not found`. The `metadata.name` (`global-log-api`) and `metadata.labels.cpaas.io/cluster-name` (`global`) are fixed — the log-api plugin runs only on the `global` cluster.
 :::
 
 ```yaml

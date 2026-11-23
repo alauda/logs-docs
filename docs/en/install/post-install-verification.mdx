@@ -38,7 +38,7 @@ Every node in the `Log.Kubernetes=true` collection scope should have a `nevermor
 
 ## 3. The `log-center` Feature CR is on the storage cluster
 
-The Log Storage operator creates a `Feature/log-center` CR in `cpaas-system` on **the storage cluster it is installed on**. The global cluster's razor-api reads this Feature (synced through cluster-transformer) to discover each storage cluster's endpoint. On the storage cluster:
+The Log Storage operator creates a `Feature/log-center` CR in `cpaas-system` on **the storage cluster it is installed on**. The `global` cluster's razor-api reads this Feature (synced through cluster-transformer) to discover each storage cluster's endpoint. On the storage cluster:
 
 ```bash
 kubectl get feature log-center -o jsonpath='{.spec}' | jq
@@ -105,7 +105,7 @@ kubectl -n default run smoketest --restart=Never --image=busybox --rm -it -- \
   sh -c 'echo "logging-smoketest-$(date +%s)"; sleep 3'
 ```
 
-Wait about a minute. On the global cluster, query razor-api for the marker:
+Wait about a minute. On the `global` cluster, query razor-api for the marker:
 
 ```bash
 kubectl -n cpaas-system exec -it deploy/razor-api -- \
