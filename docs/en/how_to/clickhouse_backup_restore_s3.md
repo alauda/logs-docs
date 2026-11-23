@@ -212,7 +212,7 @@ This procedure restores ClickHouse data table by table. Choose the preparation s
 
 Stop `razor` first to prevent new data from being written during the restore.
 
-Log in to the cluster master node and create a ResourcePatch to stop `razor`:
+Log in to a control plane node of the cluster and create a ResourcePatch to stop `razor`:
 
 ```bash
 cat <<EOF > /tmp/rp-stop-razor.yaml
@@ -258,7 +258,7 @@ In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data
 >
 > Run the `rm -rf /cpaas/data/clickhouse/*` command on each ClickHouse host node, not inside the ClickHouse container.
 
-Log in to the cluster master node and create a ResourcePatch to stop ClickHouse:
+Log in to a control plane node of the cluster and create a ResourcePatch to stop ClickHouse:
 
 ```bash
 cat <<EOF > /tmp/rp-stop-ck.yaml

@@ -67,7 +67,7 @@ Two upstream failure modes are worth calling out because they have historically 
 
 - The **schema-migrations Job** for external ClickHouse over HTTPS requires a CA. If the CH endpoint uses a self-signed certificate and you did not attach a CA to the `platform-default-ch-conn` Secret, the operator falls back to `insecure_skip_verify=true` (which it logs). If TLS still fails, the Job's pod log shows the exact handshake error.
 
-- The **`log-center` Feature CR** used to hard-code the `platformURL` (global platform entry) as its `SecureAddress`, which the razor-api log path could not reach cross-cluster. The operator has since been fixed to resolve the local ALB address on the storage cluster instead. If your install is on 4.4 beta.x and the Feature still points at the global platform, upgrade the operator image.
+- The **`log-center` Feature CR** used to hard-code the Platform Access Address (`platformURL`) as its `SecureAddress`, which the razor-api log path could not reach cross-cluster. The operator has since been fixed to resolve the local ALB address on the storage cluster instead. If your install is on 4.4 beta.x and the Feature still points at the Platform Access Address, upgrade the operator image.
 
 ## OpenSearch install: template PUT fails with `strict` 400
 
@@ -103,7 +103,7 @@ Common causes, in order of likelihood:
 
 ## Cross-cluster log query returns 401 on collection clusters
 
-**Symptom.** On the global cluster, log queries against the storage cluster return `401` for a few minutes after install, then start working.
+**Symptom.** On the `global` cluster, log queries against the storage cluster return `401` for a few minutes after install, then start working.
 
 **Root cause.** The `log-callback-secret` on the collection cluster is synchronized cross-cluster by cluster-transformer with a small window that used to be five minutes; razor-api's negative token cache used to hold that window and reject queries during it (Bug 51 + Bug 52 + Bug 83).
 
@@ -158,4 +158,4 @@ When a symptom does not match anything above, walk the pipeline from the collect
 3. `aggregate-vector` on the storage cluster: `kubectl -n cpaas-system logs -l app.kubernetes.io/name=aggregate-vector --tail=200`. Look for the kafka source's per-topic status and any sink 4xx/5xx.
 4. Storage backend: `SELECT count() FROM <log_data>` on ClickHouse or `GET _cat/indices` on OpenSearch. Compare with an unbounded time range vs. a bounded one; a large gap between the two is the timestamp-overwrite symptom on OpenSearch (see [OpenSearch backend limitations](../architecture/component_suggestion.mdx#known-opensearch-backend-limitations)).
 5. `razor` on the storage cluster: `kubectl -n cpaas-system logs -l app.kubernetes.io/name=razor --tail=200`. 401s here are the token-sync issue above.
-6. `razor-api` on the global cluster: `kubectl -n cpaas-system logs -l service_name=razor-api --tail=200`. `parseDatabase` misidentifying the backend (`log-clickhouse` vs `log-opensearch`) will show up as SQL errors against the wrong dialect.
+6. `razor-api` on the `global` cluster: `kubectl -n cpaas-system logs -l service_name=razor-api --tail=200`. `parseDatabase` misidentifying the backend (`log-clickhouse` vs `log-opensearch`) will show up as SQL errors against the wrong dialect.

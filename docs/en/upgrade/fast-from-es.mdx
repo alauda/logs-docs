@@ -6,7 +6,7 @@ weight: 18
 
 This page covers Phase 1 of the ES → OS migration path for clusters that currently run the legacy `chart-alauda-log-center` Elasticsearch stack (deployed via `AppRelease/logcenter`). The quickstart script stands up a parallel **OpenSearch** data path alongside the running legacy ES, and submits a `PlatformLogForward` carrying the `log.alauda.io/legacy-es-upgrade=true` annotation that activates the operator's legacy-ES handling (razor2 / Service switchover, PVC-delete-protection webhook, legacy-es-precapture Jobs, old-Kafka lag observer).
 
-The script **only automates Phase 1**. Phases 2–4 — ACP console uninstall of the legacy `logcenter` plugin, old Kafka consumer-group drain, creation of a `LegacyESMigration` CR plus the user-supplied data-migration tool pod, and acceptance / rollback / PVC cleanup — are hand-driven per `SRE_LEGACY_ES_MIGRATION.md` and are intentionally out of scope for the script.
+The script **only automates Phase 1**. Phases 2–4 — ACP console uninstall of the legacy `logcenter` Cluster Plugin, old Kafka consumer-group drain, creation of a `LegacyESMigration` CR plus the user-supplied data-migration tool pod, and acceptance / rollback / PVC cleanup — are hand-driven per `SRE_LEGACY_ES_MIGRATION.md` and are intentionally out of scope for the script.
 
 Pick this path when:
 
@@ -33,7 +33,7 @@ Pick this path when:
 
 **Phase 2–4 (hand-driven; the script does not touch these)**:
 
-- **Phase 2** — SRE uninstalls the `logcenter` plugin via the ACP admin console. The legacy lanaya stops consuming. Operator observes the switchover.
+- **Phase 2** — SRE uninstalls the `logcenter` Cluster Plugin via the ACP admin console. The legacy lanaya stops consuming. Operator observes the switchover.
 - **Phase 3** — SRE waits for legacy Kafka consumer-group lag to reach zero.
 - **Phase 4** — SRE creates a `LegacyESMigration` CR and runs the user-supplied data-migration tool pod (reads legacy ES PVCs, writes new OpenSearch). Acceptance, rollback window closure, and PVC/PV cleanup follow.
 
@@ -111,16 +111,16 @@ SRE can override either via `install.env`.
 
 See the [fresh-install page](../install/fast-install-opensearch.mdx) §3 for full field reference. The upgrade path uses the same `install.env` shape.
 
-### 4.1 Upgrading the standby global cluster of a DR pair
+### 4.1 Upgrading the standby `global` cluster of a DR pair
 
-If this upgrade is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the master's defaults — otherwise the master's Secrets replicate over and overwrite the standby's.
+If this upgrade is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the defaults on the primary `global` cluster — otherwise the primary's Secrets replicate over and overwrite the standby's.
 
 ```ini
 MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
 OS_CONN_SECRET_NAME="platform-default-os-conn-standby"
 ```
 
-The master and any single-site global upgrade keep the defaults.
+The primary `global` cluster and any `global` cluster without disaster recovery keep the defaults.
 
 ## 5. Run
 

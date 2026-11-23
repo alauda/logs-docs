@@ -6,7 +6,7 @@ sourceSHA: de8684967169dd8cf37f798e6022c102cb552424cb291405a007fe5776c9d337
 # How to Interface with External ES Storage Clusters
 
 :::warning Applies to earlier releases only
-This guide describes the Elasticsearch storage plugin's `elasticsearch.address` / `basicAuthSecretName` install-form fields, retained here as reference material for ACP 4.2 / 4.3 installations that are still running the chart-installed Elasticsearch stack.
+This guide describes the Elasticsearch storage Cluster Plugin's `elasticsearch.address` / `basicAuthSecretName` install-form fields, retained here as reference material for ACP 4.2 / 4.3 installations that are still running the chart-installed Elasticsearch stack.
 
 **ACP 4.4 does not ship the Elasticsearch backend at all.** Fresh 4.4 installs reach an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets — external interfacing is the default install path, not an opt-in. Follow [Installation](../install/index.mdx) and skip this guide. Customers upgrading from ACP 4.3 on Elasticsearch migrate to ClickHouse or OpenSearch during the upgrade; see the [Upgrade guide](../upgrade.mdx).
 :::
@@ -26,7 +26,7 @@ The supported versions for interfacing with external Elasticsearch are as follow
 
 Before interfacing, you need to prepare the required credential information.
 
-1. In the left navigation bar, click on **Cluster Management** > **Resource Management**, then switch to the cluster that needs the plugin installation.
+1. In the left navigation bar, click on **Cluster Management** > **Resource Management**, then switch to the cluster that needs the Cluster Plugin installation.
 
 2. Click on **Create Resource Object**, and fill in the code box after modifying the parameters according to the code comments.
 
