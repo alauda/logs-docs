@@ -4,7 +4,7 @@ weight: 30
 
 # Planning Infra Nodes for Logging Storage
 
-This guide explains the planning considerations for running Logging storage plugins on dedicated Kubernetes infra nodes.
+This guide explains the planning considerations for running Logging storage Cluster Plugins on dedicated Kubernetes infra nodes.
 
 ## Objectives
 
@@ -94,4 +94,4 @@ Events:
   3 node(s) had untolerated taint {node-role.kubernetes.io/infra: true}
 ```
 
-Fix: add matching tolerations to the plugin configuration and make sure the selected infra nodes also satisfy the required storage placement constraints.
+Fix: add matching tolerations to the Cluster Plugin configuration and make sure the selected infra nodes also satisfy the required storage placement constraints.
