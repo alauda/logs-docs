@@ -28,6 +28,15 @@ The stack ships as three cluster components — two plugins (Log Essentials and 
 
 A single storage cluster picks ClickHouse **or** OpenSearch as its backend and serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
 
+**Where to place the storage cluster.** By default, install log storage in every cluster, so that each cluster stores and queries its own logs. If you need to search the logs of several clusters in one place, or you do not want to run a full log storage stack (Kafka plus ClickHouse or OpenSearch) in every cluster, you can point the collectors of several clusters at one storage cluster. In that case:
+
+- If the `global` cluster is deployed with disaster recovery, do not use the primary or the standby `global` cluster as the storage cluster for workload clusters: log data is not replicated between them and would be unavailable after a failover. Each `global` cluster of the pair keeps its own log storage and does not share it with the other `global` cluster. In other cases, the `global` cluster can host the storage cluster.
+- The total log volume sent to one storage cluster must stay within the largest profile in [Log Component Capacity Planning](../architecture/capacity_planning.mdx).
+
+:::warning Local storage is deprecated
+Starting from ACP 4.5, local storage (`LocalVolume`) for Logging components is deprecated. It is still available, but a future release may remove it. For new installations, keep the data of ClickHouse, OpenSearch, and Kafka on a `StorageClass` or `PV`. Local storage is bound to a single node and is not preserved when the node is replaced; on bare-metal clusters whose nodes run Alauda OS, local storage cannot be persisted, so do not use it. Existing installations that use local storage keep working after you upgrade.
+:::
+
 For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component Selection Guide](../architecture/component_suggestion.mdx).
 
 :::warning
