@@ -22,7 +22,7 @@ The upgrade has four steps on each storage cluster:
 | --- | --- | --- |
 | 1 | SRE | Upload the Log Storage Management package to the platform. |
 | 2 | SRE | Deploy Kafka in `cpaas-system`, and create the Kafka connection Secret `platform-default-mq-conn`. |
-| 3 | SRE | Install the Log Storage Management operator. |
+| 3 | SRE | Install the Log Storage Management Operator. |
 | 4 | Operator | Protect the legacy chart resources, create the ClickHouse connection Secret `platform-default-ch-conn`, and create `PlatformLogForward/platform-default` from the running chart. |
 
 After `PlatformLogForward/platform-default` is `Ready`, you can optionally retire the legacy Cluster Plugins; see *Retire the legacy Cluster Plugins* below.
@@ -63,7 +63,7 @@ If this upgrade is on the standby side of an active-standby `global` DR pair, na
 `platform-default-ch-conn` is operator-derived by the migration (fixed name `platform-default-ch-conn`) — its standby-side collision is handled by the operator's etcd-sync ignore-equal rules; no SRE action for that Secret on this path.
 :::
 
-### Step 3: Install the operator
+### Step 3: Install the Operator
 
 Install the operator on the storage cluster as in [Installation](./install/index.mdx) § 1.2. Skip the rest of the Installation chapter: do not create `platform-default-ch-conn` or a `PlatformLogForward`.
 
