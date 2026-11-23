@@ -231,7 +231,7 @@ This procedure restores ClickHouse data table by table. Choose the preparation s
 
 Stop `razor` first to prevent new data from being written during the restore.
 
-Log in to the cluster master node and create a ResourcePatch to stop `razor`:
+Log in to a control plane node of the cluster and create a ResourcePatch to stop `razor`:
 
 ```bash
 cat <<EOF > /tmp/rp-stop-razor.yaml
@@ -277,7 +277,7 @@ In this deployment, ClickHouse Keeper is integrated with ClickHouse and its data
 >
 > Clean the actual ClickHouse data directory for each ClickHouse instance according to the storage type. For LocalVolume deployments, the directory is typically `/cpaas/data/clickhouse/` on the host node. For StorageClass deployments, clean the ClickHouse data directory on the corresponding StorageClass volume or PV. Do not use `/cpaas/data/clickhouse/` for StorageClass deployments unless it is confirmed to be the actual mounted data path.
 
-Log in to the cluster master node and create a ResourcePatch to stop ClickHouse:
+Log in to a control plane node of the cluster and create a ResourcePatch to stop ClickHouse:
 
 ```bash
 cat <<EOF > /tmp/rp-stop-ck.yaml
