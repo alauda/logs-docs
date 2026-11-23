@@ -179,18 +179,18 @@
       "updated_at": "2026-05-16T09:37:46Z"
     },
     "docs/en/how_to/clickhouse_backup_restore_local_or_nas.md": {
-      "sha256": "0cdf55d81257215cdec5551ffbe2e62c74cb77eeab428642cec146d52289e7c1",
-      "size": 19105,
+      "sha256": "43a825aa09d5fd68c512abdebe5e4033b83ae09e1f0a0a333b52af29cefdee34",
+      "size": 19129,
       "description": "Runbook for backing up and restoring ClickHouse tables in the `observability` database (audit, event, log_kubernetes, log_platform, log_system, log_workload) to a local directory or NAS mount on ReplicatedMergeTree clusters running ClickHouse 25.3+. Shows `BACKUP TABLE ... TO File(...)` with zstd compression, weekly-full + daily-incremental strategy using `base_backup`, and archiving from the ClickHouse backup directory (typically `/cpaas/data/clickhouse/backups` for LocalVolume) to NAS. The restore section covers stopping the `razor` consumer via a ResourcePatch, handling Case A (data directory healthy) vs Case B (data directory or Keeper damaged, requiring stopping the ClickHouseInstallation `cpaas-clickhouse` and wiping `/cpaas/data/clickhouse/*`), then per-table `DROP TABLE ... ON CLUSTER 'replicated' SYNC` and `RESTORE TABLE ... FROM File(...)`, with validation via `system.backups`, `system.parts`, and `system.replicas`.",
       "generation_method": "ai_agent_reading",
-      "updated_at": "2026-05-16T09:37:46Z"
+      "updated_at": "2026-11-23T07:00:20Z"
     },
     "docs/en/how_to/clickhouse_backup_restore_s3.md": {
-      "sha256": "4b321eab68d6d2482e8e341417d33076d15fabb95111f0dc864d2e4467264eec",
-      "size": 13483,
+      "sha256": "8cfaaa8216cc35d4f175387bd5547147c6044176c6a41353a71b52c15c3bd061",
+      "size": 13507,
       "description": "Runbook for backing up and restoring ClickHouse `observability` tables directly to S3 on ReplicatedMergeTree clusters (ClickHouse 25.3+). Provides `BACKUP TABLE ... TO S3(...)` and incremental-backup syntax with `base_backup`, the required S3 permissions (PutObject, GetObject, ListBucket, optional DeleteObject), and a validation workflow using `mc ls`. The restore procedure mirrors the local/NAS guide: stop the `razor` StatefulSet through a ResourcePatch, decide between Case A (data directory healthy) and Case B (wipe `/cpaas/data/clickhouse/*` and restart the `cpaas-clickhouse` ClickHouseInstallation), then `DROP TABLE ... ON CLUSTER 'replicated' SYNC` followed by `RESTORE TABLE ... FROM S3(...)` per table, with row-count, partition, and `system.replicas` checks (`total_replicas=3`, `queue_size=0`).",
       "generation_method": "ai_agent_reading",
-      "updated_at": "2026-05-16T09:37:46Z"
+      "updated_at": "2026-11-23T07:00:20Z"
     },
     "docs/en/how_to/index.mdx": {
       "sha256": "6ec39d9cde11b3b60ae9607c0686e5b00ee90eae953d605af598bcf89687adbc",
