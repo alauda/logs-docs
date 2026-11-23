@@ -101,13 +101,6 @@
       "generation_method": "ai_agent_reading",
       "updated_at": "2026-05-16T09:37:46Z"
     },
-    "docs/en/apis/intro.mdx": {
-      "sha256": "ba573e272a43d002cda4be47046ab94646c34a62222106375a4e866a83493722",
-      "size": 55,
-      "description": "Introduction page for the API reference that embeds the shared `<AcpApisOverview />` component, presenting the ACP-wide API conventions and discovery surface that the Log and Event API pages build upon.",
-      "generation_method": "ai_agent_reading",
-      "updated_at": "2026-05-16T09:37:46Z"
-    },
     "docs/en/architecture/architecture.mdx": {
       "sha256": "a615d12fa71d5bf632b0e5789ac32e9533bf8cf32402d24228c22bbd7b354f77",
       "size": 3325,
