@@ -10,7 +10,7 @@ When installing the Logging module on ACP 4.4 you pick one of two storage backen
 - **ClickHouse** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended for high throughput and cost-sensitive retention.
 - **OpenSearch** (fresh install via **Alauda Container Platform Log Storage Management**) — recommended when Lucene-style query experience matters.
 
-The operator is the same for both — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`.
+The Operator is the same for both — **Alauda Container Platform Log Storage Management** — and the backend is selected in `PlatformLogForward.spec.externalStorage.type`.
 
 The Elasticsearch backend that earlier releases shipped is **no longer offered on ACP 4.4**. Customers upgrading from ACP 4.2 or 4.3 on Elasticsearch must migrate their data to ClickHouse or OpenSearch as part of the upgrade — see the upgrade guide. The comparison table below still lists Elasticsearch so upgrading customers can weigh a target for the migration.
 

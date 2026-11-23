@@ -9,7 +9,7 @@ This chapter installs the logging stack on a fresh platform. If you are moving a
 The stack has three parts and installs in this order:
 
 1. **Log storage** — deploy either ClickHouse or OpenSearch, plus Kafka, then install the Log Storage operator and hand the endpoints to it. This runs on every storage cluster.
-2. **Log Collector** — install the collector plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
+2. **Log Collector** — install the collector Cluster Plugin on every cluster whose logs, events, or audit records must be collected, and point it at the storage cluster.
 3. **Log Essentials** — install once on the `global` cluster; publishes the query APIs used by the console.
 
 At the end, the ACP console can query the collected data in **Operations Center** > **Logs**.
@@ -18,13 +18,13 @@ At the end, the ACP console can query the collected data in **Operations Center*
 
 ## What you install
 
-The stack ships as three cluster components — two plugins (Log Essentials and Log Collector) and one operator (Log Storage Management). Install only the components that match your topology.
+The stack ships as three cluster components — two Cluster Plugins (Log Essentials and Log Collector) and one Operator (Log Storage Management). Install only the components that match your topology.
 
 | Component | Kind | Where to install | Purpose |
 | --- | --- | --- | --- |
 | **Alauda Container Platform Log Storage Management** | Operator | Every cluster that stores logs | Deploys `log-storage-operator`, which watches `PlatformLogForward` and builds the storage-side data path (aggregate-vector, Razor, schema-migrations) against either ClickHouse or OpenSearch. The backend choice lives in the PLF, not in the operator install form. |
-| **Alauda Container Platform Log Collector** | Plugin | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
-| **Alauda Container Platform Log Essentials** | Plugin | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
+| **Alauda Container Platform Log Collector** | Cluster Plugin | Every cluster whose data must be collected | Deploys the node-level collector (nevermore) and forwards to a nominated storage cluster. |
+| **Alauda Container Platform Log Essentials** | Cluster Plugin | `global` cluster only, once per platform | Publishes the log, event, and audit query APIs used by the console. |
 
 A single storage cluster picks ClickHouse **or** OpenSearch as its backend and serves many collector clusters; a single collector cluster ships to exactly one storage cluster.
 
@@ -369,35 +369,54 @@ If you already run a ClickHouse cluster, ensure the database and the logging acc
 If you already run an OpenSearch cluster, ensure `analysis-ik` is installed on every node and the logging account exists. To build a cluster from scratch, follow the Alauda Container Platform OpenSearch product documentation.
 
 
-### 1.2 Install the Log Storage operator
+### 1.2 Install the Log Storage Operator
 
-**Alauda Container Platform Log Storage Management** installs `log-storage-operator` on the storage cluster. One operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the operator install form.
+**Alauda Container Platform Log Storage Management** is an Operator (package `log-storage-operator`, from the `platform` CatalogSource). Install it through OperatorHub on the storage cluster; it deploys `log-storage-operator` in `cpaas-system`. One Operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` you create in Section 1.4, not in the Operator install form.
 
 #### Console
 
-1. Navigate to **Marketplace** > **Cluster Plugins** and select the storage cluster.
-2. Find **Alauda Container Platform Log Storage Management** and click **Install** in its row.
-3. Accept the defaults. Optionally set the node selector and tolerations to pin `log-storage-operator` to infra nodes.
-4. Click **Install**.
+1. In the **Administrator** view, navigate to **Marketplace** > **OperatorHub** and select the storage cluster.
+2. Find **Alauda Container Platform Log Storage Management**.
+   If its status is **Absent**, upload the Log Storage Management package for your ACP version to the platform first, the same way as other Operator packages.
+3. Click **Install**. Set the installation namespace to `cpaas-system`, and keep the defaults for the channel and the upgrade strategy.
+4. Click **Install**, then wait until the Operator status is **Succeeded**.
 
-{/* verify against live console: confirm the plugin install form does not require connection details (endpoint, credentials) — those are supplied later as PlatformLogForward + connection Secrets, not as install form fields. */}
+#### Optional: pin the Operator to infra nodes
+
+The placement of `log-storage-operator` itself is set on its OLM `Subscription`, through `spec.config.nodeSelector` and `spec.config.tolerations`. Find the Subscription name with `kubectl -n cpaas-system get subscriptions`, then patch it, for example:
+
+```bash
+kubectl -n cpaas-system patch subscription <subscription-name> --type merge -p '
+spec:
+  config:
+    nodeSelector:
+      node-role.kubernetes.io/infra: ""
+    tolerations:
+    - key: node-role.kubernetes.io/infra
+      operator: Exists
+      effect: NoSchedule
+'
+```
+
+OLM rolls the Operator Deployment with the new placement. This setting does not move the storage-side workloads that the Operator derives from `PlatformLogForward`.
 
 #### Verify
 
 ```bash
+kubectl -n cpaas-system get csv | grep log-storage-operator
 kubectl -n cpaas-system get deployment log-storage-operator-controller-manager
 ```
 
-The `READY` column must show all replicas ready, for example `2/2`.
+The CSV `PHASE` must be `Succeeded`, and the Deployment `READY` column must show all replicas ready, for example `2/2`.
 
 ### 1.3 Create the connection Secrets
 
 Two Secrets in `cpaas-system` carry the endpoint and credentials for the external stack. `log-storage-operator` reads them by whatever name the `PlatformLogForward` points at through `spec.{externalMessageQueue,externalStorage}.secretRef.name`; the default names shown below (`platform-default-mq-conn`, `platform-default-ch-conn`, `platform-default-os-conn`) are a convention, not an operator contract. Standalone clusters and workload clusters can leave them as-is.
 
-:::warning Installing on the standby global cluster of a DR pair
-If this install is on the standby side of an active-standby `global` DR pair, rename the Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides, the master's Secrets replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the master's credentials on failover.
+:::warning Installing on the standby `global` cluster of a DR pair
+If this install is on the standby side of an active-standby `global` DR pair, rename the Secrets on this side (for example `platform-default-mq-conn-standby` and `platform-default-ch-conn-standby` or `platform-default-os-conn-standby`) and point `PlatformLogForward.spec.{externalMessageQueue,externalStorage}.secretRef.name` at the renamed Secrets. With identical default names on both sides, the Secrets of the primary `global` cluster replicate over etcd-sync and overwrite the standby's, which then authenticates `aggregate-vector` and `razor` against the primary's credentials on failover.
 
-The master and any single-site global install keep the defaults.
+The primary `global` cluster and any `global` cluster without disaster recovery keep the defaults.
 :::
 
 Every command in this section runs on the storage cluster.
@@ -740,7 +759,7 @@ If the cluster genuinely holds legacy logging data (`AppRelease/logclickhouse` e
 
 ## 2. Install Log Collector
 
-Install this plugin on every cluster whose logs, events, or audit records must be collected. That includes the `global` cluster if its own data must be collected.
+Install this Cluster Plugin on every cluster whose logs, events, or audit records must be collected. That includes the `global` cluster if its own data must be collected.
 
 ### Console
 
@@ -841,7 +860,7 @@ Every collector cluster's row must show `STATUS=Running`.
 ### YAML
 
 :::warning Edit before you apply
-Replace `spec.version: v4.4.0` with the actual version registered in your cluster: `kubectl get moduleconfigs | grep log-api` and copy a `log-api-v4.4.x` name. If the version is not registered, cluster-transformer rejects the ModuleInfo with `moduleconfig <name> not found`. The `metadata.name` (`global-log-api`) and `metadata.labels.cpaas.io/cluster-name` (`global`) are fixed — the log-api plugin is a global-cluster-only component.
+Replace `spec.version: v4.4.0` with the actual version registered in your cluster: `kubectl get moduleconfigs | grep log-api` and copy a `log-api-v4.4.x` name. If the version is not registered, cluster-transformer rejects the ModuleInfo with `moduleconfig <name> not found`. The `metadata.name` (`global-log-api`) and `metadata.labels.cpaas.io/cluster-name` (`global`) are fixed — the log-api Cluster Plugin runs only on the `global` cluster.
 :::
 
 ```yaml
@@ -871,7 +890,7 @@ The `STATUS` column must be `Running`.
 
 ## 4. Verify end-to-end
 
-After every plugin is `Running`, verify that new records actually flow from a collector cluster into the storage backend.
+After every Extension is `Running`, verify that new records actually flow from a collector cluster into the storage backend.
 
 1. On every storage cluster:
 
@@ -898,8 +917,8 @@ If no records arrive within ten minutes, before changing configuration, work thr
 
 ## Next steps
 
-Once every plugin above reports installed:
+Once every Extension above reports installed:
 
 - Walk the seven-step [How to Verify a Fresh Install of the Logging Stack](./post-install-verification.mdx) checklist to confirm the write path and the read path are both working end to end.
 - If a step fails, jump straight to the matching entry in [Troubleshooting the Logging Stack](../how_to/troubleshooting.mdx).
-- When you eventually retire this install, follow [How to Uninstall the Logging Stack](../how_to/uninstall.mdx). The external ClickHouse (or OpenSearch) cluster, the external Kafka cluster, and the two SRE-authored connection Secrets are outside the plugin lifecycle — that page names the exact commands to reclaim each.
+- When you eventually retire this install, follow [How to Uninstall the Logging Stack](../how_to/uninstall.mdx). The external ClickHouse (or OpenSearch) cluster, the external Kafka cluster, and the two SRE-authored connection Secrets are outside the Extension lifecycle — that page names the exact commands to reclaim each.
