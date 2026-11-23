@@ -14,10 +14,30 @@ This guide explains the planning considerations for running Logging storage comp
 
 ## Where to Configure Placement
 
-The storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement through the plugin install form or through the underlying `ModuleInfo`; do not patch the generated Deployments directly.
+The storage-side workloads (`Razor`, `aggregate-vector`, and the one-shot `schema-migrations` Job) are derived by `log-storage-operator` from `PlatformLogForward`. Set their placement in the `PlatformLogForward/platform-default` spec; do not patch the generated Deployments directly, because the Operator reconciles them back.
 
-- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), which is an Operator, set the node selector and tolerations of `log-storage-operator` itself on its OLM `Subscription` (`spec.config.nodeSelector` and `spec.config.tolerations`). See [Installation](../install/index.mdx), section 1.2.
-- For **Alauda Container Platform Log Collector** (a DaemonSet), use the Cluster Plugin install form on the collector cluster; the same **Advanced Configuration** section applies.
+- For **Alauda Container Platform Log Storage Management** (ClickHouse or OpenSearch backend), which is an Operator:
+  - `Razor`: set `spec.razor.nodeSelector` and `spec.razor.tolerations` in `PlatformLogForward`.
+  - `aggregate-vector`: set `spec.aggregateVector.nodeSelector` and `spec.aggregateVector.tolerations` in `PlatformLogForward`.
+  - When `tolerations` is empty, the Operator applies its default tolerations, which tolerate the `NoSchedule` taints `node-role.kubernetes.io/master`, `node-role.kubernetes.io/control-plane`, `node-role.kubernetes.io/cpaas-system`, and `node-role.kubernetes.io/infra`. A non-empty `tolerations` list replaces these defaults instead of being merged with them.
+  - The `schema-migrations` Job has no placement fields. It always uses the default tolerations above, so it can run on infra nodes tainted with `node-role.kubernetes.io/infra` but is not pinned to them.
+  - `log-storage-operator` itself: set `spec.config.nodeSelector` and `spec.config.tolerations` on its OLM `Subscription`. See [Installation](../install/index.mdx), section 1.2.
+
+  For example, to pin `Razor` and `aggregate-vector` to infra nodes:
+
+  ```bash
+  kubectl patch platformlogforward platform-default --type merge -p '
+  spec:
+    razor:
+      nodeSelector:
+        node-role.kubernetes.io/infra: ""
+    aggregateVector:
+      nodeSelector:
+        node-role.kubernetes.io/infra: ""
+  '
+  ```
+
+- For **Alauda Container Platform Log Collector** (a DaemonSet), use the **Advanced Configuration** section of the Cluster Plugin install form on the collector cluster.
 - For **Alauda Container Platform Log Storage for Elasticsearch** (legacy), configure placement through `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` and `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` in the ACP 4.3 documentation for that Cluster Plugin.
 
 Do not patch the generated StatefulSets, Deployments, or ClickHouseInstallation resources as the standard way to place Logging storage workloads on infra nodes.
