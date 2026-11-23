@@ -47,7 +47,7 @@ kubectl get feature log-center -o jsonpath='{.spec}' | jq
 Fields that should be populated:
 
 - `spec.type` — `clickhouse` or `opensearch`, matching the storage backend you installed.
-- `spec.secureAddress` — the storage cluster's local ALB endpoint (not the global platform URL). If this points at the global platform URL, upgrade the operator; earlier operator builds derived it wrong (Bug 134).
+- `spec.secureAddress` — the storage cluster's local ALB endpoint (not the Platform Access Address). If this points at the Platform Access Address, upgrade the operator; earlier operator builds derived it wrong (Bug 134).
 - `spec.secretRef` — the name of the callback secret in `cpaas-system` on the storage cluster; razor-api uses it to authenticate cross-cluster.
 
 ## 4. The storage schema is present
