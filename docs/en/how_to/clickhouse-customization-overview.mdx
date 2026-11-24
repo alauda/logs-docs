@@ -1,0 +1,81 @@
+---
+weight: 11
+---
+
+# ClickHouse Log Stack — Customization Overview
+
+The ACP 4.4 ClickHouse log stack is split across three owners, and each customization request lands in a different surface. Operators coming from the ACP 4.2 or 4.3 `chart-alauda-log-clickhouse` plugin should read this page once before changing anything — the chart-era `values.yaml` keys (`configuration.files`, `extraEnv`, `extraSecrets`, Keeper mode, server settings, extra Vector transforms, extra Vector sinks) do not exist here. The equivalent knobs live on different resources.
+
+## What changed in 4.4
+
+The chart plugin that previously packaged Kafka, ClickHouse, Keeper, ingest and query under a single `AppRelease/logcenter` is retired. The 4.4 data plane has three independent owners:
+
+- **ClickHouse and Keeper** are owned by the SRE team as an external dependency. A `ClickHouseInstallation` (CHI) deployed through the Altinity ClickHouse Operator (chop), plus a Keeper quorum of your choice, is handed to log-storage-operator via `platform-default-ch-conn`.
+- **The data path** (`aggregate-vector`, `razor`, schema migrations, log retention policies) is owned by `log-storage-operator` and reconciled from a single `PlatformLogForward` custom resource.
+- **Per-project log forwarding** (write the same log to an extra Kafka / Elasticsearch / HTTP / OpenSearch / Loki / ClickHouse / syslog / console sink) is owned by the SRE team as one or more `LogForward` custom resources.
+
+Keeping those three boundaries straight is the key to picking the right surface for each change.
+
+## Capability map
+
+The table below maps the common customization requests from the chart-era stack to the 4.4 surface. Each row names the owner and points at a dedicated how-to page (or sample), so you can go deeper when needed.
+
+| Customization | Owner | Surface in 4.4 |
+| --- | --- | --- |
+| Inject extra `storage_configuration.xml` or other `*.xml` fragments | SRE | `ClickHouseInstallation.spec.configuration.files` on the CHI. See [External ClickHouse integration](./external-clickhouse.mdx) for the integration flow; the chop user guide covers the `configuration.files` schema itself. |
+| Inject extra `env` into ClickHouse pods (e.g. S3 credentials) | SRE | `ClickHouseInstallation.spec.configuration.podTemplates[*].spec.containers[*].env`. |
+| Mount extra Secrets into ClickHouse pods (S3 credentials, mTLS certs, …) | SRE | `ClickHouseInstallation.spec.configuration.podTemplates[*].spec.volumes` plus matching `volumeMounts`. |
+| Server-side `settings` and user `profiles` (`background_pool_size`, query concurrency, …) | SRE | `ClickHouseInstallation.spec.configuration.{users,profiles,settings}` — same surface as any chop install. |
+| Keeper topology (independent quorum, resource isolation from CH) | SRE | A 3-node Keeper `StatefulSet` deployed independently of the CHI; the quickstart ships one in [`chart/files/ck/templates/10-keeper.yaml`](https://gitlab-ce.alauda.cn/ait/log/chart-alauda-log-quickstart/-/blob/release-4.4/chart/files/ck/templates/10-keeper.yaml). The CHI connects via `useTemplates` + `zookeeper` settings rather than embedding Keeper inside the CH pod. |
+| Hot/cold tiering with S3 cold volume (TTL `… TO VOLUME 's3_cold'`) | log-storage-operator | `PlatformLogForward.spec.clickhouse.tieredPolicy.enabled: true` + `.storagePolicyName` + `.coldTTL.<table>` days. The operator renders `SETTINGS storage_policy='…'` into every `CREATE TABLE` and emits `ALTER TABLE … MODIFY TTL … TO VOLUME` via razor. See [ClickHouse S3 cold storage](./clickhouse-s3-storage.mdx). |
+| `aggregate-vector` sink tuning (batch size, buffer size, retry behaviour, concurrency) | log-storage-operator | Nine declarative knobs on `PlatformLogForward.spec.externalStorage.*` — `batchMaxEvents`, `batchMaxBytes`, `batchTimeoutSecs`, `bufferMaxEvents`, `bufferWhenFull`, `requestConcurrency`, `retryAttempts`, `retryInitialBackoffSecs`, `retryMaxDurationSecs`. See [Aggregate-vector sink tuning](./aggvec-sink-tuning.mdx). |
+| Custom Vector transforms (VRL, `reduce`, `route`, `remap`) for the `aggregate-vector` pipeline or a specific `LogForward` | SRE | Escape hatch: add `log.alauda.io/user-managed: "true"` to the target ConfigMap. The operator skips reconcile on that CM, leaving the hand-edited `vector.toml` in place across restarts and upgrades. See [Vector ConfigMap override](./vector-cm-override.mdx). |
+| Multi-sink forwarding (same project's logs → extra Kafka / ES / OS / Loki / HTTP / ClickHouse / syslog / console) | SRE | `LogForward` CRD. Eight declarative sink types plus an `advancedSink` escape hatch for anything Vector itself supports. Input filters select by namespace / project / workload label. See [Log forwarding](./log_forward.mdx), [Advanced sink](./log_forward_advanced_sink.mdx), [OTLP forwarding](./log-forward-otlp.mdx). |
+| Table-level DDL tuning (per-column `CODEC(ZSTD(1))`, `ORDER BY`, extra `tokenbf_v1` / `bloom_filter` indexes, additional partitions) | SRE | Direct `ALTER TABLE … ON CLUSTER '<cluster>'` against the ClickHouse endpoint. See the DDL persistence note below — the operator's schema migrations are append-only and do not overwrite your ALTERs on restart or upgrade. |
+
+## DDL persistence contract
+
+`schema-migrations` is a one-shot Job that runs a golang-migrate sequence of numbered DDL files (`001_create_audit.up.sql` through `012_alter_event_api_resource.up.sql` on 4.4) against the external ClickHouse. Two guarantees you can rely on:
+
+1. **Every statement is idempotent.** `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `DROP COLUMN IF EXISTS`. Re-running the Job on a cluster that already has the final schema is a no-op; the only state the Job mutates is its own `schema_migrations` bookkeeping table.
+2. **Operator migrations never touch user-added decoration.** Columns the operator did not create are not rewritten. Column-level `CODEC(…)` added with `ALTER TABLE … MODIFY COLUMN`, secondary indexes added with `ADD INDEX`, `ORDER BY` keys or additional `PARTITION BY` segments added through `MODIFY TABLE`, and custom TTL expressions are preserved across upgrades.
+
+Baked-in DDL changes between operator versions (new table, new column, DROP of a replaced column) are applied through a new numbered migration file, which simply advances the `schema_migrations.version` row and runs a guarded ALTER. There is no "resync-from-spec" step that would clobber hand-written DDL.
+
+What this means in practice: any schema tuning that was expressed as a one-time `ALTER` in the chart era (ZSTD codec, ORDER BY refinement, tokenbf index for keyword search) is applied the same way in 4.4 — connect to the external CH as `admin` and run the ALTER. You do not need a chart `values` escape hatch for this.
+
+:::info Log column cleanup is already applied
+The removal of the legacy `log` column (replaced by `log_data` / `size`) is migration `011_drop_log_column.up.sql`. On a fresh 4.4 install the log tables never carry it; on a 4.3 → 4.4 adopted cluster the migration drops it during the first `schema-migrations` run. You do not need to action this.
+:::
+
+## Where the chart-era `values.yaml` keys land
+
+For operators mentally translating from the previous plugin shape:
+
+| chart-era key | 4.4 surface |
+| --- | --- |
+| `clickhouse.configuration.files.*` | CHI `spec.configuration.files` (SRE-owned) |
+| `clickhouse.podTemplate.env`, `extraEnv` | CHI `spec.configuration.podTemplates[*].spec.containers[*].env` (SRE-owned) |
+| `clickhouse.extraSecrets`, `extraVolumes` | CHI `spec.configuration.podTemplates[*].spec.{volumes,volumeMounts}` (SRE-owned) |
+| `keeper.mode: external` | Deploy Keeper as an independent StatefulSet; point CHI `useTemplates` at the external Keeper. |
+| `clickhouse.settings`, `profiles` | CHI `spec.configuration.{settings,profiles,users}` (SRE-owned) |
+| `vector.extraTransforms`, `extraVrlTransforms`, `sinkInputOverrides` | `log.alauda.io/user-managed: "true"` on the `aggregate-vector` or `LogForward` ConfigMap; hand-edit the `vector.toml`. |
+| `vector.extraSinks` (same log to multiple destinations) | A `LogForward` custom resource per destination. |
+| Hot/cold S3 TTL | `PlatformLogForward.spec.clickhouse.{tieredPolicy,coldTTL}` + CHI `storage_configuration.xml` (both sides SRE-aligned on policy name). |
+
+## Known gaps
+
+**Multi-line log consolidation** (reassemble Java / Python stack traces that span many lines so each line is not ingested as a separate record) is not yet available on the collector side. The Vector file source natively supports `multiline.start_pattern`, but the collector (`nevermore`) does not expose a declarative knob for it on the current 4.4 release line. Workarounds while a native surface is scoped:
+
+- Route the affected workload through a `LogForward` with an `advancedSink` of type `remap` that reassembles entries before forwarding downstream — only reshapes forwarded copies, not the data landing in the primary ClickHouse backend.
+- For stack traces that are already structured (JSON single-line with `\n` inside a `message` field), downstream UI rendering is unaffected — only the raw text case is impacted.
+
+## Related reading
+
+- [External ClickHouse integration](./external-clickhouse.mdx) — hand a pre-existing CH + Keeper + Kafka to log-storage-operator.
+- [ClickHouse S3 cold storage](./clickhouse-s3-storage.mdx) — the hot/cold tiering surface.
+- [ClickHouse storage expansion](./clickhouse-expand-storage.mdx) — scale an existing CHI without downtime.
+- [Aggregate-vector sink tuning](./aggvec-sink-tuning.mdx) — the 9 declarative knobs for the primary ingest sink.
+- [Vector ConfigMap override](./vector-cm-override.mdx) — the escape hatch for anything Vector-native that is not yet a declarative CR field.
+- [Log forwarding](./log_forward.mdx), [Advanced sink](./log_forward_advanced_sink.mdx), [OTLP forwarding](./log-forward-otlp.mdx) — multi-sink forwarding via the `LogForward` CRD.
+- [Project cold data retention](./project-cold-data-retention.mdx), [Platform-default log retention](./platform-default-log-retention.mdx) — TTL control at the project and system level.
