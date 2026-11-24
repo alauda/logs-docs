@@ -4,7 +4,7 @@ weight: 20
 
 # How to Verify a Fresh Install of the Logging Stack
 
-After [Installation](./index.mdx) reports every plugin as installed, walk this checklist to confirm the write path and the read path are both working. Each step ends in one concrete signal, so it is easy to stop at the first thing that is wrong and jump to [Troubleshooting](../how_to/troubleshooting.mdx).
+After [Installation](./index.mdx) reports every Extension as installed, walk this checklist to confirm the write path and the read path are both working. Each step ends in one concrete signal, so it is easy to stop at the first thing that is wrong and jump to [Troubleshooting](../how_to/troubleshooting.mdx).
 
 The checklist runs on any of the storage backends. Points that only apply to one backend are called out inline.
 
@@ -38,7 +38,7 @@ Every node in the `Log.Kubernetes=true` collection scope should have a `nevermor
 
 ## 3. The `log-center` Feature CR is on the storage cluster
 
-The Log Storage operator creates a `Feature/log-center` CR in `cpaas-system` on **the storage cluster it is installed on**. The global cluster's razor-api reads this Feature (synced through cluster-transformer) to discover each storage cluster's endpoint. On the storage cluster:
+The Log Storage operator creates a `Feature/log-center` CR in `cpaas-system` on **the storage cluster it is installed on**. The `global` cluster's razor-api reads this Feature (synced through cluster-transformer) to discover each storage cluster's endpoint. On the storage cluster:
 
 ```bash
 kubectl get feature log-center -o jsonpath='{.spec}' | jq
@@ -47,7 +47,7 @@ kubectl get feature log-center -o jsonpath='{.spec}' | jq
 Fields that should be populated:
 
 - `spec.type` — `clickhouse` or `opensearch`, matching the storage backend you installed.
-- `spec.secureAddress` — the storage cluster's local ALB endpoint (not the global platform URL). If this points at the global platform URL, upgrade the operator; earlier operator builds derived it wrong (Bug 134).
+- `spec.secureAddress` — the storage cluster's local ALB endpoint (not the Platform Access Address). If this points at the Platform Access Address, upgrade the operator; earlier operator builds derived it wrong (Bug 134).
 - `spec.secretRef` — the name of the callback secret in `cpaas-system` on the storage cluster; razor-api uses it to authenticate cross-cluster.
 
 ## 4. The storage schema is present
@@ -105,7 +105,7 @@ kubectl -n default run smoketest --restart=Never --image=busybox --rm -it -- \
   sh -c 'echo "logging-smoketest-$(date +%s)"; sleep 3'
 ```
 
-Wait about a minute. On the global cluster, query razor-api for the marker:
+Wait about a minute. On the `global` cluster, query razor-api for the marker:
 
 ```bash
 kubectl -n cpaas-system exec -it deploy/razor-api -- \

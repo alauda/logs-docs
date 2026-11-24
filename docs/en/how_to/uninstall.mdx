@@ -159,9 +159,9 @@ curl -sk -u admin:admin 'https://<endpoint>/_index_template' \
   | xargs -I{} curl -sk -u admin:admin -XDELETE "https://<endpoint>/_index_template/{}"
 ```
 
-## 5. Uninstall the Log Collector plugin on collector clusters
+## 5. Uninstall the Log Collector Cluster Plugin on collector clusters
 
-If the storage cluster you are decommissioning is the last storage cluster in the platform, remove the Log Collector plugin from every collector cluster afterwards. Each cluster:
+If the storage cluster you are decommissioning is the last storage cluster in the platform, remove the Log Collector Cluster Plugin from every collector cluster afterwards. Each cluster:
 
 ```bash
 # In the workload cluster
@@ -169,7 +169,7 @@ kubectl -n cpaas-system delete subscription log-collector
 kubectl -n cpaas-system delete csv $(kubectl -n cpaas-system get csv -o name | grep log-collector)
 ```
 
-The Log Collector plugin does not persist state that outlives its own namespaced resources, so this is a clean removal.
+The Log Collector Cluster Plugin does not persist state that outlives its own namespaced resources, so this is a clean removal.
 
 ## 6. Final checklist
 

@@ -13,7 +13,7 @@ The Logging module has three responsibilities:
 2. **Log storage** — persist those records into a scalable backend (ClickHouse or OpenSearch). Elasticsearch is no longer offered on ACP 4.4; customers upgrading from earlier releases on Elasticsearch migrate to one of these two.
 3. **Log query and visualization** — serve queries from the ACP console over the stored data.
 
-These responsibilities are split across three cluster components — two plugins (Log Essentials, Log Collector) and one operator (Log Storage Management) — that talk to two external systems the SRE prepares before install: a Kafka cluster and either a ClickHouse or an OpenSearch cluster. See [Installation](../install/index.mdx). The Log Storage Management operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR.
+These responsibilities are split across three cluster components — two Cluster Plugins (Log Essentials, Log Collector) and one Operator (Log Storage Management) — that talk to two external systems the SRE prepares before install: a Kafka cluster and either a ClickHouse or an OpenSearch cluster. See [Installation](../install/index.mdx). The Log Storage Management operator covers both ClickHouse and OpenSearch backends; the backend choice is made in the `PlatformLogForward` CR.
 
 ```mermaid
 flowchart LR
@@ -98,4 +98,4 @@ The ACP console reads through the query APIs published by **Alauda Container Pla
 | Event query | `/platform/events.alauda.io/v1` |
 | Audit query | `/platform/audits.alauda.io/v1` |
 
-`razor-api` (the Log Essentials plugin's Deployment on `global`; ModuleInfo `log-api`) receives the request, picks the storage cluster from the request, and forwards the query to that cluster's Razor. Razor executes it against the local ClickHouse or OpenSearch endpoint and returns the results.
+`razor-api` (the Log Essentials Cluster Plugin's Deployment on `global`; ModuleInfo `log-api`) receives the request, picks the storage cluster from the request, and forwards the query to that cluster's Razor. Razor executes it against the local ClickHouse or OpenSearch endpoint and returns the results.
