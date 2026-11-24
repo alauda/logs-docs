@@ -11,8 +11,8 @@ This guide explains how to configure a project-level cold data retention policy 
 Make sure the following conditions are met:
 
 1. The cluster uses **Alauda Container Platform Log Storage for ClickHouse**.
-2. **Cold and Hot Separate** is enabled for the ClickHouse storage plugin.
-3. A cold data S3 Secret has already been configured for the ClickHouse storage plugin.
+2. **Cold and Hot Separate** is enabled for the ClickHouse storage Cluster Plugin.
+3. A cold data S3 Secret has already been configured for the ClickHouse storage Cluster Plugin.
 4. You have permission to edit the target project in the `global` cluster.
 
 ## About Project-Level Retention Settings
@@ -68,5 +68,5 @@ Legacy labels still exist in some environments, but new configurations should us
 
 ## Related Topics
 
-- For plugin-side cold storage configuration, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
+- For the cold storage configuration of the Cluster Plugin, see [How to Use S3 Storage with ClickHouse](./clickhouse-s3-storage.mdx).
 - For ClickHouse installation parameters, see [Installation](../install_log.mdx).

@@ -5,27 +5,27 @@ sourceSHA: 43c205dddc9e388e85534a59523781e91fd162be11d7944847ee072df7a84cfa
 
 # Installation
 
-This chapter introduces how to install the following logging plugins: **Alauda Container Platform Log Essentials**, **Alauda Container Platform Log Collector**, **Alauda Container Platform Log Storage for ClickHouse**, and **Alauda Container Platform Log Storage for Elasticsearch**.
+This chapter introduces how to install the following logging Cluster Plugins: **Alauda Container Platform Log Essentials**, **Alauda Container Platform Log Collector**, **Alauda Container Platform Log Storage for ClickHouse**, and **Alauda Container Platform Log Storage for Elasticsearch**.
 
 :::warning
 
 1. The `global` cluster can query the log data stored on any workload cluster within the platform. Ensure that the `global` cluster can access port 11780 of the  workload cluster.
 
-2. **Alauda Container Platform Log Storage for ClickHouse** depends on **ClickHouse Operator**. Before installing the plugin, ensure that ClickHouse Operator has been uploaded to the cluster.
+2. **Alauda Container Platform Log Storage for ClickHouse** depends on **ClickHouse Operator**. Before installing the Cluster Plugin, ensure that ClickHouse Operator has been uploaded to the cluster.
 
 :::
 
 ## Installation Planning
 
 :::info
-Some components of the Logging are resource-intensive. We recommend running them on infra nodes through plugin configuration. The exact scheduling fields differ by plugin. If you are evaluating the product and have not provisioned infra nodes, you can remove these settings so the components run on all nodes.
+Some components of the Logging are resource-intensive. We recommend running them on infra nodes through Cluster Plugin configuration. The exact scheduling fields differ by Cluster Plugin. If you are evaluating the product and have not provisioned infra nodes, you can remove these settings so the components run on all nodes.
 
 For guidance on planning infra nodes, see <ExternalSiteLink name="acp" href="/configure/clusters/acp-node-planning.html" children="Cluster Node Planning" />.
 :::
 
-Alauda Container Platform Log Storage plugins can be installed in any cluster, and any cluster's log storage component can be selected for log collection to interface with the storage data.
+Alauda Container Platform Log Storage Cluster Plugins can be installed in any cluster, and any cluster's log storage component can be selected for log collection to interface with the storage data.
 
-So , before installing the log storage plugin , you need to plan the cluster and node where the log storage component will be installed.
+So , before installing the log storage Cluster Plugin , you need to plan the cluster and node where the log storage component will be installed.
 
   - Separate log storage by scope. Deploy log storage in the `global` cluster for the `global` cluster's own logs, so that the `global` cluster collects, stores, and queries its own logs independently. Centralize application logs from workload clusters into a dedicated log storage workload cluster rather than into the `global` cluster, so that a `global` cluster failure does not disrupt log-based issue resolution for applications, and application log load does not affect the management cluster.
 
@@ -43,9 +43,9 @@ So , before installing the log storage plugin , you need to plan the cluster and
 
 The default host paths in this chapter use the `/cpaas` prefix, which is the layout of the traditional operating system. Alauda OS nodes are immutable: only `/var/cpaas` is writable, so a path under `/cpaas` is not valid on those nodes.
 
-When you install a logging plugin on Alauda OS nodes, replace the `/cpaas` prefix with `/var/cpaas` in every host path parameter:
+When you install a logging Cluster Plugin on Alauda OS nodes, replace the `/cpaas` prefix with `/var/cpaas` in every host path parameter:
 
-| Plugin | Parameter | Path on Alauda OS |
+| Cluster Plugin | Parameter | Path on Alauda OS |
 | --- | --- | --- |
 | **Alauda Container Platform Log Storage for ClickHouse** | **Storage Path on Host** and **Metadata Storage Path**, or `spec.config.components.clickhouse.storagePolicy.*.localVolumeSpec.path` | `/var/cpaas/data/clickhouse` |
 | **Alauda Container Platform Log Storage for Elasticsearch** | **Storage path on host**, or `spec.config.components.elasticsearch.hostpath` | `/var/cpaas/data/elasticsearch` |
@@ -68,7 +68,7 @@ Back the selected path with a persistent disk that survives node re-provisioning
 
 1. Check available versions
 
-Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
+Ensure the Cluster Plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global` cluster:
 
 ```shell
 
@@ -83,7 +83,7 @@ This indicates that the ModulePlugin `log-api` exists in the cluster and version
 
 2. Create a ModuleInfo
 
-Create a ModuleInfo resource to install the plugin without any configuration parameters:
+Create a ModuleInfo resource to install the Cluster Plugin without any configuration parameters:
 
 ```yaml
 apiVersion: cluster.alauda.io/v1alpha1
@@ -117,15 +117,15 @@ YAML field reference:
 
 | Field path | Description |
 | --- | --- |
-| `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the plugin is installed. |
+| `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the Cluster Plugin is installed. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
-| `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.version` | Specifies the Cluster Plugin version to install, must match `.spec.version` in ModuleConfig.|
 | `spec.valuesOverride.ait/chart-alauda-log-api.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-api.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 3. Verify installation
 
-Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
+Since the ModuleInfo name changes upon creation, locate the resource via label to check the Cluster Plugin status and version:
 
 ```shell
 kubectl get moduleinfo -l cpaas.io/module-name=log-api
@@ -136,9 +136,9 @@ global-e671599464a5b1717732c5ba36079795          global          log-api   log-a
 Field explanations:
 
 * `NAME`: ModuleInfo resource name
-* `CLUSTER`: Cluster where the plugin is installed
-* `MODULE`: Plugin name
-* `DISPLAY_NAME`: Display name of the plugin
+* `CLUSTER`: Cluster where the Cluster Plugin is installed
+* `MODULE`: Cluster Plugin name
+* `DISPLAY_NAME`: Display name of the Cluster Plugin
 * `STATUS`: Installation status; `Running` means successfully installed and running
 * `TARGET_VERSION`: Intended installation version
 * `CURRENT_VERSION`: Version before installation
@@ -156,14 +156,14 @@ Field explanations:
 
    | Parameter | Description |
    | --- | --- |
-   | **External Elasticsearch** | Keep this switch off to install the platform-managed Elasticsearch storage plugin. |
+   | **External Elasticsearch** | Keep this switch off to install the platform-managed Elasticsearch storage Cluster Plugin. |
    | **size** | Choose `Single Node`, `Small Cluster`, or `Big Cluster` based on the target scale. |
    | **Storage Method** | Choose `LocalVolume` or `StorageClass` for the storage backend. |
    | **Log Node** | Displayed when `LocalVolume` is used. Select the Elasticsearch data nodes. |
    | **Storage path on host** | Displayed when `LocalVolume` is used. Enter the absolute host path for Elasticsearch data. On Alauda OS nodes, use a path under `/var/cpaas`, for example `/var/cpaas/data/elasticsearch`. |
    | **Capacity** | Reserve storage capacity in Gi for the current data section. The page uses this label for both Elasticsearch data and Kafka data sections. |
    | **Log data nodes resources** | Configure CPU and memory requests and limits for Elasticsearch data nodes. |
-   | **Kafka Nodes** | Select the Kafka nodes used by the plugin. |
+   | **Kafka Nodes** | Select the Kafka nodes used by the Cluster Plugin. |
    | **LogPlatform / LogWorkload / LogSystem / LogKubernetes / Kubernetes Event / Audit** | Configure retention days by log type in the **Log reserve config, in days** section. |
 
 4. Click **Install**.
@@ -172,7 +172,7 @@ Field explanations:
 
 1. Check available versions
 
-Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
+Ensure the Cluster Plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global` cluster:
 
 ```shell
 
@@ -187,7 +187,7 @@ This indicates that the ModulePlugin `logcenter` exists in the cluster and versi
 
 2. Create a ModuleInfo
 
-Create a ModuleInfo resource to install the plugin without any configuration parameters:
+Create a ModuleInfo resource to install the Cluster Plugin without any configuration parameters:
 
 ```yaml
 apiVersion: cluster.alauda.io/v1alpha1
@@ -283,9 +283,9 @@ YAML field reference:
 
 | Field path | Description |
 | --- | --- |
-| `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the plugin is installed. |
+| `metadata.labels.cpaas.io/cluster-name` | Target cluster name where the Cluster Plugin is installed. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
-| `spec.config.self.storage.disabled` | Whether to disable platform-managed storage for this plugin. Keep it `false` when installing the built-in Elasticsearch storage plugin. |
+| `spec.config.self.storage.disabled` | Whether to disable platform-managed storage for this Cluster Plugin. Keep it `false` when installing the built-in Elasticsearch storage Cluster Plugin. |
 | `spec.config.components.elasticsearch.address` | External Elasticsearch address; leave empty to use platform-installed Elasticsearch. |
 | `spec.config.components.elasticsearch.basicAuthSecretName` | Secret name for external Elasticsearch basic auth; leave empty for platform Elasticsearch. |
 | `spec.config.components.elasticsearch.hostpath` | Data path for Elasticsearch. |
@@ -324,13 +324,13 @@ YAML field reference:
 | `spec.config.ttl.logPlatform` | Retention days for platform logs. |
 | `spec.config.ttl.logSystem` | Retention days for system logs. |
 | `spec.config.ttl.logWorkload` | Retention days for workload logs. |
-| `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.version` | Specifies the Cluster Plugin version to install, must match `.spec.version` in ModuleConfig.|
 | `spec.valuesOverride.ait/chart-alauda-log-center.global.nodeSelector` | Optional. The nodeselector for the Logging component. Use this parameter to select nodes for the logging component. This parameter is mainly used for infrastructure nodes. |
 | `spec.valuesOverride.ait/chart-alauda-log-center.global.tolerations` | Optional. The tolerations for the Logging component. If the node selector selects tainted nodes, use this parameter to specify a taint toleration key, value, and effect. This parameter is mainly used for infrastructure nodes. |
 
 3. Verify installation
 
-Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
+Since the ModuleInfo name changes upon creation, locate the resource via label to check the Cluster Plugin status and version:
 
 ```shell
 kubectl get moduleinfo -l cpaas.io/module-name=logcenter
@@ -341,9 +341,9 @@ global-e671599464a5b1717732c5ba36079795          global          logcenter   log
 Field explanations:
 
 * `NAME`: ModuleInfo resource name
-* `CLUSTER`: Cluster where the plugin is installed
-* `MODULE`: Plugin name
-* `DISPLAY_NAME`: Display name of the plugin
+* `CLUSTER`: Cluster where the Cluster Plugin is installed
+* `MODULE`: Cluster Plugin name
+* `DISPLAY_NAME`: Display name of the Cluster Plugin
 * `STATUS`: Installation status; `Running` means successfully installed and running
 * `TARGET_VERSION`: Intended installation version
 * `CURRENT_VERSION`: Version before installation
@@ -351,7 +351,7 @@ Field explanations:
 
 ### Placement on Infra Nodes
 
-If you want the Elasticsearch storage plugin workloads to run on dedicated infra nodes, use the plugin YAML configuration instead of patching the generated workloads after installation.
+If you want the Elasticsearch storage Cluster Plugin workloads to run on dedicated infra nodes, use the Cluster Plugin YAML configuration instead of patching the generated workloads after installation.
 
 Configure the following fields in `spec.valuesOverride.ait/chart-alauda-log-center.global`:
 
@@ -397,8 +397,8 @@ If you plan to use S3 for ClickHouse log data storage or cold data storage, prep
    | **Capacity** | Displayed when **Storage Policy** is **Default**. Reserve capacity in Gi for ClickHouse log data. |
    | **Metadata Capacity** | Reserve capacity in Gi for ClickHouse metadata. The page recommends `20 Gi`. |
    | **Advanced Configuration** | Collapsible section for plugin-level scheduling parameters. |
-   | **Node Selectors** | Displayed in **Advanced Configuration**. Configure plugin-level node selector rules for the ClickHouse storage plugin workloads. |
-   | **Node Tolerations** | Displayed in **Advanced Configuration**. Configure plugin-level toleration rules for the ClickHouse storage plugin workloads. |
+   | **Node Selectors** | Displayed in **Advanced Configuration**. Configure plugin-level node selector rules for the ClickHouse storage Cluster Plugin workloads. |
+   | **Node Tolerations** | Displayed in **Advanced Configuration**. Configure plugin-level toleration rules for the ClickHouse storage Cluster Plugin workloads. |
    | **S3 for Log Data** | Displayed when **Storage Policy** is **Separation of storage and compute**. Select the prepared S3 Secret for log data storage. This setting cannot be changed after installation. |
    | **Log Platform / Log Workload / Log System / Log Kubernetes / Kubernetes Event / Audit** | Configure hot-data retention days by log type in the **Log Retention Settings** section. |
    | **Cold and Hot Separate** | Enables tiered storage for ClickHouse. After it is enabled, you can configure an S3 location for cold data and set cold-data retention days by log type. This switch cannot be changed after installation. |
@@ -411,7 +411,7 @@ If you plan to use S3 for ClickHouse log data storage or cold data storage, prep
 
 1. Check available versions
 
-Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
+Ensure the Cluster Plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global` cluster:
 
 ```shell
 
@@ -426,7 +426,7 @@ This indicates that the ModulePlugin `logclickhouse` exists in the cluster and v
 
 2. Create a ModuleInfo
 
-Create a ModuleInfo resource to install the plugin. The following example uses **Separation of storage and compute** together with S3-backed cold storage:
+Create a ModuleInfo resource to install the Cluster Plugin. The following example uses **Separation of storage and compute** together with S3-backed cold storage:
 
 ```yaml
 apiVersion: cluster.alauda.io/v1alpha1
@@ -514,12 +514,12 @@ YAML field reference (ClickHouse):
 | Field path | Description |
 | --- | --- |
 | `metadata.name` | ModuleInfo name. Recommended format: `<target-cluster>-logclickhouse`. |
-| `metadata.labels.cpaas.io/cluster-name` | Target cluster where the plugin is installed. |
+| `metadata.labels.cpaas.io/cluster-name` | Target cluster where the Cluster Plugin is installed. |
 | `metadata.labels.cpaas.io/module-name` | Must be `logclickhouse`. |
 | `metadata.labels.cpaas.io/module-type` | Must be `plugin`. |
-| `spec.version` | Plugin version to install. |
-| `spec.config.components.nodeSelector` | Optional. Plugin-level node selector rules for the ClickHouse storage plugin workloads. This field uses the structured list format defined by the plugin API. |
-| `spec.config.components.tolerations` | Optional. Plugin-level toleration rules for the ClickHouse storage plugin workloads. |
+| `spec.version` | Cluster Plugin version to install. |
+| `spec.config.components.nodeSelector` | Optional. Plugin-level node selector rules for the ClickHouse storage Cluster Plugin workloads. This field uses the structured list format defined by the plugin API. |
+| `spec.config.components.tolerations` | Optional. Plugin-level toleration rules for the ClickHouse storage Cluster Plugin workloads. |
 | `spec.config.components.clickhouse.storagePolicy.type` | Storage policy type. Use `Default` for standard local or StorageClass-backed data storage, or `SSC` for separation of storage and compute. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec` | Configuration block for the `Default` storage policy. Use either `defaultSpec` or `sscSpec`. |
 | `spec.config.components.clickhouse.storagePolicy.defaultSpec.dataStorage.type` | Data storage type for the default policy: `LocalVolume` or `StorageClass`. |
@@ -558,11 +558,11 @@ YAML field reference (ClickHouse):
 | `spec.config.components.vector.resources` | Resource requests/limits for Vector. |
 | `spec.config.components.vector.storage.path` | Local path used by Vector for temporary storage. |
 | `spec.config.components.vector.storage.size` | Storage size reserved for Vector in Gi. |
-| `spec.version` | Specifies the plugin version to install, must match `.spec.version` in ModuleConfig.|
+| `spec.version` | Specifies the Cluster Plugin version to install, must match `.spec.version` in ModuleConfig.|
 
 Upgrade notes:
 
-- Upgrading the ClickHouse storage plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separate** on or off.
+- Upgrading the ClickHouse storage Cluster Plugin does not allow you to switch the **Storage Policy** type or toggle **Cold and Hot Separate** on or off.
 - After installation, only the effective retention settings, such as hot or cold retention days, should be adjusted.
 - To use this capability, upgrade **Alauda Container Platform Log Essentials** and **Alauda Container Platform Log Storage for ClickHouse** to compatible versions together.
 - In disaster recovery scenarios, use different S3 buckets for the primary and standby ClickHouse deployments.
@@ -570,7 +570,7 @@ Upgrade notes:
 
 3. Verify installation
 
-Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
+Since the ModuleInfo name changes upon creation, locate the resource via label to check the Cluster Plugin status and version:
 
 ```shell
 kubectl get moduleinfo -l cpaas.io/module-name=logclickhouse
@@ -581,9 +581,9 @@ global-e671599464a5b1717732c5ba36079795          global          logclickhouse  
 Field explanations:
 
 * `NAME`: ModuleInfo resource name
-* `CLUSTER`: Cluster where the plugin is installed
-* `MODULE`: Plugin name
-* `DISPLAY_NAME`: Display name of the plugin
+* `CLUSTER`: Cluster where the Cluster Plugin is installed
+* `MODULE`: Cluster Plugin name
+* `DISPLAY_NAME`: Display name of the Cluster Plugin
 * `STATUS`: Installation status; `Running` means successfully installed and running
 * `TARGET_VERSION`: Intended installation version
 * `CURRENT_VERSION`: Version before installation
@@ -591,7 +591,7 @@ Field explanations:
 
 ### Placement on Infra Nodes
 
-If you want the ClickHouse storage plugin workloads to run on dedicated infra nodes, configure plugin-level scheduling rules during installation or upgrade.
+If you want the ClickHouse storage Cluster Plugin workloads to run on dedicated infra nodes, configure plugin-level scheduling rules during installation or upgrade.
 
 - In the console, use **Advanced Configuration** to set **Node Selectors** and **Node Tolerations**.
 - In YAML, set `spec.config.components.nodeSelector` and `spec.config.components.tolerations`.
@@ -612,7 +612,7 @@ config:
 
 Before applying these scheduling rules, make sure your infra node planning and local storage placement are compatible. For the node planning considerations, see [Planning Infra Nodes for Logging Storage](./how_to/infra_nodes.mdx).
 
-## Install Alauda Container Platform Log Collector Plugin
+## Install Alauda Container Platform Log Collector Cluster Plugin
 
 ### Console
 
@@ -635,7 +635,7 @@ Before applying these scheduling rules, make sure your infra node planning and l
 
 1. Check available versions
 
-Ensure the plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global`cluster:
+Ensure the Cluster Plugin has been published by checking for ModulePlugin and ModuleConfig resources, in the `global` cluster:
 
 ```shell
 
@@ -650,7 +650,7 @@ This indicates that the ModulePlugin `logagent` exists in the cluster and versio
 
 2. Create a ModuleInfo
 
-Create a ModuleInfo resource to install the plugin without any configuration parameters:
+Create a ModuleInfo resource to install the Cluster Plugin without any configuration parameters:
 
 ```yaml
 apiVersion: cluster.alauda.io/v1alpha1
@@ -708,14 +708,14 @@ YAML field reference (Log Collector):
 
 | Field path | Description |
 | --- | --- |
-| `metadata.annotations.cpaas.io/display-name` | Plugin display name. |
-| `metadata.annotations.cpaas.io/module-name` | Plugin i18n name JSON string. |
-| `metadata.labels.cpaas.io/cluster-name` | Target cluster where the plugin is installed. |
+| `metadata.annotations.cpaas.io/display-name` | Cluster Plugin display name. |
+| `metadata.annotations.cpaas.io/module-name` | Cluster Plugin i18n name JSON string. |
+| `metadata.labels.cpaas.io/cluster-name` | Target cluster where the Cluster Plugin is installed. |
 | `metadata.labels.cpaas.io/module-name` | Must be `logagent`. |
 | `metadata.labels.cpaas.io/module-type` | Must be `plugin`. |
 | `metadata.labels.cpaas.io/product` | Product identifier, typically `Platform-Center`. |
-| `metadata.labels.logcenter.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the Elasticsearch storage plugin. |
-| `metadata.labels.logclickhouse.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the ClickHouse storage plugin. |
+| `metadata.labels.logcenter.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the Elasticsearch storage Cluster Plugin. |
+| `metadata.labels.logclickhouse.plugins.cpaas.io/cluster` | Storage cluster name to which logs are pushed when the collector uses the ClickHouse storage Cluster Plugin. |
 | `metadata.name` | Temporary ModuleInfo name; the platform will rename it after creation. |
 | `spec.config.crossClusterDependency.logcenter` | Name of the Elasticsearch-based log storage cluster. |
 | `spec.config.crossClusterDependency.logclickhouse` | Set to `null` when using Elasticsearch storage; otherwise set to ClickHouse cluster name. |
@@ -730,12 +730,12 @@ YAML field reference (Log Collector):
 | `spec.config.components.nevermore.storageSpec.dataDir` | Storage path for the Log Collector local working data. Use an absolute path. Default value: `/cpaas`. This field cannot be changed after installation. |
 | `spec.config.components.nevermore.log.resources` | Optional. CPU and memory requests / limits for the Log Collector component. |
 | `spec.config.storage.type` | `ElasticSearch` or `ClickHouse`. |
-| `spec.version` | Plugin version to install. |
+| `spec.version` | Cluster Plugin version to install. |
 
 
 3. Verify installation
 
-Since the ModuleInfo name changes upon creation, locate the resource via label to check the plugin status and version:
+Since the ModuleInfo name changes upon creation, locate the resource via label to check the Cluster Plugin status and version:
 
 ```shell
 kubectl get moduleinfo -l cpaas.io/module-name=logagent

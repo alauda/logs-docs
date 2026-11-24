@@ -15,7 +15,7 @@ ClickHouse supports two S3-based usage modes:
 
 Prepare an S3 Secret in the `cpaas-system` namespace of the target storage cluster.
 
-The Secret must include the label `cpaas.io/credentials: S3`, because the plugin installation page filters selectable S3 credentials by this label.
+The Secret must include the label `cpaas.io/credentials: S3`, because the Cluster Plugin installation page filters selectable S3 credentials by this label.
 
 Example:
 
@@ -124,7 +124,7 @@ Behavior notes:
 
 ## Limits and Notes
 
-- The current plugin installation workflow supports configuring one S3 target for log data storage and one S3 target for cold storage.
+- The current Cluster Plugin installation workflow supports configuring one S3 target for log data storage and one S3 target for cold storage.
 - S3 credentials must be stored in Kubernetes Secrets. Do not expose access keys in plain text in installation records or screenshots.
 - If the S3 endpoint uses `https`, you must also create the `clickhouse-ca-certificates` Secret in `cpaas-system`. Only the certificate content in `ca-certificates.crt` should be customized.
 - The storage policy type and the **Cold and Hot Separate** switch cannot be changed after installation.
@@ -134,5 +134,5 @@ Behavior notes:
 
 ## Related Topics
 
-- For plugin installation parameters, see [Installation](../install_log.mdx).
+- For Cluster Plugin installation parameters, see [Installation](../install_log.mdx).
 - For project-level cold data retention settings, see [How to Set the Retention Time of Cold Data for a Project](./project-cold-data-retention.mdx).
