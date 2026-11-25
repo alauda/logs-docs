@@ -51,27 +51,24 @@ The script runs from any host with `kubectl`, `bash`, `envsubst`, `base64`, and 
 
 ## 2. Get the script bundle
 
-The v4.4 logging quickstart ships as a Helm chart tarball — `alauda-log-quickstart-v4.4.0.tgz` (OCI chart `ait/chart-alauda-log-quickstart`, version `v4.4.0`). The chart itself renders no Kubernetes resources; the install scripts and CR templates are the payload, placed under `files/quickstart/` inside the tarball.
+Download the script bundle directly:
 
-:::info Download
-From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
-:::
+[Download alauda-log-quickstart-v4.4.0.tgz](/alauda-log-quickstart-v4.4.0.tgz)
 
-Unpack on the jump host and change into the scripts directory — **every command on this page runs from `alauda-log-quickstart/files/quickstart/`**:
+The tarball carries every install / upgrade / check script for all four backend variants (`files/ck/`, `files/ck-single/`, `files/ck-external/`, `files/os/`) plus the matching CR templates. Script executable bits are preserved — no `chmod +x` step required.
+
+Unpack on the jump host and change into `files/ck/` — **every command on this page runs from `alauda-log-quickstart/files/ck/`**:
 
 ```bash
 tar xzf alauda-log-quickstart-v4.4.0.tgz
-cd alauda-log-quickstart/files/quickstart/
+cd alauda-log-quickstart/files/ck/
 ```
 
 Layout:
 
 ```
 alauda-log-quickstart/
-├── Chart.yaml
-├── values.yaml
-├── templates/NOTES.txt
-└── files/quickstart/           ← work from here
+└── files/ck/                   ← work from here
     ├── install.sh
     ├── check.sh
     ├── install.env.example
@@ -87,7 +84,7 @@ alauda-log-quickstart/
         └── 40-plf.yaml
 ```
 
-Each file in `files/quickstart/` at a glance:
+Each file in `files/ck/` at a glance:
 
 | File | Purpose |
 | --- | --- |
