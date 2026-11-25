@@ -22,7 +22,7 @@ Confirm all **five hard requirements on the customer CH** from [How to Integrate
 | --- | --- | --- |
 | 1 | ReplicatedMergeTree + Keeper/ZK | `SELECT engine FROM system.tables WHERE engine LIKE 'Replicated%' LIMIT 1` returns a row |
 | 2 | Cluster macro resolvable | `SELECT * FROM system.clusters WHERE cluster = '<your-cluster>'` returns ≥ 1 row |
-| 3 | CH user privileges | See [external-clickhouse.mdx §2](../how_to/external-clickhouse.mdx#2-user-and-permissions); must include `CREATE DATABASE` |
+| 3 | CH user is **`admin`** with required privileges | See [external-clickhouse.mdx §2](../how_to/external-clickhouse.mdx#2-user-and-permissions); must include `CREATE DATABASE`. Use a different user only if you are prepared to debug CREATE TABLE / MATERIALIZED VIEW permission failures on every schema migration. |
 | 4 | Network reachability | `curl http://<ch-host>:8123/ping` from a `cpaas-system` pod returns `Ok.` |
 | 5 | Endpoint scheme + port | HTTP `:8123` or HTTPS `:8443` (public-CA only in v4.4) |
 
@@ -31,7 +31,7 @@ Collect the following values before continuing — you will plug them into the Y
 | Variable | Example | Where it comes from |
 | --- | --- | --- |
 | `CH_ENDPOINT` | `http://ck.customer.internal:8123` | Customer DBA |
-| `CH_USER` | `admin` | Customer DBA |
+| `CH_USER` | `admin` | **Must be `admin`** (see requirement 3). The scripted path at [fast-install-external-clickhouse.mdx](./fast-install-external-clickhouse.mdx) hard-codes this; the manual path keeps it as a variable only so you can see where it lands in the YAML. |
 | `CH_PASSWORD` | `<plain-text password>` | Customer DBA |
 | `CH_DATABASE` | `observability` | Default; override only on customer demand |
 | `CH_CLUSTER` | `replicated` | Customer DBA (`SELECT cluster FROM system.clusters`) |
@@ -264,7 +264,7 @@ done
 
 ### 3.1 `platform-default-ch-conn` — points at the customer CH
 
-Fill in your `CH_ENDPOINT` / `CH_USER` / `CH_PASSWORD` / `CH_CLUSTER` / `CH_DATABASE` values collected in Section 0. Full field reference: [external-clickhouse.mdx §4](../how_to/external-clickhouse.mdx#4-connection-secret-contract).
+Fill in your `CH_ENDPOINT` / `CH_PASSWORD` / `CH_CLUSTER` / `CH_DATABASE` values collected in Section 0. **Leave `username` as `admin`** (see Section 0 requirement 3 — non-admin users hit `CREATE TABLE` / `MATERIALIZED VIEW` permission failures on schema migrations). Full field reference: [external-clickhouse.mdx §4](../how_to/external-clickhouse.mdx#4-connection-secret-contract).
 
 ```yaml
 # 31-ch-conn-secret.yaml
@@ -278,7 +278,7 @@ stringData:
   endpoint: "http://ck.customer.internal:8123"     # ← CH_ENDPOINT
   cluster:  "replicated"                            # ← CH_CLUSTER
   database: "observability"                         # ← CH_DATABASE
-  username: "admin"                                 # ← CH_USER
+  username: "admin"                                 # keep as admin
   password: "<plain-text password>"                 # ← CH_PASSWORD
 ```
 
