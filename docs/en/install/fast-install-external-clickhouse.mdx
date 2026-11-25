@@ -1,0 +1,368 @@
+---
+weight: 17
+---
+
+# Fast Install via Quickstart Script — External ClickHouse Backend
+
+This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack **against a customer-managed ClickHouse cluster**, on a fresh target cluster. For the standard install where the script also provisions ClickHouse in-cluster, see [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx); for the detailed, UI-driven external ClickHouse walkthrough, see [How to Integrate the Logging Stack with an External ClickHouse](../how_to/external-clickhouse.mdx).
+
+Pick this path when:
+
+- The customer owns and operates their ClickHouse cluster (DBaaS, on-prem managed CH, cross-cluster CH, or a hand-rolled CH quorum with their own Keeper/ZooKeeper).
+- You want to decouple CH lifecycle (version upgrades, storage scaling, backup/restore) from the ACP logging operator — the script still installs Kafka, `log-storage-operator`, `aggregate-vector`, `razor`, and `schema-migrations`, but **leaves CH alone**.
+- The target cluster is a **fresh** ACP 4.4 install (no legacy `logclickhouse` chart, no existing `PlatformLogForward`).
+
+If the customer does **not** already run a ClickHouse cluster, pick the in-cluster flow instead — the operator-provisioned CH is simpler and better integrated.
+
+For the step-by-step manual `kubectl apply` walkthrough of the same flow (same five requirements, same CRs, same Secret shapes — but one file at a time with waits between each step), see [Manual Install via kubectl — External ClickHouse Backend](./manual-install-external-clickhouse.mdx).
+
+## 1. Prerequisites
+
+### 1.1 External ClickHouse — non-negotiable requirements
+
+These are the same five hard requirements as in [How to Integrate the Logging Stack with an External ClickHouse](../how_to/external-clickhouse.mdx), restated briefly. Confirm all of them with the customer DBA **before** running the script, or `PlatformLogForward` will never reach `Ready=True`.
+
+1. **ReplicatedMergeTree + Keeper (or ZooKeeper).** Every table the operator creates uses `ENGINE = ReplicatedMergeTree(...)` and every DDL is `ON CLUSTER '<name>'`. Even a single-node external CH needs Keeper or ZK configured; the operator does not fall back to plain `MergeTree`.
+2. **Cluster macro.** `{cluster}`, `{shard}`, and `{replica}` macros must resolve in the CH server config. Verify from the customer side:
+   ```sql
+   SELECT cluster, shard_num, replica_num FROM system.clusters WHERE cluster = '<CH_CLUSTER>';
+   ```
+   One row per `(shard, replica)` must come back.
+3. **CH user privileges.** The user you give the script needs:
+   ```sql
+   GRANT ALL ON <CH_DATABASE>.* TO '<CH_USER>' ON CLUSTER '<CH_CLUSTER>';
+   GRANT SYSTEM DROP DNS CACHE ON *.* TO '<CH_USER>';
+   ```
+   Plus **`CREATE DATABASE`** (the install script's Stage 3.5 runs `CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'`). If the security policy forbids granting `CREATE DATABASE` to the app user, the DBA may pre-create the database manually and Stage 3.5 becomes a no-op.
+4. **Network reachability.** Pods in the `cpaas-system` namespace (`aggregate-vector`, `razor`, operator-derived `schema-migrations` Job, and the install script's Stage 3.5 bootstrap Job) must be able to resolve DNS for the CH endpoint and open a TCP connection. NetworkPolicy, firewalls, and egress gateways must all permit it.
+5. **Endpoint scheme + port.** The HTTP interface is `:8123` by default, HTTPS `:8443`. The script accepts either. Self-signed HTTPS certificates are not yet supported in this iteration — see [Known limitations](#known-limitations) below.
+
+### 1.2 Dynamic StorageClass
+
+Kafka broker + controller PVCs are still provisioned in-cluster, so verify at least one dynamic SC is available:
+
+```bash
+kubectl get sc
+```
+
+Pick one whose `PROVISIONER` column is not `no-provisioner`.
+
+### 1.3 OperatorHub PackageManifests
+
+External-CH mode installs **only two** operators through OLM — `clickhouse-operator` is **not** installed (CH lifecycle is the customer's).
+
+| Operator | Target namespace |
+| --- | --- |
+| **Alauda Streaming Service for Kafka** (`strimzi-kafka-operator`) | `kafka-system` |
+| **Alauda Container Platform Log Storage Management** (`log-storage-operator`) | `cpaas-system` |
+
+Verify:
+
+```bash
+kubectl -n cpaas-system get packagemanifest strimzi-kafka-operator log-storage-operator
+```
+
+Both rows must report a non-empty `AGE`.
+
+### 1.4 Bootstrap image
+
+Stage 3.5 runs a one-shot `Job` in `cpaas-system` that issues
+`CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'` against the customer CH. The Job needs a pullable image with one of:
+
+- `clickhouse-client` (preferred — recent ACP images ship `clickhouse-server` under the `middleware/` namespace); or
+- BusyBox `wget` with `--user` / `--password` / `--post-data` (the ACP `ops/alpine` image qualifies).
+
+The script auto-selects an image in this priority order:
+
+1. The value of `CH_BOOTSTRAP_IMAGE` in `install.env`, if set.
+2. The `CK_SERVER_IMAGE` env from a `clickhouse-operator` Deployment in `cpaas-logging`, if the customer happens to have one installed for other reasons — this gives the `clickhouse-client` path.
+3. `<registry>/ops/alpine:latest`, derived from the `log-storage-operator` pod's registry prefix — the `wget` path.
+
+If none of these resolve to a pullable image, Stage 3.5 fails loudly. The fix is to set `CH_BOOTSTRAP_IMAGE` explicitly to a known-pullable image in the customer's registry, for example:
+
+```ini
+CH_BOOTSTRAP_IMAGE="<customer-registry>/middleware/clickhouse-server:v25.8"
+# or
+CH_BOOTSTRAP_IMAGE="<customer-registry>/ops/alpine:3.23"
+```
+
+### 1.5 Jump host
+
+Standard Linux shell: `kubectl`, `bash`, `envsubst`, `base64`, `sha256sum`, configured with a kubeconfig that can reach the target ACP cluster.
+
+## 2. Get the script bundle
+
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
+
+Unpack on the jump host and change into `files/ck-external/` — **every command on this page runs from there**:
+
+```bash
+tar xzf alauda-log-quickstart-v4.4.x.tgz
+cd alauda-log-quickstart/files/ck-external/
+```
+
+Layout:
+
+```
+alauda-log-quickstart/
+├── Chart.yaml
+├── values.yaml
+├── templates/NOTES.txt
+└── files/ck-external/           ← work from here
+    ├── install.sh
+    ├── check.sh
+    ├── install.env.example
+    ├── README.md
+    └── templates/
+        ├── 00-subscriptions.yaml       (strimzi + log-storage only; no chop)
+        ├── 12-rdskafka.yaml
+        ├── 20-kafka-user-topics.yaml
+        ├── 30-mq-conn-secret.yaml
+        ├── 31-ch-conn-secret.yaml      (points at customer CH; no in-cluster CHI)
+        └── 40-plf.yaml
+```
+
+Notice two things that differ from `files/ck/`:
+
+- **No `10-keeper.yaml`, no `11-chi.yaml`**: the script does not stand up Keeper or a `ClickHouseInstallation`. The customer owns both.
+- **`31-ch-conn-secret.yaml` is driven by `CH_*` env vars** instead of an in-cluster Service DNS, so the resulting `platform-default-ch-conn` Secret points at the customer CH.
+
+## 3. Configure `install.env`
+
+Copy the sample:
+
+```bash
+cp install.env.example install.env
+```
+
+### 3.1 Required fields
+
+Four CH-side fields plus the two Kafka storage fields:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `CH_ENDPOINT` | Customer CH HTTP(S) endpoint. Must include the `http://` or `https://` scheme and the port. | `http://ck.customer.internal:8123` |
+| `CH_USER` | CH user with the privileges listed in Section 1.1. | `admin` |
+| `CH_PASSWORD` | Plain-text password for `CH_USER`. | *(required)* |
+| `CH_CLUSTER` | `ON CLUSTER` name — must match the customer CH's `remote_servers` entry. | `replicated` |
+| `STORAGE_CLASS` | The dynamic SC verified in Section 1.2. Used by Kafka broker + controller PVCs. | `topolvm-provisioner` |
+| `KAFKA_STORAGE_SIZE` | Per-broker PVC size with a unit suffix (`Mi` / `Gi` / `Ti`). | `100Gi` |
+
+:::warning Unit suffix is mandatory
+A size without a unit (for example `100` instead of `100Gi`) parses as *bytes* in YAML, truncates to the SC minimum, and the broker crashes with `No space left on device` as soon as Kafka writes raft metadata.
+:::
+
+### 3.2 CH topology echoed into PlatformLogForward
+
+`PlatformLogForward.spec.externalStorage.{shards,replicas}` must match the customer CH's real topology (one row per `(shard, replica)` in `system.clusters`). Set the two values in `install.env`:
+
+```ini
+CH_SHARDS=1
+CH_REPLICAS=3
+```
+
+Cross-check with the customer DBA before running the script. A mismatch leaves `razor` and `aggregate-vector` generating the wrong `ON CLUSTER` argument lists, and some shards or replicas receive no writes.
+
+### 3.3 Database name (optional)
+
+Default: `observability`. Override only if the customer requires a specific database name:
+
+```ini
+CH_DATABASE="customer_logging"
+```
+
+### 3.4 Dedicated node pool (optional, recommended for production)
+
+Pin Kafka pods (broker + controller + entityOperator) to a dedicated pool via `nodeAffinity` + `tolerations`:
+
+```ini
+NODE_AFFINITY_KEY="node-role.alauda.io/log-storage"
+NODE_AFFINITY_VALUE="true"
+TOLERATION_KEY="dedicated"
+TOLERATION_VALUE="log-storage"
+TOLERATION_EFFECT="NoSchedule"
+```
+
+Before running the script, label and taint the target nodes:
+
+```bash
+kubectl label node <n1> <n2> <n3> node-role.alauda.io/log-storage=true
+kubectl taint node <n1> <n2> <n3> dedicated=log-storage:NoSchedule
+```
+
+Leaving all five fields empty schedules Kafka pods anywhere with fallback `tolerations: [{operator: Exists}]`.
+
+### 3.5 Installing on the standby `global` cluster of a DR pair
+
+If this install is on the standby side of an active-standby `global` DR pair, change the two Secret names in `install.env` so they differ from the defaults on the primary `global` cluster — otherwise the primary's Secrets replicate over and overwrite the standby's.
+
+```ini
+MQ_CONN_SECRET_NAME="platform-default-mq-conn-standby"
+CH_CONN_SECRET_NAME="platform-default-ch-conn-standby"
+```
+
+The primary `global` cluster and any `global` cluster without disaster recovery keep the defaults.
+
+## 4. Install
+
+### 4.1 Render, review, then apply (recommended) \{#41-render-review-then-apply-recommended}
+
+Render every YAML into `./rendered/` without touching the cluster:
+
+```bash
+./install.sh install.env --render
+```
+
+Review the five files under `./rendered/`. Edit anything that needs cluster-specific tweaks (resources, labels, extra annotations). When ready:
+
+```bash
+./install.sh install.env
+```
+
+The live run reads each stage's YAML from `./rendered/` first and falls back to the template only for files that `--render` cannot produce (`platform-default-mq-conn`, which needs the live `strimzi cluster-ca-cert`).
+
+Stage order:
+
+1. **Stage 0** — Two OLM `Subscription` objects (strimzi + log-storage) reach CSV `Succeeded`.
+2. **Stage 1** — `RdsKafka` and its pods become Ready.
+3. **Stage 2** — `RdsKafkaUser` + three `RdsTopic` CRs reach `Ready` or `Active`.
+4. **Stage 3** — `platform-default-mq-conn` + `platform-default-ch-conn` Secrets are written. The CH Secret contains the customer endpoint + credentials from `install.env`.
+5. **Stage 3.5** — One-shot `Job/ck-external-bootstrap-db` creates the `observability` database on the customer CH (`CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'`).
+6. **Stage 4** — `PlatformLogForward/platform-default` is applied; the operator derives `aggregate-vector`, `razor`, and the `schema-migrations` Job that applies the schema against the customer CH. When all of them are Ready, PLF flips `Ready=True`.
+
+### 4.2 Direct live apply
+
+Skip the render step:
+
+```bash
+./install.sh install.env
+```
+
+### 4.3 Acceptance check \{#43-acceptance-check}
+
+```bash
+./check.sh install.env
+```
+
+The checker runs eight assertions:
+
+1. `PlatformLogForward/platform-default` `Ready=True`.
+2. All three `RdsTopic` CRs `Ready` or `Active`.
+3. `KafkaUser`-referenced Secret `platform-logging` exists.
+4. `aggregate-vector` Deployment Available.
+5. `razor` Deployment Available.
+6. `aggregate-vector` and `razor` pods all Running.
+7. `schema-migrations` Job Complete (or already GC'd by `ttlSecondsAfterFinished` after completing — treated as pass when PLF is Ready).
+8. `platform-default-ch-conn` Secret `endpoint` matches `install.env` `CH_ENDPOINT` (drift check).
+
+All eight must report ✓ for the install to be considered complete.
+
+:::info Idempotent
+Rerunning the script with the same `install.env` against the same cluster is a no-op after the first successful run. Every `kubectl apply` is server-side, every readiness wait short-circuits when the condition already holds, and derived passwords are stable. The Stage 3.5 Job uses `CREATE DATABASE IF NOT EXISTS`, so a re-run against an already-bootstrapped CH is also a no-op.
+:::
+
+## 5. Verify
+
+In addition to `check.sh`, these commands cover the same ground manually:
+
+| Object | Command | Expected |
+| --- | --- | --- |
+| OLM CSVs | `kubectl -n kafka-system get csv ; kubectl -n cpaas-system get csv` | All `Succeeded` |
+| RdsKafka | `kubectl -n cpaas-system get rdskafka <KAFKA_NAME>` | All Kafka pods Ready |
+| RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
+| Connection Secrets | `kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn` | Both exist |
+| Bootstrap Job | `kubectl -n cpaas-system get job ck-external-bootstrap-db` | `COMPLETIONS=1/1` (or already GC'd) |
+| PlatformLogForward | `kubectl -n cpaas-system get platformlogforward platform-default` | `Ready=True` |
+
+For a full end-to-end verification of the data path (collector → Kafka → aggregate-vector → **customer** ClickHouse → razor-api), continue with the seven-step [post-install verification](./post-install-verification.mdx). Replace the in-cluster CHI references in that page with the customer CH endpoint and credentials.
+
+## 6. Uninstall
+
+:::warning The customer ClickHouse is not touched
+This uninstall removes **only** what the script installed. The customer CH cluster (including the `observability` database and all data in it) is left intact. If the customer wants the logging data purged from their CH, their DBA must run:
+```sql
+DROP DATABASE observability ON CLUSTER '<CH_CLUSTER>' SYNC;
+```
+:::
+
+```bash
+# Remove the PLF; this cascades through operator-derived aggvec, razor, and schema-migrations Job.
+kubectl -n cpaas-system delete platformlogforward platform-default
+
+# Remove the Kafka CRs the script created.
+kubectl -n cpaas-system delete rdskafka <KAFKA_NAME>
+
+# Remove Subscriptions and CSVs.
+kubectl -n cpaas-system delete sub log-storage-operator
+kubectl -n kafka-system delete sub strimzi-kafka-operator
+# Delete the matching CSVs per namespace afterwards.
+```
+
+Kafka PVCs stay bound by default — delete them if you plan to reinstall from scratch:
+
+```bash
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=<KAFKA_NAME>
+```
+
+## 7. Troubleshooting
+
+### `KAFKA_STORAGE_SIZE must carry a unit suffix`
+
+See the warning in Section 3.1. Add a `Mi` / `Gi` / `Ti` suffix.
+
+### Stage 3.5 fails — `cannot auto-select a bootstrap image`
+
+Neither the chop CSV probe nor the `<registry>/ops/alpine` fallback resolved to a pullable image. Set `CH_BOOTSTRAP_IMAGE` in `install.env` to a known-pullable image. See Section 1.4.
+
+### Stage 3.5 fails — `wget failed` or `clickhouse-client … connection refused`
+
+Pod in `cpaas-system` cannot reach the customer CH endpoint. Check in this order:
+
+1. `CH_ENDPOINT` scheme + port are correct.
+2. DNS resolves from inside the ACP cluster:
+   ```bash
+   kubectl -n cpaas-system run dns-probe --rm -i --image=busybox:1.36.1 --restart=Never -- nslookup <ch-host>
+   ```
+3. No NetworkPolicy in `cpaas-system` denies egress to the CH endpoint IP/port.
+4. The customer-side firewall / egress gateway permits the ACP cluster's node CIDR.
+
+### Stage 3.5 fails — `CREATE DATABASE` returns `ACCESS_DENIED`
+
+`CH_USER` lacks `CREATE DATABASE` privilege. Two options:
+
+- Ask the customer DBA to grant it: `GRANT CREATE ON *.* TO '<CH_USER>' ON CLUSTER '<CH_CLUSTER>'`, then re-run the script.
+- Have the DBA pre-create the database manually:
+  ```sql
+  CREATE DATABASE IF NOT EXISTS observability ON CLUSTER '<CH_CLUSTER>';
+  ```
+  then re-run the script. Stage 3.5 becomes a no-op (`IF NOT EXISTS`).
+
+### PLF stays `Ready=False` with `razor: Database observability does not exist`
+
+`razor` crashloops because the database is missing. This happens when Stage 3.5 did not run (older script, or the Stage was manually skipped). Create the database once per Section 7 "ACCESS_DENIED" above, then the razor pods recover automatically within a reconcile cycle.
+
+### PLF stays `Ready=False` with a `schema-migrations` Job failure referencing `Code: 170 BAD_GET` or `UNKNOWN_DATABASE` on one shard
+
+The `CH_CLUSTER` value in `install.env` does not match the customer CH's actual `system.clusters` row, or the `{shard}` / `{replica}` macros are misconfigured on one replica. Ask the DBA to:
+
+```sql
+SELECT * FROM system.clusters;
+SELECT * FROM system.macros;
+```
+
+and adjust `install.env` `CH_CLUSTER` / `CH_SHARDS` / `CH_REPLICAS` to match. Then delete and re-apply the PLF:
+
+```bash
+kubectl -n cpaas-system delete platformlogforward platform-default
+./install.sh install.env
+```
+
+## Known limitations \{#known-limitations}
+
+- **HTTPS with a self-signed or internal-CA certificate is not yet supported in this iteration.** The script does not render `tls.ca` / `tls.insecure_skip_verify` into the `platform-default-ch-conn` Secret. Public-CA-signed HTTPS endpoints work out of the box via the Go standard trust store. Workarounds for self-signed HTTPS:
+  - Expose plain HTTP (`http://...:8123`) instead, or
+  - Pre-install the internal CA into the `aggregate-vector`, `razor`, and `schema-migrations` pod trust stores out of band.
+
+  Full `CH_TLS_CA` / `CH_TLS_SKIP_VERIFY` support is planned for a follow-up release.
+
+- **CH version upgrades and backup/restore are the customer's responsibility.** The operator writes schema and data only; it does not run `clickhouse-backup`, does not scale the CH cluster, and does not reconcile the `remote_servers` or `macros` configuration. Coordinate CH version changes (especially across major CH versions) with a non-production regression pass first.
