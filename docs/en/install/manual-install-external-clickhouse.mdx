@@ -1,0 +1,527 @@
+---
+weight: 19
+---
+
+# Manual Install via kubectl — External ClickHouse Backend
+
+This page is the **step-by-step manual walkthrough** for integrating the ACP v4.4 logging stack with a customer-managed ClickHouse cluster. For the one-shot script that automates every step below, see [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx). For the contract reference (hard requirements, CH user grants, Secret field table, TTL / storage-policy ownership), see [How to Integrate the Logging Stack with an External ClickHouse](../how_to/external-clickhouse.mdx).
+
+Pick this path when:
+
+- You want full manual control over the install sequence and timing (change-window driven, air-gapped bootstrap, phased handoff between teams).
+- The customer environment does not allow running a jump-host script against the ACP cluster, or your SRE workflow requires `kubectl apply -f` from a reviewed Git repo.
+- You want to inspect every manifest before it hits the cluster.
+
+If none of these apply, the scripted path is strictly simpler — the YAMLs below are the same ones the script renders.
+
+## 0. Before you start
+
+Confirm all **five hard requirements on the customer CH** from [How to Integrate the Logging Stack with an External ClickHouse §1](../how_to/external-clickhouse.mdx#1-hard-requirements-on-the-external-clickhouse). Below is a one-liner cheat sheet; the linked page has the full explanation of each.
+
+| # | Requirement | Verification |
+| --- | --- | --- |
+| 1 | ReplicatedMergeTree + Keeper/ZK | `SELECT engine FROM system.tables WHERE engine LIKE 'Replicated%' LIMIT 1` returns a row |
+| 2 | Cluster macro resolvable | `SELECT * FROM system.clusters WHERE cluster = '<your-cluster>'` returns ≥ 1 row |
+| 3 | CH user privileges | See [external-clickhouse.mdx §2](../how_to/external-clickhouse.mdx#2-user-and-permissions); must include `CREATE DATABASE` |
+| 4 | Network reachability | `curl http://<ch-host>:8123/ping` from a `cpaas-system` pod returns `Ok.` |
+| 5 | Endpoint scheme + port | HTTP `:8123` or HTTPS `:8443` (public-CA only in v4.4) |
+
+Collect the following values before continuing — you will plug them into the YAMLs below:
+
+| Variable | Example | Where it comes from |
+| --- | --- | --- |
+| `CH_ENDPOINT` | `http://ck.customer.internal:8123` | Customer DBA |
+| `CH_USER` | `admin` | Customer DBA |
+| `CH_PASSWORD` | `<plain-text password>` | Customer DBA |
+| `CH_DATABASE` | `observability` | Default; override only on customer demand |
+| `CH_CLUSTER` | `replicated` | Customer DBA (`SELECT cluster FROM system.clusters`) |
+| `CH_SHARDS` | `1` | Count of distinct `shard_num` in `system.clusters` |
+| `CH_REPLICAS` | `3` | Count of distinct `replica_num` per shard |
+| `STORAGE_CLASS` | `topolvm-provisioner` | `kubectl get sc`; any dynamic SC |
+
+:::info Namespace
+Every manifest on this page lives in `cpaas-system` (the ACP default), except the `strimzi-kafka-operator` Subscription which lives in `kafka-system`. Change the namespace references below if your cluster uses a non-default log storage namespace.
+:::
+
+## 1. Install the two operators
+
+External-CH mode installs **only two** operators (no `clickhouse-operator` — the customer owns CH).
+
+### 1.1 strimzi-kafka-operator
+
+```yaml
+# 00-strimzi.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-system
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kafka-system
+  namespace: kafka-system
+spec:
+  targetNamespaces: []        # AllNamespaces
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: strimzi-kafka-operator
+  namespace: kafka-system
+spec:
+  channel: stable
+  name: strimzi-kafka-operator
+  source: platform
+  sourceNamespace: cpaas-system
+```
+
+### 1.2 log-storage-operator
+
+```yaml
+# 00-log-storage.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: log-storage-operator
+  namespace: cpaas-system
+spec:
+  channel: alpha
+  name: log-storage-operator
+  source: platform
+  sourceNamespace: cpaas-system
+```
+
+:::tip No OperatorGroup needed for log-storage-operator
+`cpaas-system` already has the ACP-managed `olm-operators` OperatorGroup. Re-creating one causes `InterOperatorGroupOwnerConflict` — leave it as is.
+:::
+
+### 1.3 Apply and wait for both CSVs to reach `Succeeded`
+
+```bash
+kubectl apply -f 00-strimzi.yaml
+kubectl apply -f 00-log-storage.yaml
+
+# Wait for both CSVs — usually under a minute per operator.
+kubectl -n kafka-system get csv -w          # strimzi-kafka-operator.vX.Y.Z
+kubectl -n cpaas-system get csv -w          # log-storage-operator.vX.Y.Z
+
+# Confirm the operator Deployments are healthy
+kubectl -n kafka-system rollout status deploy/strimzi-cluster-operator
+kubectl -n cpaas-system rollout status deploy/log-storage-operator-controller-manager
+```
+
+## 2. Create the Kafka cluster
+
+The log pipeline writes through Kafka, so even in external-CH mode we install Kafka on the ACP cluster. All manifests use the Alauda strimzi fork (`middleware.alauda.io/v1`).
+
+### 2.1 RdsKafka
+
+Fill `STORAGE_CLASS` in from your environment. The topology below is 3-broker + 3-controller, sized for a typical production cluster; drop to 1 broker + 1 controller for a PoC on a single-worker ACP.
+
+```yaml
+# 12-rdskafka.yaml
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafka
+metadata:
+  name: cpaas-kafka
+  namespace: cpaas-system
+spec:
+  mode: KRaft
+  replicas: 3
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits:   { cpu: 2,    memory: 4Gi }
+  storage:
+    class: topolvm-provisioner        # ← STORAGE_CLASS
+    size: "100Gi"                      # ← KAFKA_STORAGE_SIZE
+  config:
+    auto.create.topics.enable: "false"
+    default.replication.factor: "3"
+    min.insync.replicas: "1"
+    num.partitions: "30"
+    message.max.bytes: "10485760"
+    replica.fetch.max.bytes: "10485760"
+    offsets.topic.replication.factor: "3"
+    transaction.state.log.min.isr: "1"
+    transaction.state.log.replication.factor: "3"
+    log.retention.ms: "172800000"
+    log.roll.ms: "86400000"
+    socket.request.max.bytes: "104857600"
+    unclean.leader.election.enable: "false"
+  controller:
+    replicas: 3
+    roles: ["controller"]
+    storage: { class: topolvm-provisioner, size: "5Gi" }
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 1,    memory: 2Gi }
+  kafka:
+    authorization: { type: simple }
+    listeners:
+      plain: { authentication: { type: scram-sha-512 } }
+      tls:   { authentication: { type: scram-sha-512 } }
+  entityOperator:
+    topicOperator: { resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 500m, memory: 1Gi } } }
+    userOperator:  { resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 500m, memory: 1Gi } } }
+```
+
+:::warning Unit suffix on storage size is mandatory
+`size: "100"` without a unit parses as *bytes* in YAML. On topolvm this truncates to the SC minimum and the broker crashes with `No space left on device`. Always suffix `Mi`, `Gi`, or `Ti`.
+:::
+
+### 2.2 KafkaUser and 3 topics
+
+```yaml
+# 20-kafka-user-topics.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-logging-password
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  # Must be at least 32 characters on FIPS-enforced hosts (Alauda OS).
+  password: "a-strong-password-at-least-32-chars-long"
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsKafkaUser
+metadata:
+  name: platform-logging
+  namespace: cpaas-system
+  labels:
+    middleware.alauda.io/cluster: cpaas-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: platform-logging-password
+          key: password
+  authorization:
+    type: simple
+    acls:
+      - { resource: { type: topic,   name: ALAUDA_LOG_TOPIC,   patternType: literal }, operation: All,              host: "*" }
+      - { resource: { type: topic,   name: ALAUDA_EVENT_TOPIC, patternType: literal }, operation: All,              host: "*" }
+      - { resource: { type: topic,   name: ALAUDA_AUDIT_TOPIC, patternType: literal }, operation: All,              host: "*" }
+      - { resource: { type: group,   name: alauda_log,         patternType: literal }, operation: Read,             host: "*" }
+      - { resource: { type: group,   name: alauda_event,       patternType: literal }, operation: Read,             host: "*" }
+      - { resource: { type: group,   name: alauda_audit,       patternType: literal }, operation: Read,             host: "*" }
+      - { resource: { type: group,   name: logforward-,        patternType: prefix  }, operation: Read,             host: "*" }
+      - { resource: { type: group,   name: razor-,             patternType: prefix  }, operation: Read,             host: "*" }
+      - { resource: { type: cluster, name: kafka-cluster,      patternType: literal }, operation: DescribeConfigs,  host: "*" }
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata: { name: alauda-log-topic,   namespace: cpaas-system, labels: { middleware.alauda.io/cluster: cpaas-kafka } }
+spec:
+  topicName: ALAUDA_LOG_TOPIC
+  partitions: 30
+  replicas: 3
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata: { name: alauda-event-topic, namespace: cpaas-system, labels: { middleware.alauda.io/cluster: cpaas-kafka } }
+spec:
+  topicName: ALAUDA_EVENT_TOPIC
+  partitions: 30
+  replicas: 3
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+---
+apiVersion: middleware.alauda.io/v1
+kind: RdsTopic
+metadata: { name: alauda-audit-topic, namespace: cpaas-system, labels: { middleware.alauda.io/cluster: cpaas-kafka } }
+spec:
+  topicName: ALAUDA_AUDIT_TOPIC
+  partitions: 30
+  replicas: 3
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+```
+
+### 2.3 Apply and wait
+
+```bash
+kubectl apply -f 12-rdskafka.yaml
+# Kafka pods take 30–60s to roll out; wait for broker + controller Ready.
+kubectl -n cpaas-system wait --for=condition=Ready pod \
+  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/kind=Kafka --timeout=600s
+
+kubectl apply -f 20-kafka-user-topics.yaml
+# Entity-operator mints a user Secret with the same name as the KafkaUser.
+kubectl -n cpaas-system wait --for=jsonpath='{.metadata.name}'=platform-logging \
+  secret/platform-logging --timeout=120s
+
+# Three RdsTopics reach Ready or Active.
+for t in alauda-log-topic alauda-event-topic alauda-audit-topic ; do
+  kubectl -n cpaas-system wait --for=jsonpath='{.status.phase}'=Active rdstopic/$t --timeout=120s \
+    || kubectl -n cpaas-system wait --for=jsonpath='{.status.phase}'=Ready rdstopic/$t --timeout=60s
+done
+```
+
+## 3. Create the two connection Secrets
+
+### 3.1 `platform-default-ch-conn` — points at the customer CH
+
+Fill in your `CH_ENDPOINT` / `CH_USER` / `CH_PASSWORD` / `CH_CLUSTER` / `CH_DATABASE` values collected in Section 0. Full field reference: [external-clickhouse.mdx §4](../how_to/external-clickhouse.mdx#4-connection-secret-contract).
+
+```yaml
+# 31-ch-conn-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-ch-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  endpoint: "http://ck.customer.internal:8123"     # ← CH_ENDPOINT
+  cluster:  "replicated"                            # ← CH_CLUSTER
+  database: "observability"                         # ← CH_DATABASE
+  username: "admin"                                 # ← CH_USER
+  password: "<plain-text password>"                 # ← CH_PASSWORD
+```
+
+### 3.2 `platform-default-mq-conn` — points at the in-cluster Kafka
+
+The `tls.ca` field must carry the strimzi cluster CA — otherwise the operator leaves TLS off and `aggregate-vector` opens a plain socket to the TLS listener, which closes with `unexpected EOF: broker appears to be expecting TLS`.
+
+```bash
+# Read the strimzi-minted cluster CA cert, embed it inline below.
+CA_PEM=$(kubectl -n cpaas-system get secret cpaas-kafka-cluster-ca-cert \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d | sed 's/^/    /')
+```
+
+```yaml
+# 30-mq-conn-secret.yaml — generate with the CA inlined
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  bootstrap: "cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093"
+  kafkaClusterName: "cpaas-kafka"
+  username: "platform-logging"
+  password: "a-strong-password-at-least-32-chars-long"   # ← same as 20-kafka-user-topics.yaml
+  sasl_mechanism: "SCRAM-SHA-512"
+  topics.log:   "ALAUDA_LOG_TOPIC"
+  topics.event: "ALAUDA_EVENT_TOPIC"
+  topics.audit: "ALAUDA_AUDIT_TOPIC"
+  tls.ca: |
+    -----BEGIN CERTIFICATE-----
+    <paste the decoded strimzi cluster CA here>
+    -----END CERTIFICATE-----
+```
+
+Easier one-shot generation that inlines the strimzi CA without manual copy-paste:
+
+```bash
+CA_PEM=$(kubectl -n cpaas-system get secret cpaas-kafka-cluster-ca-cert \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d | sed 's/^/    /')
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-default-mq-conn
+  namespace: cpaas-system
+type: Opaque
+stringData:
+  bootstrap: "cpaas-kafka-kafka-bootstrap.cpaas-system.svc:9093"
+  kafkaClusterName: "cpaas-kafka"
+  username: "platform-logging"
+  password: "a-strong-password-at-least-32-chars-long"
+  sasl_mechanism: "SCRAM-SHA-512"
+  topics.log:   "ALAUDA_LOG_TOPIC"
+  topics.event: "ALAUDA_EVENT_TOPIC"
+  topics.audit: "ALAUDA_AUDIT_TOPIC"
+  tls.ca: |
+${CA_PEM}
+EOF
+```
+
+### 3.3 Apply
+
+```bash
+kubectl apply -f 31-ch-conn-secret.yaml
+# (the mq-conn Secret is applied inline by the heredoc above)
+kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn
+```
+
+## 4. Pre-create the `observability` database on the customer CH
+
+This is the step customers most often miss when installing manually. Both `razor` and the operator-derived `schema-migrations` Job **assume the database already exists** — `razor` pings it directly at startup and crashloops otherwise. The scripted path handles this automatically in its Stage 3.5.
+
+Do this from any environment that has a ClickHouse client and can reach the customer CH endpoint — the customer DBA's workstation is typical. Issue:
+
+```sql
+CREATE DATABASE IF NOT EXISTS observability ON CLUSTER 'replicated';
+```
+
+Verify from the ACP cluster side that the database came through:
+
+```bash
+kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
+  --image=clickhouse/clickhouse-server:25.8 -- \
+  clickhouse-client --host=ck.customer.internal --port=9000 \
+    --user=admin --password=<CH_PASSWORD> \
+    --query "SHOW DATABASES FORMAT TSV" | grep observability
+```
+
+Expected output: `observability`.
+
+:::tip Doing this from inside the cluster
+If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job to issue the DDL from `cpaas-system`. The exact manifest is in [Fast Install — External ClickHouse §4.1 Stage 3.5](./fast-install-external-clickhouse.mdx#41-render-review-then-apply-recommended) — copy the Job spec rendered under `./rendered/` by `./install.sh install.env --render`.
+:::
+
+## 5. Apply PlatformLogForward
+
+```yaml
+# 40-plf.yaml
+apiVersion: log.alauda.io/v1alpha1
+kind: PlatformLogForward
+metadata:
+  name: platform-default
+spec:
+  installMode: Fresh
+  output:
+    type: clickhouse
+  externalStorage:
+    type: clickhouse
+    shards: 1                          # ← CH_SHARDS
+    replicas: 3                        # ← CH_REPLICAS
+    secretRef:
+      name: platform-default-ch-conn
+      namespace: cpaas-system
+  externalMessageQueue:
+    type: kafka
+    secretRef:
+      name: platform-default-mq-conn
+      namespace: cpaas-system
+```
+
+```bash
+kubectl apply -f 40-plf.yaml
+
+# Wait for Ready=True. Operator reconciles aggvec + razor + schema-migrations
+# behind this; expect 3–5 minutes on a fresh install.
+kubectl -n cpaas-system wait --for=condition=Ready \
+  platformlogforward/platform-default --timeout=600s
+```
+
+:::warning `installMode: Fresh` and `output.type: clickhouse` are mandatory
+Omitting `installMode` makes the operator go down its adopt path and run patch-keep logic against legacy chart resources that do not exist on a fresh install — noisy and slows reconcile. Omitting `output.type` makes the operator classify the scenario as `FreshKafkaOnly`, skip all CH-side derivations, and leave `razor` pointing at the legacy ES fallback endpoint forever.
+:::
+
+## 6. Verify
+
+The scripted [acceptance check](./fast-install-external-clickhouse.mdx#43-acceptance-check) applies verbatim to the manual flow. Minimum manual spot-check:
+
+```bash
+# 1. PLF Ready=True
+kubectl -n cpaas-system get platformlogforward platform-default \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+# Expected: True
+
+# 2. Operator-derived Deployments
+kubectl -n cpaas-system get deploy aggregate-vector razor
+# Expected: both Available
+
+# 3. Schema actually applied on the customer CH
+kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
+  --image=clickhouse/clickhouse-server:25.8 -- \
+  clickhouse-client --host=ck.customer.internal --port=9000 \
+    --user=admin --password=<CH_PASSWORD> \
+    --query "SELECT count() FROM system.tables WHERE database = 'observability'"
+# Expected: 18 or more (18 base tables + MVs)
+
+# 4. schema_migrations version row count
+kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
+  --image=clickhouse/clickhouse-server:25.8 -- \
+  clickhouse-client --host=ck.customer.internal --port=9000 \
+    --user=admin --password=<CH_PASSWORD> \
+    --query "SELECT count() FROM observability.schema_migrations"
+# Expected: matches the number of migrations the operator ships (currently 12)
+```
+
+For an end-to-end data-path verification (collector → Kafka → aggvec → customer CH → razor query), continue with the seven-step [post-install verification](./post-install-verification.mdx).
+
+## 7. Uninstall
+
+:::warning Customer CH data stays
+Everything below removes only what this walkthrough created. The customer CH cluster and all data in the `observability` database are untouched. If the customer wants the logging data purged from their CH, their DBA must run `DROP DATABASE observability ON CLUSTER 'replicated' SYNC`.
+:::
+
+```bash
+# 1. Remove the PLF — cascades through aggvec, razor, schema-migrations Job.
+kubectl -n cpaas-system delete platformlogforward platform-default
+
+# 2. Remove the connection Secrets.
+kubectl -n cpaas-system delete secret platform-default-ch-conn platform-default-mq-conn
+
+# 3. Remove the Kafka resources.
+kubectl -n cpaas-system delete rdstopic alauda-log-topic alauda-event-topic alauda-audit-topic
+kubectl -n cpaas-system delete rdskafkauser platform-logging
+kubectl -n cpaas-system delete secret platform-logging platform-logging-password
+kubectl -n cpaas-system delete rdskafka cpaas-kafka
+
+# 4. Remove the operators.
+kubectl -n cpaas-system delete sub log-storage-operator
+kubectl -n kafka-system  delete sub strimzi-kafka-operator
+# Delete the matching CSVs per namespace afterwards.
+
+# 5. (Optional) remove the Kafka PVCs so a reinstall starts fresh.
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka
+```
+
+## 8. Troubleshooting
+
+### PLF stays `Ready=False` with razor logging `Database observability does not exist`
+
+Section 4 was skipped. Pre-create the database (`CREATE DATABASE IF NOT EXISTS observability ON CLUSTER '<CH_CLUSTER>'`). `razor` auto-recovers within a reconcile cycle once the database exists.
+
+### schema-migrations Job fails with `UNKNOWN_DATABASE` on a specific shard
+
+The `CH_CLUSTER` value in the Secret doesn't fully match what's in the customer CH's `remote_servers`, or the `{shard}` / `{replica}` macro is misconfigured on one of the replicas. Ask the customer DBA:
+
+```sql
+SELECT * FROM system.clusters;
+SELECT * FROM system.macros;
+```
+
+Fix the mismatch, then delete and reapply the PLF:
+
+```bash
+kubectl -n cpaas-system delete platformlogforward platform-default
+kubectl apply -f 40-plf.yaml
+```
+
+### `aggregate-vector` logs `broker appears to be expecting TLS`
+
+The `tls.ca` key is missing from `platform-default-mq-conn`, or its value is the wrong CA. Re-run the heredoc in Section 3.2 that reads `cpaas-kafka-cluster-ca-cert` straight from strimzi; manual copy-paste of the CA easily misses characters.
+
+### PLF stays `Ready=False` with `waiting for aggregate-vector Deployment ReadyReplicas to reach spec.replicas`
+
+Operator-derived `aggregate-vector` pods are in `CrashLoopBackOff` or stuck pulling images. Inspect:
+
+```bash
+kubectl -n cpaas-system describe deploy aggregate-vector
+kubectl -n cpaas-system logs -l app.kubernetes.io/name=aggregate-vector --tail=50 -c vector
+```
+
+Common causes: the Kafka SASL password in `platform-default-mq-conn` doesn't match the `KafkaUser` password (re-check the common value used in both Section 2.2 and Section 3.2), or the operator cannot pull the vector image from the configured registry.
+
+## Known limitations
+
+See [Fast Install — External ClickHouse §Known limitations](./fast-install-external-clickhouse.mdx#known-limitations) — the manual flow has exactly the same limitations as the scripted flow:
+
+- HTTPS with self-signed / internal-CA certs is not yet supported.
+- Customer owns CH lifecycle, backup/restore, and version upgrades.
+
+## See also
+
+- [How to Integrate the Logging Stack with an External ClickHouse](../how_to/external-clickhouse.mdx) — the contract: hard requirements, CH user grants, Secret field reference, TTL and storage-policy ownership, S3 tiering.
+- [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx) — the scripted equivalent of everything on this page.
+- [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx) — the default path when the ACP cluster also runs ClickHouse in-cluster.
