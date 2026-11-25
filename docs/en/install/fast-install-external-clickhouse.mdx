@@ -30,13 +30,17 @@ These are the same five hard requirements as in [How to Integrate the Logging St
    One row per `(shard, replica)` must come back.
 3. **CH user — must be `admin`.** The install script hard-codes the user to `admin`; the field is not configurable through `install.env`. ACP's logging stack has a long history of non-admin users hitting `CREATE TABLE` / `MATERIALIZED VIEW` permission failures on the next schema migration, so every SRE runbook defaults to admin. Ask the customer DBA to grant these on cluster `'<CH_CLUSTER>'`:
    ```sql
-   GRANT CREATE DATABASE, CREATE TABLE, DROP TABLE, ALTER TABLE ON *.* TO 'admin';
+   GRANT CREATE TABLE, DROP TABLE, ALTER TABLE ON *.* TO 'admin';
    GRANT INSERT, SELECT, TRUNCATE ON <CH_DATABASE>.* TO 'admin';
    GRANT SYSTEM DROP DNS CACHE ON *.* TO 'admin';
    ```
-   `CREATE DATABASE` is mandatory — the install script's Stage 3.5 runs `CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'`. If the security policy forbids granting it to the app user even temporarily, the DBA may pre-create the database manually and Stage 3.5 becomes a no-op.
-4. **Network reachability.** Pods in the `cpaas-system` namespace (`aggregate-vector`, `razor`, operator-derived `schema-migrations` Job, and the install script's Stage 3.5 bootstrap Job) must be able to resolve DNS for the CH endpoint and open a TCP connection. NetworkPolicy, firewalls, and egress gateways must all permit it.
-5. **Endpoint scheme + port.** The HTTP interface is `:8123` by default, HTTPS `:8443`. The script accepts either. Self-signed HTTPS certificates are not yet supported in this iteration — see [Known limitations](#known-limitations) below.
+4. **Database pre-created on the customer CH.** The install script **does not** reach into the customer CH to run DDL — ownership stays with the customer. **Before** running `./install.sh`, ask the customer DBA to run one SQL against their own cluster:
+   ```sql
+   CREATE DATABASE IF NOT EXISTS <CH_DATABASE> ON CLUSTER '<CH_CLUSTER>';
+   ```
+   Skipping this makes PLF stuck Ready=False (`razor` pings the database at startup and crashloops); the script's Stage 4 wait will time out and the die message points you here.
+5. **Network reachability.** Pods in the `cpaas-system` namespace (`aggregate-vector`, `razor`, operator-derived `schema-migrations` Job) must be able to resolve DNS for the CH endpoint and open a TCP connection. NetworkPolicy, firewalls, and egress gateways must all permit it.
+6. **Endpoint scheme + port.** The HTTP interface is `:8123` by default, HTTPS `:8443`. The script accepts either. Self-signed HTTPS certificates are not yet supported in this iteration — see [Known limitations](#known-limitations) below.
 
 ### 1.2 Dynamic StorageClass
 
@@ -65,29 +69,7 @@ kubectl -n cpaas-system get packagemanifest strimzi-kafka-operator log-storage-o
 
 Both rows must report a non-empty `AGE`.
 
-### 1.4 Bootstrap image
-
-Stage 3.5 runs a one-shot `Job` in `cpaas-system` that issues
-`CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'` against the customer CH. The Job needs a pullable image with one of:
-
-- `clickhouse-client` (preferred — recent ACP images ship `clickhouse-server` under the `middleware/` namespace); or
-- BusyBox `wget` with `--user` / `--password` / `--post-data` (the ACP `ops/alpine` image qualifies).
-
-The script auto-selects an image in this priority order:
-
-1. The value of `CH_BOOTSTRAP_IMAGE` in `install.env`, if set.
-2. The `CK_SERVER_IMAGE` env from a `clickhouse-operator` Deployment in `cpaas-logging`, if the customer happens to have one installed for other reasons — this gives the `clickhouse-client` path.
-3. `<registry>/ops/alpine:latest`, derived from the `log-storage-operator` pod's registry prefix — the `wget` path.
-
-If none of these resolve to a pullable image, Stage 3.5 fails loudly. The fix is to set `CH_BOOTSTRAP_IMAGE` explicitly to a known-pullable image in the customer's registry, for example:
-
-```ini
-CH_BOOTSTRAP_IMAGE="<customer-registry>/middleware/clickhouse-server:v25.8"
-# or
-CH_BOOTSTRAP_IMAGE="<customer-registry>/ops/alpine:3.23"
-```
-
-### 1.5 Jump host
+### 1.4 Jump host
 
 Standard Linux shell: `kubectl`, `bash`, `envsubst`, `base64`, `sha256sum`, configured with a kubeconfig that can reach the target ACP cluster.
 
@@ -228,8 +210,9 @@ Stage order:
 2. **Stage 1** — `RdsKafka` and its pods become Ready.
 3. **Stage 2** — `RdsKafkaUser` + three `RdsTopic` CRs reach `Ready` or `Active`.
 4. **Stage 3** — `platform-default-mq-conn` + `platform-default-ch-conn` Secrets are written. The CH Secret contains the customer endpoint + credentials from `install.env`.
-5. **Stage 3.5** — One-shot `Job/ck-external-bootstrap-db` creates the `observability` database on the customer CH (`CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'`).
-6. **Stage 4** — `PlatformLogForward/platform-default` is applied; the operator derives `aggregate-vector`, `razor`, and the `schema-migrations` Job that applies the schema against the customer CH. When all of them are Ready, PLF flips `Ready=True`.
+5. **Stage 4** — `PlatformLogForward/platform-default` is applied; the operator derives `aggregate-vector`, `razor`, and the `schema-migrations` Job that applies the schema against the customer CH. When all of them are Ready, PLF flips `Ready=True`.
+
+The install script does **not** `CREATE DATABASE` on the customer CH — that step belongs to the customer DBA and must have been done per Section 1.1 requirement 4 before running `./install.sh`. If the database is missing, Stage 4 waits for PLF Ready until it times out (razor can't ping the DB), and the die message tells you to go run the SQL.
 
 ### 4.2 Direct live apply
 
@@ -259,7 +242,7 @@ The checker runs eight assertions:
 All eight must report ✓ for the install to be considered complete.
 
 :::info Idempotent
-Rerunning the script with the same `install.env` against the same cluster is a no-op after the first successful run. Every `kubectl apply` is server-side, every readiness wait short-circuits when the condition already holds, and derived passwords are stable. The Stage 3.5 Job uses `CREATE DATABASE IF NOT EXISTS`, so a re-run against an already-bootstrapped CH is also a no-op.
+Rerunning the script with the same `install.env` against the same cluster is a no-op after the first successful run. Every `kubectl apply` is server-side, every readiness wait short-circuits when the condition already holds, and derived passwords are stable.
 :::
 
 ## 5. Verify
@@ -272,7 +255,6 @@ In addition to `check.sh`, these commands cover the same ground manually:
 | RdsKafka | `kubectl -n cpaas-system get rdskafka <KAFKA_NAME>` | All Kafka pods Ready |
 | RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
 | Connection Secrets | `kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-conn` | Both exist |
-| Bootstrap Job | `kubectl -n cpaas-system get job ck-external-bootstrap-db` | `COMPLETIONS=1/1` (or already GC'd) |
 | PlatformLogForward | `kubectl -n cpaas-system get platformlogforward platform-default` | `Ready=True` |
 
 For a full end-to-end verification of the data path (collector → Kafka → aggregate-vector → **customer** ClickHouse → razor-api), continue with the seven-step [post-install verification](./post-install-verification.mdx). Replace the in-cluster CHI references in that page with the customer CH endpoint and credentials.
@@ -311,13 +293,19 @@ kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=<KAFKA_NAME>
 
 See the warning in Section 3.1. Add a `Mi` / `Gi` / `Ti` suffix.
 
-### Stage 3.5 fails — `cannot auto-select a bootstrap image`
+### PLF stays `Ready=False` with `razor: Database <db> does not exist`
 
-Neither the chop CSV probe nor the `<registry>/ops/alpine` fallback resolved to a pullable image. Set `CH_BOOTSTRAP_IMAGE` in `install.env` to a known-pullable image. See Section 1.4.
+The required pre-step from Section 1.1 requirement 4 was skipped. Ask the customer DBA to run on their own `clickhouse-client`:
 
-### Stage 3.5 fails — `wget failed` or `clickhouse-client … connection refused`
+```sql
+CREATE DATABASE IF NOT EXISTS observability ON CLUSTER '<CH_CLUSTER>';
+```
 
-Pod in `cpaas-system` cannot reach the customer CH endpoint. Check in this order:
+`razor` auto-recovers within a reconcile cycle; no need to re-run `install.sh`. If `install.sh` is still in its Stage 4 wait, it also recovers on its own; if it already died, re-run `./install.sh install.env` — every prior stage is a no-op and Stage 4 resumes.
+
+### `aggregate-vector` or `razor` pods cannot reach the customer CH
+
+Check in this order:
 
 1. `CH_ENDPOINT` scheme + port are correct.
 2. DNS resolves from inside the ACP cluster:
@@ -326,21 +314,6 @@ Pod in `cpaas-system` cannot reach the customer CH endpoint. Check in this order
    ```
 3. No NetworkPolicy in `cpaas-system` denies egress to the CH endpoint IP/port.
 4. The customer-side firewall / egress gateway permits the ACP cluster's node CIDR.
-
-### Stage 3.5 fails — `CREATE DATABASE` returns `ACCESS_DENIED`
-
-The `admin` user is missing `CREATE DATABASE`. Two options:
-
-- Ask the customer DBA to grant it: `GRANT CREATE DATABASE ON *.* TO 'admin' ON CLUSTER '<CH_CLUSTER>'`, then re-run the script.
-- Have the DBA pre-create the database manually:
-  ```sql
-  CREATE DATABASE IF NOT EXISTS observability ON CLUSTER '<CH_CLUSTER>';
-  ```
-  then re-run the script. Stage 3.5 becomes a no-op (`IF NOT EXISTS`).
-
-### PLF stays `Ready=False` with `razor: Database observability does not exist`
-
-`razor` crashloops because the database is missing. This happens when Stage 3.5 did not run (older script, or the Stage was manually skipped). Create the database once per Section 7 "ACCESS_DENIED" above, then the razor pods recover automatically within a reconcile cycle.
 
 ### PLF stays `Ready=False` with a `schema-migrations` Job failure referencing `Code: 170 BAD_GET` or `UNKNOWN_DATABASE` on one shard
 
