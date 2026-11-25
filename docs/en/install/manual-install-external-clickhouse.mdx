@@ -219,7 +219,7 @@ spec:
   topicName: ALAUDA_LOG_TOPIC
   partitions: 30
   replicas: 3
-  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760", compression.type: "gzip" }
 ---
 apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
@@ -228,7 +228,7 @@ spec:
   topicName: ALAUDA_EVENT_TOPIC
   partitions: 30
   replicas: 3
-  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760", compression.type: "gzip" }
 ---
 apiVersion: middleware.alauda.io/v1
 kind: RdsTopic
@@ -237,8 +237,12 @@ spec:
   topicName: ALAUDA_AUDIT_TOPIC
   partitions: 30
   replicas: 3
-  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760" }
+  config: { retention.ms: "172800000", segment.ms: "86400000", max.message.bytes: "10485760", compression.type: "gzip" }
 ```
+
+:::info Topic-level gzip
+`compression.type: "gzip"` cuts Kafka disk footprint by ~3-5× on log payloads (JSON compresses well). Kafka broker default is `producer` (broker stores whatever codec the producer sent); setting it on the topic forces the broker to re-compress / verify, so all three topics stay gzipped regardless of which vector / aggregate-vector / razor build is writing.
+:::
 
 ### 2.3 Apply and wait
 
@@ -373,7 +377,7 @@ kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
 Expected output: `observability`.
 
 :::tip Doing this from inside the cluster
-If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job to issue the DDL from `cpaas-system`. The exact manifest is in [Fast Install — External ClickHouse §4.1 Stage 3.5](./fast-install-external-clickhouse.mdx#41-render-review-then-apply-recommended) — copy the Job spec rendered under `./rendered/` by `./install.sh install.env --render`.
+If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job from inside `cpaas-system` that curls or clickhouse-client's the CH endpoint and issues the DDL. The scripted path's `stage3_5_bootstrap_db` function in `files/ck-external/install.sh` has a reference Job template you can lift directly — it reads `endpoint` / `username` / `password` from the `platform-default-ch-conn` Secret and uses either `clickhouse-client` (preferred) or BusyBox `wget` depending on the base image you pick. Skim that function, drop the Job manifest inline in your working directory, and `kubectl apply -f` it.
 :::
 
 ## 5. Apply PlatformLogForward
@@ -388,6 +392,21 @@ spec:
   installMode: Fresh
   output:
     type: clickhouse
+  # Hot retention per log table, in days. operator ClickHouseTTLSpec default
+  # is 0 across the board, which maps to "never expire" — razor's hot TTL
+  # cleaner then skips MODIFY TTL entirely and the customer's CH disk fills
+  # indefinitely. Baseline below matches the OpenSearch backend's embedded
+  # ILM policies and the v4.3 chart-alauda-log-center defaults. Customers
+  # whose DBA has a conflicting retention policy on the external CH should
+  # edit these to match.
+  clickhouse:
+    ttl:
+      logPlatform:   7
+      logWorkload:   7
+      logKubernetes: 7
+      logSystem:     7
+      audit:         180
+      event:         180
   externalStorage:
     type: clickhouse
     shards: 1                          # ← CH_SHARDS
