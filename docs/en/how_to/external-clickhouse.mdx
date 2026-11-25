@@ -6,6 +6,13 @@ weight: 12
 
 Use this page when you want the ACP v4.4 logging stack (`log-storage-operator` + `nevermore` + `razor` + `aggregate-vector`) to write to a ClickHouse cluster that your SRE team manages themselves, instead of the in-cluster `ClickHouseInstallation` the [quickstart install flow](../install/fast-install.mdx) provisions. Everything downstream of ClickHouse — schema migrations, TTL, aggregation, query API — remains managed by the operator via `PlatformLogForward`; only the storage engine moves outside.
 
+:::tip Install walkthroughs available
+This page is the **contract** — requirements, grants, Secret keys, storage policy. For the actual install procedure, pick one of:
+
+- [Fast Install via Quickstart Script — External ClickHouse Backend](../install/fast-install-external-clickhouse.mdx) — one-shot script that renders every CR and applies in order.
+- [Manual Install via kubectl — External ClickHouse Backend](../install/manual-install-external-clickhouse.mdx) — step-by-step `kubectl apply` walkthrough with every YAML inlined, for air-gapped or change-window-driven environments.
+:::
+
 ## When to pick this path
 
 - The storage cluster already runs a shared ClickHouse (DBaaS, on-prem managed CH, cross-cluster CH).
@@ -14,7 +21,7 @@ Use this page when you want the ACP v4.4 logging stack (`log-storage-operator` +
 
 If none of these apply, the in-cluster ClickHouseInstallation built by the quickstart script is the simpler choice.
 
-## 1. Hard requirements on the external ClickHouse
+## 1. Hard requirements on the external ClickHouse \{#1-hard-requirements-on-the-external-clickhouse}
 
 These are non-negotiable — `razor` and the `schema-migrations` Job will refuse to run if any are missing.
 
@@ -55,7 +62,7 @@ These are non-negotiable — `razor` and the `schema-migrations` Job will refuse
 
   Replace the port with the native protocol port your CH exposes; the quickstart deploys the HTTP interface, so a plain `curl http://<ch-host>:8123/ping` is also acceptable.
 
-## 2. User and permissions
+## 2. User and permissions \{#2-user-and-permissions}
 
 ACP logging uses a single user to drive both schema migrations and runtime writes/queries. By convention this user is **`admin`** — the quickstart install flow and every SRE runbook default to it, and prior incidents have shown non-admin users hit `CREATE TABLE` or `MATERIALIZED VIEW` permission failures that surface only on the next schema migration.
 
@@ -77,7 +84,7 @@ If your security policy forbids `GRANT ALL`, substitute the explicit grant list 
 - **TTL** is managed by `razor` as a hot-reloaded config: it reads `/etc/policy/logging/ttl.json`, which the operator derives from `PlatformLogForward.spec.clickhouse.ttl.*`, and issues `ALTER TABLE … MODIFY TTL … ON CLUSTER '<cluster>'` every 15 seconds. Do not set TTL in your own DDL — `razor` will overwrite it on the next reconcile. Change retention by editing the PLF, not the tables.
 - **Storage policy** (hot/cold tiering with S3) is configured by the SRE in the ClickHouse server config XML (define the S3 disk + cold volume there). The operator's `schema-migrations` Job then appends `SETTINGS storage_policy='<policy-name>'` to new tables, and `razor` later issues `ALTER TABLE … MODIFY TTL … TO VOLUME 'cold'`.
 
-## 4. Connection Secret contract
+## 4. Connection Secret contract \{#4-connection-secret-contract}
 
 Create `platform-default-ch-conn` in `cpaas-system` before applying `PlatformLogForward`. The operator reads these keys from the secret (source: `log-storage-operator/controllers/external_mode.go` `effectiveStorageTarget`):
 
