@@ -6,8 +6,11 @@ weight: 12
 
 Use this page when you want the ACP v4.4 logging stack (`log-storage-operator` + `nevermore` + `razor` + `aggregate-vector`) to write to a ClickHouse cluster that your SRE team manages themselves, instead of the in-cluster `ClickHouseInstallation` the [quickstart install flow](../install/fast-install.mdx) provisions. Everything downstream of ClickHouse — schema migrations, TTL, aggregation, query API — remains managed by the operator via `PlatformLogForward`; only the storage engine moves outside.
 
-:::tip Scripted path available
-For a one-shot script that automates Sections 4 and 5 below (write the two connection Secrets, bootstrap the `observability` database, apply `PlatformLogForward`, wait each stage Ready), see [Fast Install via Quickstart Script — External ClickHouse Backend](../install/fast-install-external-clickhouse.mdx). This page remains the authoritative reference for the external-CH contract (requirements, grants, Secret keys, storage policy).
+:::tip Install walkthroughs available
+This page is the **contract** — requirements, grants, Secret keys, storage policy. For the actual install procedure, pick one of:
+
+- [Fast Install via Quickstart Script — External ClickHouse Backend](../install/fast-install-external-clickhouse.mdx) — one-shot script that renders every CR and applies in order.
+- [Manual Install via kubectl — External ClickHouse Backend](../install/manual-install-external-clickhouse.mdx) — step-by-step `kubectl apply` walkthrough with every YAML inlined, for air-gapped or change-window-driven environments.
 :::
 
 ## When to pick this path
