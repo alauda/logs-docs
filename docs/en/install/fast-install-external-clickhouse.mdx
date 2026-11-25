@@ -205,7 +205,7 @@ The primary `global` cluster and any `global` cluster without disaster recovery 
 
 ## 4. Install
 
-### 4.1 Render, review, then apply (recommended)
+### 4.1 Render, review, then apply (recommended) \{#41-render-review-then-apply-recommended}
 
 Render every YAML into `./rendered/` without touching the cluster:
 
@@ -238,7 +238,7 @@ Skip the render step:
 ./install.sh install.env
 ```
 
-### 4.3 Acceptance check
+### 4.3 Acceptance check \{#43-acceptance-check}
 
 ```bash
 ./check.sh install.env
@@ -357,7 +357,7 @@ kubectl -n cpaas-system delete platformlogforward platform-default
 ./install.sh install.env
 ```
 
-## Known limitations
+## Known limitations \{#known-limitations}
 
 - **HTTPS with a self-signed or internal-CA certificate is not yet supported in this iteration.** The script does not render `tls.ca` / `tls.insecure_skip_verify` into the `platform-default-ch-conn` Secret. Public-CA-signed HTTPS endpoints work out of the box via the Go standard trust store. Workarounds for self-signed HTTPS:
   - Expose plain HTTP (`http://...:8123`) instead, or
