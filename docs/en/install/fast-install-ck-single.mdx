@@ -1,0 +1,299 @@
+---
+weight: 15
+---
+
+# Fast Install via Quickstart Script — Single-Node PoC (ClickHouse)
+
+This page covers the one-shot quickstart script that stands up the ACP 4.4 logging stack **on a single-worker ACP cluster** for PoC and demo scenarios. For the standard 3-replica production install, see [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx). For integrating with a customer-managed external ClickHouse, see [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx).
+
+Pick this path when:
+
+- The target ACP cluster has **one** worker — pre-sales demo, one-box install, developer sandbox.
+- Baseline storage budget ≈ **30 GiB** total across Keeper + Kafka + ClickHouse.
+- A single component restart (Keeper pod, Kafka broker, CH pod) halting the log pipeline for a few minutes is acceptable.
+
+:::warning Not for production
+Every component runs as a single replica. Any pod restart — image pull, OOMKill, node drain — stops the log pipeline until that pod is back. PVCs are all pinned to the single worker via WaitForFirstConsumer, so a worker-level failure is unrecoverable. Use the [standard 3-replica install](./fast-install.mdx) when the environment grows beyond one worker.
+:::
+
+## 1. Prerequisites
+
+### 1.1 Dynamic StorageClass
+
+All three StatefulSets (Keeper, ClickHouse, Kafka broker + controller) request `ReadWriteOnce` dynamic PVCs. Verify at least one dynamic SC is available:
+
+```bash
+kubectl get sc
+```
+
+Pick one whose `PROVISIONER` column is not `no-provisioner`. The single-node variant has been verified on `topolvm-provisioner`.
+
+### 1.2 OperatorHub PackageManifests
+
+The script installs the same three operators as the standard install:
+
+| Operator | Target namespace |
+| --- | --- |
+| **Alauda Data Services Analytical Database E1** (`clickhouse-operator`) | `cpaas-logging` |
+| **Alauda Streaming Service for Kafka** (`strimzi-kafka-operator`) | `kafka-system` |
+| **Alauda Container Platform Log Storage Management** (`log-storage-operator`) | `cpaas-system` |
+
+Verify:
+
+```bash
+kubectl -n cpaas-system get packagemanifest \
+  clickhouse-operator strimzi-kafka-operator log-storage-operator
+```
+
+All three rows must report a non-empty `AGE`.
+
+### 1.3 Jump host
+
+Standard Linux shell: `kubectl`, `bash`, `envsubst`, `base64`, `sha256sum`, configured with a kubeconfig that can reach the target ACP cluster.
+
+## 2. Get the script bundle
+
+From the Alauda Cloud application marketplace, search for **ACP Logging Quickstart**, pick the latest `v4.4.x` version, and download the chart tarball.
+
+Unpack on the jump host and change into `files/ck-single/` — **every command on this page runs from there**:
+
+```bash
+tar xzf alauda-log-quickstart-v4.4.x.tgz
+cd alauda-log-quickstart/files/ck-single/
+```
+
+Layout:
+
+```
+alauda-log-quickstart/
+├── Chart.yaml
+├── values.yaml
+├── templates/NOTES.txt
+└── files/ck-single/              ← work from here
+    ├── install.sh
+    ├── check.sh
+    ├── install.env.example
+    ├── README.md
+    └── templates/
+        ├── 00-subscriptions.yaml
+        ├── 10-keeper.yaml              (1-pod STS, raft server id=1 only)
+        ├── 11-chi.yaml                 (1 shard × 1 replica CHI)
+        ├── 12-rdskafka.yaml            (replicas:1, affinity:{} clears strimzi anti-affinity)
+        ├── 20-kafka-user-topics.yaml
+        ├── 30-mq-conn-secret.yaml
+        ├── 31-ch-conn-secret.yaml
+        └── 40-plf.yaml                 (aggregate-vector/razor replicas=1)
+```
+
+The structural differences from `files/ck/` (standard 3-replica path):
+
+- **Keeper**: 1-pod StatefulSet instead of 3; `raft_configuration` contains only `server id=1`; PDB `maxUnavailable=0` (no voluntary eviction allowed on a 1-worker PoC).
+- **ClickHouse**: `CK_SHARDS=1 × CK_REPLICAS=1`; `zookeeper.nodes` only points at `keeper-0`; CHI pod's `clickhouse-server` image is overridden via `CK_SERVER_IMAGE` to match what's actually in the ACP registry.
+- **Kafka**: `replicas: 1` (broker + controller + entityOperator each). `kafka.template.pod.affinity: {}` and the matching controller/entityOperator `affinity: {}` explicitly override the Alauda strimzi fork's default required `podAntiAffinity` — without these overrides a later scale-up on a multi-worker cluster would silently re-introduce the anti-affinity and reject scheduling.
+- **PLF**: `aggregateVector.replicas: 1`, `razor.replicas: 1` (defaults for the standard install are 3 and 2 respectively).
+
+## 3. Configure `install.env`
+
+Copy the sample:
+
+```bash
+cp install.env.example install.env
+```
+
+### 3.1 Required fields
+
+Only two:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `STORAGE_CLASS` | The dynamic SC verified in Section 1.1. | `topolvm-provisioner` |
+| `KEEPER_IMAGE` | Optional in theory, but a PoC environment often lacks a live `clickhouse-operator` CSV at install time for the script to auto-probe the clickhouse-server image from. Set it explicitly to match your registry. | `registry.alauda.cn:60070/middleware/clickhouse-server:v25.3.3.42-507eb110` |
+
+Everything else has a PoC-sized default:
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `KAFKA_STORAGE_SIZE` | `20Gi` | One broker, retention 1h — see §3.2. |
+| `KAFKA_CONTROLLER_STORAGE_SIZE` | `5Gi` | |
+| `KEEPER_STORAGE_SIZE` | `5Gi` | Single-pod quorum; Raft log is tiny. |
+| `CK_STORAGE_SIZE` | `50Gi` | 1h demo retention fits easily; raise if you want a multi-day demo. |
+| `KAFKA_RETENTION_MS` | `3600000` (1h) | Demo-sized; the standard install default is `172800000` (2d). |
+| `KAFKA_SEGMENT_MS` | `600000` (10m) | Keep segment ≤ retention/2 so expired data actually leaves the active segment and gets deleted. |
+| `AGGVEC_REPLICAS` / `RAZOR_REPLICAS` | both `1` | Script envsubst allowlists these; the 40-plf.yaml template fills them into PLF. |
+| `CK_SHARDS` / `CK_REPLICAS` | forced to `1` by the script (with a warning if you set anything else) | Single-node topology; forcing avoids accidental mismatch. |
+| `KAFKA_NAME` / `CK_NAME` | `cpaas-kafka-poc` / `cpaas-clickhouse-poc` | Suffix chosen so a legacy v4.3 install (which uses `cpaas-kafka` / `cpaas-clickhouse`) can coexist on the same namespace during a side-by-side migration. |
+
+### 3.2 Resource budget cheat sheet (defaults)
+
+| Component | CPU req / lim | Mem req / lim | PVC |
+| --- | --- | --- | --- |
+| Keeper (1 pod) | 200m / 1 | 256Mi / 1Gi | 5Gi |
+| Kafka broker (1 pod) | 200m / 2 | 1Gi / 2Gi | 20Gi |
+| Kafka controller (1 pod) | 200m / 1 | 512Mi / 2Gi | 5Gi |
+| ClickHouse (1 pod) | 500m / 4 | 2Gi / 8Gi | 50Gi |
+| aggregate-vector (1 pod) | — | — | — |
+| razor (1 pod) | — | — | — |
+
+Total baseline PVC: **~80 GiB** (lower end — realistic: ~30 GiB used after a few days of PoC traffic, since Kafka turns over every 1h by default and CK compresses at ingest).
+
+### 3.3 Why `KEEPER_IMAGE` matters here
+
+On single-worker ACP the install sequence is: Stage 0 waits for three CSVs to reach `Succeeded`, then Stage 1a reads the `clickhouse-operator` Deployment's env var `CK_SERVER_IMAGE` to pick the Keeper image. If the chop CSV takes longer than usual to converge, or the SRE pre-staged the Subscription separately, the script can race ahead and fall through with a loud error. Setting `KEEPER_IMAGE` upfront removes the race.
+
+Look up the current reference value:
+
+```bash
+kubectl -n cpaas-logging get deploy clickhouse-operator \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="clickhouse-operator")].env[?(@.name=="CK_SERVER_IMAGE")].value}'
+```
+
+Prepend the chop container image's own registry prefix (the env value often omits it) and paste the resulting full URL into `install.env`.
+
+## 4. Install
+
+### 4.1 Render, review, then apply (recommended)
+
+Render every YAML into `./rendered/` without touching the cluster:
+
+```bash
+./install.sh install.env --render
+```
+
+Review the eight files under `./rendered/`. Tweak resources / labels / affinity if your PoC cluster has specific constraints. When ready:
+
+```bash
+./install.sh install.env
+```
+
+Stage order:
+
+1. **Stage 0** — Three OLM `Subscription` objects (chop + strimzi + log-storage) reach CSV `Succeeded`.
+2. **Stage 1a** — Keeper StatefulSet (1 pod) rolls out. Timeout extended to 600s compared to the standard install's 300s — single-worker topolvm bind + first-time image pull can push this close to the 300s edge.
+3. **Stage 1b** — `ClickHouseInstallation` (1×1) + `RdsKafka` (1 broker + 1 controller) reach `Completed` / Ready. The script also issues `CREATE DATABASE IF NOT EXISTS observability ON CLUSTER 'replicated'` so razor doesn't crashloop on first boot.
+4. **Stage 2** — `RdsKafkaUser` + three `RdsTopic` CRs reach `Ready` or `Active`.
+5. **Stage 3** — `platform-default-mq-conn` + `platform-default-ch-conn` Secrets are written (mq-conn gets the strimzi cluster-ca-cert inlined so TLS stays wired).
+6. **Stage 4** — `PlatformLogForward/platform-default` reaches `Ready=True`.
+
+### 4.2 Direct live apply
+
+Skip the render step:
+
+```bash
+./install.sh install.env
+```
+
+### 4.3 Acceptance check
+
+```bash
+./check.sh install.env
+```
+
+The checker runs the same eight assertions as the standard install, tuned for single-replica expectations (e.g. "aggregate-vector / razor pods all Running" with the running count expected to be 2, not 5).
+
+:::info Idempotent
+Rerunning the script with the same `install.env` against the same cluster is a no-op after the first successful run. Every `kubectl apply` is server-side, every readiness wait short-circuits when the condition already holds, and derived passwords are stable. On a mid-run failure, fix the configuration and rerun the same command — completed stages pass instantly.
+:::
+
+## 5. Verify
+
+In addition to `check.sh`, these commands cover the same ground manually:
+
+| Object | Command | Expected |
+| --- | --- | --- |
+| OLM CSVs | `kubectl -n cpaas-logging get csv ; kubectl -n kafka-system get csv ; kubectl -n cpaas-system get csv` | All `Succeeded` |
+| Keeper | `kubectl -n cpaas-system get sts keeper` | `READY 1/1` |
+| CHI | `kubectl -n cpaas-system get chi cpaas-clickhouse-poc` | `.status.status=Completed`, 1 shard × 1 replica |
+| RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka-poc` | 1 broker + 1 controller Ready |
+| RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
+| PLF | `kubectl -n cpaas-system get platformlogforward platform-default` | `Ready=True` |
+
+For end-to-end verification of the data path (collector → Kafka → aggregate-vector → ClickHouse → razor-api), continue with the [post-install verification](./post-install-verification.mdx) page.
+
+## 6. Uninstall
+
+```bash
+# Remove the PLF; this cascades through operator-derived Features, aggvec, razor.
+kubectl -n cpaas-system delete platformlogforward platform-default
+
+# Remove the CRs the script created.
+kubectl -n cpaas-system delete rdskafka cpaas-kafka-poc
+kubectl -n cpaas-system delete chi cpaas-clickhouse-poc
+kubectl -n cpaas-system delete sts keeper
+
+# Remove Subscriptions and CSVs.
+kubectl -n cpaas-system  delete sub log-storage-operator
+kubectl -n cpaas-logging delete sub clickhouse-operator
+kubectl -n kafka-system  delete sub strimzi-kafka-operator
+# Delete the matching CSVs per namespace afterwards.
+```
+
+PVCs stay bound by default. On a 1-worker PoC the leftover PVCs are usually what you want (fast reinstall, same local volume). To fully wipe:
+
+```bash
+# ClickHouse (chop-managed CHI)
+kubectl -n cpaas-system delete pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse-poc
+
+# Kafka (Alauda strimzi fork)
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka-poc
+
+# ClickHouse Keeper (quickstart-installed StatefulSet)
+kubectl -n cpaas-system delete pvc -l app=keeper
+```
+
+:::warning Keeper PVC is frequently missed
+The Keeper quorum is a plain `StatefulSet` deployed by the quickstart script (not a chop sub-resource); its PVCs are labeled `app=keeper`, not the chop labels used by the ClickHouse PVCs. Leaving them behind and reinstalling later hits `Code: 253 REPLICA_ALREADY_EXISTS` because ClickHouse-Keeper still remembers the previous replica identities.
+:::
+
+## 7. Troubleshooting
+
+### `KAFKA_STORAGE_SIZE must carry a unit suffix`
+
+Add a `Mi` / `Gi` / `Ti` suffix (the sample defaults already carry one — only matters if you overrode).
+
+### Keeper pod stays Pending — `0/N nodes are available: … FailedScheduling`
+
+On a 1-worker cluster, the single node may be tainted (master, infra, etc.) or already full on local volumes. The script emits a fallback `tolerations: [{operator: Exists}]` by default, but check `kubectl describe` to see which predicate failed.
+
+### CHI pod `ImagePullBackOff`
+
+The chop operator's `CK_SERVER_IMAGE` env often points at a tag that is missing from your private registry. Set `CK_SERVER_IMAGE` in `install.env` to a tag you have mirrored, re-run the script. The 11-chi.yaml template takes this as an explicit override on the `clickhouse` container.
+
+### `Code: 253 REPLICA_ALREADY_EXISTS` during schema-migrations
+
+Keeper PVCs from a previous install are still around (see the Uninstall warning). Recovery:
+
+```bash
+# Drop the stale replica metadata from Keeper
+kubectl -n cpaas-system exec -c clickhouse <chi-pod> -- \
+  clickhouse-client --user=admin --password=<CK_ADMIN_PASSWORD> \
+  --query "SYSTEM DROP REPLICA FROM ZKPATH '/clickhouse/observability/tables/0/<stale-table>'"
+# Then retry the schema-migrations Job
+```
+
+Or simpler: full uninstall + delete all three PVC groups above + reinstall.
+
+### aggvec / razor CrashLoopBackOff with `Database observability does not exist`
+
+Stage 1b was skipped or raced ahead. Re-issue the `CREATE DATABASE` manually:
+
+```bash
+CHI_POD=$(kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse-poc -o jsonpath='{.items[0].metadata.name}')
+kubectl -n cpaas-system exec "$CHI_POD" -c clickhouse -- \
+  clickhouse-client --user=admin --password=<CK_ADMIN_PASSWORD> \
+  --query "CREATE DATABASE IF NOT EXISTS observability ON CLUSTER 'replicated'"
+```
+
+aggvec/razor auto-recover within a reconcile cycle.
+
+## Known limitations
+
+- **Zero HA.** Keeper / Kafka broker / ClickHouse / aggregate-vector / razor are all single-replica. A single pod restart halts ingest for a few minutes.
+- **PVC pinning.** All PVCs are bound to the single worker's local volumes via `WaitForFirstConsumer`. A worker-level failure is **not recoverable** — treat the PoC environment as scratch.
+- **Not a scale-up starting point.** Going from this PoC topology to a 3-replica production cluster is not a `kubectl scale sts/keeper --replicas=3` operation. Scaling Keeper requires updating `keeper_config.xml`'s `raft_configuration` (manual), waiting for PVC provisioning on new nodes, and data sync. For a path to production, plan a parallel install with [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx) and migrate data across, rather than an in-place scale.
+- **OpenSearch backend is not available in single-node form.** `files/os/`'s install script enforces a hard `>= 3` node check and opster uses required anti-affinity; the single-node variant is ClickHouse-only.
+
+## See also
+
+- [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx) — standard 3-replica production install.
+- [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx) — customer-managed CH.
+- [Fast Install via Quickstart Script — OpenSearch Backend](./fast-install-opensearch.mdx) — OpenSearch backend path.
