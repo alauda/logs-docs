@@ -64,7 +64,7 @@ These are non-negotiable — `razor` and the `schema-migrations` Job will refuse
 
 ## 2. User and permissions \{#2-user-and-permissions}
 
-ACP logging uses a single user to drive both schema migrations and runtime writes/queries. By convention this user is **`admin`** — the quickstart install flow and every SRE runbook default to it, and prior incidents have shown non-admin users hit `CREATE TABLE` or `MATERIALIZED VIEW` permission failures that surface only on the next schema migration.
+ACP logging uses a single user to drive both schema migrations and runtime writes/queries. **This user must be `admin`.** The quickstart install flow (`chart/files/ck-external/install.sh`) hard-codes it to `admin`; the manual flow in [Manual Install via kubectl — External ClickHouse Backend](../install/manual-install-external-clickhouse.mdx) sets the same value in the connection Secret. Non-admin users have repeatedly hit `CREATE TABLE` or `MATERIALIZED VIEW` permission failures on schema migrations, so every SRE runbook assumes admin.
 
 **Recommended grants** (database-scoped admin on `observability`):
 
