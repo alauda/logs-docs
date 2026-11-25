@@ -377,7 +377,61 @@ kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
 Expected output: `observability`.
 
 :::tip Doing this from inside the cluster
-If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job from inside `cpaas-system` that curls or clickhouse-client's the CH endpoint and issues the DDL. The scripted path's `stage3_5_bootstrap_db` function in `files/ck-external/install.sh` has a reference Job template you can lift directly — it reads `endpoint` / `username` / `password` from the `platform-default-ch-conn` Secret and uses either `clickhouse-client` (preferred) or BusyBox `wget` depending on the base image you pick. Skim that function, drop the Job manifest inline in your working directory, and `kubectl apply -f` it.
+If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job from inside `cpaas-system` that issues the DDL against the endpoint stored in `platform-default-ch-conn`. Save as `25-bootstrap-db.yaml` and `kubectl apply -f` — it reads endpoint / user / password straight from the Secret created in Section 3.1, so no manual value re-typing:
+
+```yaml
+# 25-bootstrap-db.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ck-bootstrap-db
+  namespace: cpaas-system
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: bootstrap
+          # Any image reachable from your registry that ships clickhouse-client
+          # (preferred) or BusyBox wget. Example using the standard CH server
+          # image; swap to an ACP mirror tag if your cluster is air-gapped.
+          image: clickhouse/clickhouse-server:25.8
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              host=$(echo "$CH_ENDPOINT" | sed -E 's#^https?://##; s#[:/].*##')
+              clickhouse-client --host="$host" --port=9000 \
+                --user="$CH_USER" --password="$CH_PASSWORD" \
+                --query "CREATE DATABASE IF NOT EXISTS $CH_DATABASE ON CLUSTER '$CH_CLUSTER'"
+              echo "CREATE DATABASE issued via clickhouse-client to $host:9000"
+          env:
+            - { name: CH_ENDPOINT, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: endpoint } } }
+            - { name: CH_USER,     valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: username } } }
+            - { name: CH_PASSWORD, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: password } } }
+            - { name: CH_DATABASE, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: database } } }
+            - { name: CH_CLUSTER,  valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: cluster  } } }
+```
+
+```bash
+kubectl apply -f 25-bootstrap-db.yaml
+kubectl -n cpaas-system wait --for=condition=Complete job/ck-bootstrap-db --timeout=120s
+kubectl -n cpaas-system logs -l job-name=ck-bootstrap-db --tail=5    # expect "CREATE DATABASE issued …"
+```
+
+If the CH endpoint only exposes HTTP `:8123` and not the native `:9000` port, replace the `clickhouse-client` call with a BusyBox `wget` POST:
+
+```sh
+wget -q -O- --user="$CH_USER" --password="$CH_PASSWORD" \
+  --post-data="CREATE DATABASE IF NOT EXISTS $CH_DATABASE ON CLUSTER '$CH_CLUSTER'" \
+  "$CH_ENDPOINT/"
+```
+
+and swap the container `image` to an alpine-based one (e.g. `<your-registry>/ops/alpine:latest`).
 :::
 
 ## 5. Apply PlatformLogForward
