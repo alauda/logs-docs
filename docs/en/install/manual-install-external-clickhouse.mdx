@@ -358,81 +358,19 @@ kubectl -n cpaas-system get secret platform-default-ch-conn platform-default-mq-
 
 This is the step customers most often miss when installing manually. Both `razor` and the operator-derived `schema-migrations` Job **assume the database already exists** — `razor` pings it directly at startup and crashloops otherwise. The scripted path handles this automatically in its Stage 3.5.
 
-Do this from any environment that has a ClickHouse client and can reach the customer CH endpoint — the customer DBA's workstation is typical. Issue:
+The customer owns the CH cluster, so the customer DBA runs this one DDL against it — from their own `clickhouse-client` (or whichever CH admin console they use). Substitute the cluster name used in your `platform-default-ch-conn` Secret from Section 3.1 (default `replicated`):
 
 ```sql
 CREATE DATABASE IF NOT EXISTS observability ON CLUSTER 'replicated';
 ```
 
-Verify from the ACP cluster side that the database came through:
+Confirm from the customer side:
 
-```bash
-kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
-  --image=clickhouse/clickhouse-server:25.8 -- \
-  clickhouse-client --host=ck.customer.internal --port=9000 \
-    --user=admin --password=<CH_PASSWORD> \
-    --query "SHOW DATABASES FORMAT TSV" | grep observability
+```sql
+SHOW DATABASES;    -- `observability` appears in the list
 ```
 
-Expected output: `observability`.
-
-:::tip Doing this from inside the cluster
-If the customer DBA's workstation cannot reach the CH endpoint but the ACP cluster can, run a one-shot Job from inside `cpaas-system` that issues the DDL against the endpoint stored in `platform-default-ch-conn`. Save as `25-bootstrap-db.yaml` and `kubectl apply -f` — it reads endpoint / user / password straight from the Secret created in Section 3.1, so no manual value re-typing:
-
-```yaml
-# 25-bootstrap-db.yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: ck-bootstrap-db
-  namespace: cpaas-system
-spec:
-  backoffLimit: 3
-  ttlSecondsAfterFinished: 300
-  template:
-    spec:
-      restartPolicy: OnFailure
-      tolerations:
-        - operator: Exists
-      containers:
-        - name: bootstrap
-          # Any image reachable from your registry that ships clickhouse-client
-          # (preferred) or BusyBox wget. Example using the standard CH server
-          # image; swap to an ACP mirror tag if your cluster is air-gapped.
-          image: clickhouse/clickhouse-server:25.8
-          command: ["sh", "-c"]
-          args:
-            - |
-              set -e
-              host=$(echo "$CH_ENDPOINT" | sed -E 's#^https?://##; s#[:/].*##')
-              clickhouse-client --host="$host" --port=9000 \
-                --user="$CH_USER" --password="$CH_PASSWORD" \
-                --query "CREATE DATABASE IF NOT EXISTS $CH_DATABASE ON CLUSTER '$CH_CLUSTER'"
-              echo "CREATE DATABASE issued via clickhouse-client to $host:9000"
-          env:
-            - { name: CH_ENDPOINT, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: endpoint } } }
-            - { name: CH_USER,     valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: username } } }
-            - { name: CH_PASSWORD, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: password } } }
-            - { name: CH_DATABASE, valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: database } } }
-            - { name: CH_CLUSTER,  valueFrom: { secretKeyRef: { name: platform-default-ch-conn, key: cluster  } } }
-```
-
-```bash
-kubectl apply -f 25-bootstrap-db.yaml
-kubectl -n cpaas-system wait --for=condition=Complete job/ck-bootstrap-db --timeout=120s
-kubectl -n cpaas-system logs -l job-name=ck-bootstrap-db --tail=5    # expect "CREATE DATABASE issued …"
-```
-
-If the CH endpoint only exposes HTTP `:8123` and not the native `:9000` port, replace the `clickhouse-client` call with a BusyBox `wget` POST:
-
-```sh
-wget -q -O- --user="$CH_USER" --password="$CH_PASSWORD" \
-  --post-data="CREATE DATABASE IF NOT EXISTS $CH_DATABASE ON CLUSTER '$CH_CLUSTER'" \
-  "$CH_ENDPOINT/"
-```
-
-and swap the container `image` to an alpine-based one (e.g. `<your-registry>/ops/alpine:latest`).
-:::
+No need to run anything from the ACP cluster side — the operator's `schema-migrations` Job, launched by the PLF in Section 5, will try `CREATE TABLE … ON CLUSTER` on this database right away; if the database is missing it will fail loudly, and §8 Troubleshooting covers the recovery.
 
 ## 5. Apply PlatformLogForward
 
@@ -490,7 +428,9 @@ Omitting `installMode` makes the operator go down its adopt path and run patch-k
 
 ## 6. Verify
 
-The scripted [acceptance check](./fast-install-external-clickhouse.mdx#43-acceptance-check) applies verbatim to the manual flow. Minimum manual spot-check:
+Two halves — ACP cluster side and customer CH side.
+
+**ACP cluster side** (run from the jump host / wherever you have `kubectl`):
 
 ```bash
 # 1. PLF Ready=True
@@ -501,23 +441,21 @@ kubectl -n cpaas-system get platformlogforward platform-default \
 # 2. Operator-derived Deployments
 kubectl -n cpaas-system get deploy aggregate-vector razor
 # Expected: both Available
-
-# 3. Schema actually applied on the customer CH
-kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
-  --image=clickhouse/clickhouse-server:25.8 -- \
-  clickhouse-client --host=ck.customer.internal --port=9000 \
-    --user=admin --password=<CH_PASSWORD> \
-    --query "SELECT count() FROM system.tables WHERE database = 'observability'"
-# Expected: 18 or more (18 base tables + MVs)
-
-# 4. schema_migrations version row count
-kubectl -n cpaas-system run ch-verify --rm -i --restart=Never \
-  --image=clickhouse/clickhouse-server:25.8 -- \
-  clickhouse-client --host=ck.customer.internal --port=9000 \
-    --user=admin --password=<CH_PASSWORD> \
-    --query "SELECT count() FROM observability.schema_migrations"
-# Expected: matches the number of migrations the operator ships (currently 12)
 ```
+
+**Customer CH side** — ask the customer DBA to run these from their own `clickhouse-client` / admin console against their CH cluster (not from the ACP cluster — this is the customer's database):
+
+```sql
+-- 3. Schema actually applied on the customer CH
+SELECT count() FROM system.tables WHERE database = 'observability';
+-- Expected: 18 or more (18 base tables + MVs)
+
+-- 4. schema_migrations version row count
+SELECT count() FROM observability.schema_migrations;
+-- Expected: matches the number of migrations the operator ships (currently 12)
+```
+
+The scripted [acceptance check](./fast-install-external-clickhouse.mdx#43-acceptance-check) runs the same assertions but all via `kubectl` + `check.sh`.
 
 For an end-to-end data-path verification (collector → Kafka → aggvec → customer CH → razor query), continue with the seven-step [post-install verification](./post-install-verification.mdx).
 
