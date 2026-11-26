@@ -126,7 +126,7 @@ Everything else has a PoC-sized default:
 | `KAFKA_SEGMENT_MS` | `600000` (10m) | Keep segment ≤ retention/2 so expired data actually leaves the active segment and gets deleted. |
 | `AGGVEC_REPLICAS` / `RAZOR_REPLICAS` | both `1` | Script envsubst allowlists these; the 40-plf.yaml template fills them into PLF. |
 | `CK_SHARDS` / `CK_REPLICAS` | forced to `1` by the script (with a warning if you set anything else) | Single-node topology; forcing avoids accidental mismatch. |
-| `KAFKA_NAME` / `CK_NAME` | `cpaas-kafka-poc` / `cpaas-clickhouse-poc` | Suffix chosen so a legacy v4.3 install (which uses `cpaas-kafka` / `cpaas-clickhouse`) can coexist on the same namespace during a side-by-side migration. |
+| `KAFKA_NAME` / `CK_NAME` | `cpaas-kafka` / `cpaas-clickhouse` | Same resource names as the standard 3-replica install. The ck-single flow is only supported on a **fresh** target cluster — a legacy v4.3 `cpaas-kafka` / `cpaas-clickhouse` in the same namespace will conflict; use the [upgrade runbook](../upgrade/fast-from-4.3.mdx) for that path. |
 
 ### 3.2 Resource budget cheat sheet (defaults)
 
@@ -212,8 +212,8 @@ In addition to `check.sh`, these commands cover the same ground manually:
 | --- | --- | --- |
 | OLM CSVs | `kubectl -n cpaas-logging get csv ; kubectl -n kafka-system get csv ; kubectl -n cpaas-system get csv` | All `Succeeded` |
 | Keeper | `kubectl -n cpaas-system get sts keeper` | `READY 1/1` |
-| CHI | `kubectl -n cpaas-system get chi cpaas-clickhouse-poc` | `.status.status=Completed`, 1 shard × 1 replica |
-| RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka-poc` | 1 broker + 1 controller Ready |
+| CHI | `kubectl -n cpaas-system get chi cpaas-clickhouse` | `.status.status=Completed`, 1 shard × 1 replica |
+| RdsKafka | `kubectl -n cpaas-system get rdskafka cpaas-kafka` | 1 broker + 1 controller Ready |
 | RdsTopics | `kubectl -n cpaas-system get rdstopic` | All three rows `Ready` or `Active` |
 | PLF | `kubectl -n cpaas-system get platformlogforward platform-default` | `Ready=True` |
 
@@ -226,8 +226,8 @@ For end-to-end verification of the data path (collector → Kafka → aggregate-
 kubectl -n cpaas-system delete platformlogforward platform-default
 
 # Remove the CRs the script created.
-kubectl -n cpaas-system delete rdskafka cpaas-kafka-poc
-kubectl -n cpaas-system delete chi cpaas-clickhouse-poc
+kubectl -n cpaas-system delete rdskafka cpaas-kafka
+kubectl -n cpaas-system delete chi cpaas-clickhouse
 kubectl -n cpaas-system delete sts keeper
 
 # Remove Subscriptions and CSVs.
@@ -241,10 +241,10 @@ PVCs stay bound by default. On a 1-worker PoC the leftover PVCs are usually what
 
 ```bash
 # ClickHouse (chop-managed CHI)
-kubectl -n cpaas-system delete pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse-poc
+kubectl -n cpaas-system delete pvc -l clickhouse.altinity.com/chi=cpaas-clickhouse
 
 # Kafka (Alauda strimzi fork)
-kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka-poc
+kubectl -n cpaas-system delete pvc -l strimzi.io/cluster=cpaas-kafka
 
 # ClickHouse Keeper (quickstart-installed StatefulSet)
 kubectl -n cpaas-system delete pvc -l app=keeper
@@ -287,7 +287,7 @@ Or simpler: full uninstall + delete all three PVC groups above + reinstall.
 Stage 1b was skipped or raced ahead. Re-issue the `CREATE DATABASE` manually:
 
 ```bash
-CHI_POD=$(kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse-poc -o jsonpath='{.items[0].metadata.name}')
+CHI_POD=$(kubectl -n cpaas-system get pod -l clickhouse.altinity.com/chi=cpaas-clickhouse -o jsonpath='{.items[0].metadata.name}')
 kubectl -n cpaas-system exec "$CHI_POD" -c clickhouse -- \
   clickhouse-client --user=admin --password=<CK_ADMIN_PASSWORD> \
   --query "CREATE DATABASE IF NOT EXISTS observability ON CLUSTER 'replicated'"
