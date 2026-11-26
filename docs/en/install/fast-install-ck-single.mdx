@@ -103,12 +103,11 @@ cp install.env.example install.env
 
 ### 3.1 Required fields
 
-Only two:
+Only one:
 
 | Variable | Description | Example |
 | --- | --- | --- |
 | `STORAGE_CLASS` | The dynamic SC verified in Section 1.1. | `topolvm-provisioner` |
-| `KEEPER_IMAGE` | Optional in theory, but a PoC environment often lacks a live `clickhouse-operator` CSV at install time for the script to auto-probe the clickhouse-server image from. Set it explicitly to match your registry. | `registry.alauda.cn:60070/middleware/clickhouse-server:v25.3.3.42-507eb110` |
 
 Everything else has a PoC-sized default:
 
@@ -137,11 +136,16 @@ Everything else has a PoC-sized default:
 
 Total baseline PVC: **~80 GiB** (lower end — realistic: ~30 GiB used after a few days of PoC traffic, since Kafka turns over every 1h by default and CK compresses at ingest).
 
-### 3.3 Why `KEEPER_IMAGE` matters here
+### 3.3 `KEEPER_IMAGE` — when you need to set it
 
-On single-worker ACP the install sequence is: Stage 0 waits for three CSVs to reach `Succeeded`, then Stage 1a reads the `clickhouse-operator` Deployment's env var `CK_SERVER_IMAGE` to pick the Keeper image. If the chop CSV takes longer than usual to converge, or the SRE pre-staged the Subscription separately, the script can race ahead and fall through with a loud error. Setting `KEEPER_IMAGE` upfront removes the race.
+Normally **leave it empty**. In live mode (the default) the script's Stage 0 waits for the `clickhouse-operator` CSV to reach `Succeeded` before Stage 1a starts, so Stage 1a always finds a running chop Deployment and auto-probes the Keeper image from its `CK_SERVER_IMAGE` env.
 
-Look up the current reference value:
+Set `KEEPER_IMAGE` explicitly only when:
+
+- You plan to run `./install.sh install.env --render` **before** applying anything to the cluster, and expect `./rendered/10-keeper.yaml` to carry a concrete image. Render mode is 100% offline — no probe source — so an empty `KEEPER_IMAGE` makes the script skip the Keeper YAML in the render output (it will still be produced on the fly during the later live apply).
+- The chop Deployment you have is not the stock ACP one and its `CK_SERVER_IMAGE` env points at a tag that is not pullable from your registry.
+
+To look up the current reference value from a cluster that already has chop installed:
 
 ```bash
 kubectl -n cpaas-logging get deploy clickhouse-operator \
