@@ -16,22 +16,86 @@ If none of these apply, the scripted path is strictly simpler — the YAMLs belo
 
 ## 0. Before you start
 
-Confirm all **five hard requirements on the customer CH** from [How to Integrate the Logging Stack with an External ClickHouse §1](../how_to/external-clickhouse.mdx#1-hard-requirements-on-the-external-clickhouse). Below is a one-liner cheat sheet; the linked page has the full explanation of each.
+### 0.1 Minimum customer-side ClickHouse configuration
+
+Hand this section to the customer DBA. The XML/SQL below is the **minimum verified** configuration (single-shard single-replica), tested end-to-end against ACP 4.4 and 4.5. Scale the topology as needed, but the cluster name used in `remote_servers` **must** match whatever you later set as `CH_CLUSTER` in Section 0.4.
+
+**1. Keeper / ZooKeeper** — ReplicatedMergeTree requires it:
+
+```xml
+<zookeeper>
+  <node><host>keeper-0.example</host><port>2181</port></node>
+</zookeeper>
+```
+
+**2. `remote_servers` cluster definition** — the cluster name here is what you pass as `CH_CLUSTER` (default `replicated`):
+
+```xml
+<remote_servers>
+  <replicated>
+    <shard>
+      <internal_replication>true</internal_replication>
+      <replica><host>ch-0-0.example</host><port>9000</port></replica>
+    </shard>
+  </replicated>
+</remote_servers>
+```
+
+**3. Macros** — set per replica, with `{shard}` and `{replica}` unique on each replica:
+
+```xml
+<macros>
+  <cluster>replicated</cluster>
+  <shard>0</shard>
+  <replica>ch-0-0</replica>
+</macros>
+```
+
+**4. `admin` user** — needs `CREATE DATABASE` + full DDL on `observability` + network access from the ACP cluster CIDR:
+
+```sql
+CREATE USER admin IDENTIFIED WITH sha256_password BY '<CH_PASSWORD>' HOST ANY;
+GRANT ALL ON *.* TO admin WITH GRANT OPTION;
+```
+
+Replace `HOST ANY` with the ACP cluster's node CIDR for a tighter policy; `ANY` is fine for a lab but not for production.
+
+### 0.2 Verify the customer-side config
+
+Once the DBA has applied the configs from 0.1, run these three queries from the customer side to confirm and to derive `CH_SHARDS` / `CH_REPLICAS`:
+
+```sql
+-- 1. Keeper reachable
+SELECT count() FROM system.zookeeper WHERE path = '/';
+-- Expected: ≥ 1. Do not check `system.tables WHERE engine LIKE 'Replicated%'` —
+-- a correctly configured but empty CH has no tables yet and that query always
+-- returns zero even when Keeper is healthy.
+
+-- 2. Cluster macro resolves to one row per (shard, replica)
+SELECT cluster, shard_num, replica_num FROM system.clusters WHERE cluster = 'replicated';
+
+-- 3. Macros present with cluster / shard / replica
+SELECT * FROM system.macros;
+```
+
+From query 2: `CH_SHARDS` = count of distinct `shard_num`; `CH_REPLICAS` = count of distinct `replica_num` within each shard.
+
+### 0.3 ACP-side cross-checks
+
+After the DBA signs off, verify the remaining three items from the ACP side.
 
 | # | Requirement | Verification |
 | --- | --- | --- |
-| 1 | ReplicatedMergeTree + Keeper/ZK | `SELECT engine FROM system.tables WHERE engine LIKE 'Replicated%' LIMIT 1` returns a row |
-| 2 | Cluster macro resolvable | `SELECT * FROM system.clusters WHERE cluster = '<your-cluster>'` returns ≥ 1 row |
-| 3 | CH user is **`admin`** with required privileges | See [external-clickhouse.mdx §2](../how_to/external-clickhouse.mdx#2-user-and-permissions); must include `CREATE DATABASE`. Use a different user only if you are prepared to debug CREATE TABLE / MATERIALIZED VIEW permission failures on every schema migration. |
-| 4 | Network reachability | `curl http://<ch-host>:8123/ping` from a `cpaas-system` pod returns `Ok.` |
-| 5 | Endpoint scheme + port | HTTP `:8123` or HTTPS `:8443` (public-CA only in v4.4) |
+| 1 | CH user is **`admin`** with required privileges | See [external-clickhouse.mdx §2](../how_to/external-clickhouse.mdx#2-user-and-permissions); must include `CREATE DATABASE`. Use a different user only if you are prepared to debug CREATE TABLE / MATERIALIZED VIEW permission failures on every schema migration. |
+| 2 | Network reachability | `wget -qO- http://<ch-host>:8123/ping` from a `cpaas-system` pod returns `Ok.` (platform alpine ships `wget` but not `curl`). |
+| 3 | Endpoint scheme + port | HTTP `:8123` or HTTPS `:8443` (public-CA only in v4.4) |
 
-Collect the following values before continuing — you will plug them into the YAMLs below:
+### 0.4 Collect the variables you will plug into the YAMLs below
 
 | Variable | Example | Where it comes from |
 | --- | --- | --- |
 | `CH_ENDPOINT` | `http://ck.customer.internal:8123` | Customer DBA |
-| `CH_USER` | `admin` | **Must be `admin`** (see requirement 3). The scripted path at [fast-install-external-clickhouse.mdx](./fast-install-external-clickhouse.mdx) hard-codes this; the manual path keeps it as a variable only so you can see where it lands in the YAML. |
+| `CH_USER` | `admin` | **Must be `admin`** (see §0.3 requirement 1). The scripted path at [fast-install-external-clickhouse.mdx](./fast-install-external-clickhouse.mdx) hard-codes this; the manual path keeps it as a variable only so you can see where it lands in the YAML. |
 | `CH_PASSWORD` | `<plain-text password>` | Customer DBA |
 | `CH_DATABASE` | `observability` | Default; override only on customer demand |
 | `CH_CLUSTER` | `replicated` | Customer DBA (`SELECT cluster FROM system.clusters`) |
@@ -117,7 +181,17 @@ The log pipeline writes through Kafka, so even in external-CH mode we install Ka
 
 ### 2.1 RdsKafka
 
-Fill `STORAGE_CLASS` in from your environment. The topology below is 3-broker + 3-controller, sized for a typical production cluster; drop to 1 broker + 1 controller for a PoC on a single-worker ACP.
+Fill `STORAGE_CLASS` in from your environment. The topology below is 3-broker + 3-controller, sized for a typical production cluster.
+
+To drop to a 1-broker + 1-controller single-worker PoC, change **five** places in lockstep — all five must land as `1`, otherwise the RdsTopics fail to create because the requested replication factor exceeds the broker count:
+
+- `spec.replicas: 1`
+- `spec.config.default.replication.factor: "1"`
+- `spec.config.offsets.topic.replication.factor: "1"`
+- `spec.config.transaction.state.log.replication.factor: "1"`
+- `spec.controller.replicas: 1`
+
+And in Section 2.2, change `spec.replicas: 3` on all three `RdsTopic` manifests to `1`. If you keep any of these at `3`, topic creation blocks with `InvalidReplicationFactor` and §2.3's wait loop times out.
 
 ```yaml
 # 12-rdskafka.yaml
@@ -246,21 +320,38 @@ spec:
 
 ### 2.3 Apply and wait
 
+`kubectl wait` reports `no matching resources found` or `NotFound` if the resource it is told to watch does not exist yet. The strimzi operator takes 30-60 s to create Kafka pods after the RdsKafka apply, and the entity-operator takes a similar amount to mint the user Secret from the RdsKafkaUser. Poll until each resource exists first, then `wait` on the condition:
+
 ```bash
 kubectl apply -f 12-rdskafka.yaml
-# Kafka pods take 30–60s to roll out; wait for broker + controller Ready.
-kubectl -n cpaas-system wait --for=condition=Ready pod \
-  -l strimzi.io/cluster=cpaas-kafka,strimzi.io/kind=Kafka --timeout=600s
+
+# Poll until strimzi has created at least one Kafka pod (30-60s typical),
+# then wait for broker + controller Ready.
+sel='strimzi.io/cluster=cpaas-kafka,strimzi.io/kind=Kafka'
+until [ "$(kubectl -n cpaas-system get pod -l "$sel" --no-headers 2>/dev/null | wc -l)" -ge 1 ]; do
+  sleep 5
+done
+kubectl -n cpaas-system wait --for=condition=Ready pod -l "$sel" --timeout=600s
 
 kubectl apply -f 20-kafka-user-topics.yaml
-# Entity-operator mints a user Secret with the same name as the KafkaUser.
-kubectl -n cpaas-system wait --for=jsonpath='{.metadata.name}'=platform-logging \
-  secret/platform-logging --timeout=120s
 
-# Three RdsTopics reach Ready or Active.
+# Entity-operator reconciles the RdsKafkaUser into a KafkaUser + mints a user
+# Secret with the same name. Poll until the Secret exists before waiting on it.
+until kubectl -n cpaas-system get secret platform-logging >/dev/null 2>&1; do
+  sleep 5
+done
+
+# Three RdsTopics reach Ready or Active. The Alauda middleware fork sets
+# phase=Active on steady-state topics; the generic `wait --for=jsonpath` works
+# for either value if the topic resource already exists.
 for t in alauda-log-topic alauda-event-topic alauda-audit-topic ; do
-  kubectl -n cpaas-system wait --for=jsonpath='{.status.phase}'=Active rdstopic/$t --timeout=120s \
-    || kubectl -n cpaas-system wait --for=jsonpath='{.status.phase}'=Ready rdstopic/$t --timeout=60s
+  until kubectl -n cpaas-system get rdstopic "$t" >/dev/null 2>&1; do sleep 5; done
+  for _ in {1..60}; do
+    phase=$(kubectl -n cpaas-system get rdstopic "$t" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    [ "$phase" = Ready ] || [ "$phase" = Active ] && break
+    sleep 5
+  done
+  [ "$phase" = Ready ] || [ "$phase" = Active ] || { echo "RdsTopic $t phase=$phase" >&2; exit 1; }
 done
 ```
 
@@ -268,7 +359,7 @@ done
 
 ### 3.1 `platform-default-ch-conn` — points at the customer CH
 
-Fill in your `CH_ENDPOINT` / `CH_PASSWORD` / `CH_CLUSTER` / `CH_DATABASE` values collected in Section 0. **Leave `username` as `admin`** (see Section 0 requirement 3 — non-admin users hit `CREATE TABLE` / `MATERIALIZED VIEW` permission failures on schema migrations). Full field reference: [external-clickhouse.mdx §4](../how_to/external-clickhouse.mdx#4-connection-secret-contract).
+Fill in your `CH_ENDPOINT` / `CH_PASSWORD` / `CH_CLUSTER` / `CH_DATABASE` values collected in Section 0.4. **Leave `username` as `admin`** (see §0.3 requirement 1 — non-admin users hit `CREATE TABLE` / `MATERIALIZED VIEW` permission failures on schema migrations). Full field reference: [external-clickhouse.mdx §4](../how_to/external-clickhouse.mdx#4-connection-secret-contract).
 
 ```yaml
 # 31-ch-conn-secret.yaml
@@ -418,7 +509,8 @@ kubectl apply -f 40-plf.yaml
 
 # Wait for Ready=True. Operator reconciles aggvec + razor + schema-migrations
 # behind this; expect 3–5 minutes on a fresh install.
-kubectl -n cpaas-system wait --for=condition=Ready \
+# PLF is cluster-scoped — do not pass -n here.
+kubectl wait --for=condition=Ready \
   platformlogforward/platform-default --timeout=600s
 ```
 
@@ -433,8 +525,8 @@ Two halves — ACP cluster side and customer CH side.
 **ACP cluster side** (run from the jump host / wherever you have `kubectl`):
 
 ```bash
-# 1. PLF Ready=True
-kubectl -n cpaas-system get platformlogforward platform-default \
+# 1. PLF Ready=True — PLF is cluster-scoped, do not pass -n here.
+kubectl get platformlogforward platform-default \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
 # Expected: True
 
@@ -467,15 +559,19 @@ Everything below removes only what this walkthrough created. The customer CH clu
 
 ```bash
 # 1. Remove the PLF — cascades through aggvec, razor, schema-migrations Job.
-kubectl -n cpaas-system delete platformlogforward platform-default
+# PLF is cluster-scoped, do not pass -n here.
+kubectl delete platformlogforward platform-default
 
 # 2. Remove the connection Secrets.
 kubectl -n cpaas-system delete secret platform-default-ch-conn platform-default-mq-conn
 
-# 3. Remove the Kafka resources.
+# 3. Remove the Kafka resources. `platform-logging` / `platform-logging-password`
+# are typically cascade-deleted by the entity-operator when the RdsKafkaUser
+# goes away, so `--ignore-not-found` keeps the sequence quiet if they're
+# already gone.
 kubectl -n cpaas-system delete rdstopic alauda-log-topic alauda-event-topic alauda-audit-topic
 kubectl -n cpaas-system delete rdskafkauser platform-logging
-kubectl -n cpaas-system delete secret platform-logging platform-logging-password
+kubectl -n cpaas-system delete secret platform-logging platform-logging-password --ignore-not-found
 kubectl -n cpaas-system delete rdskafka cpaas-kafka
 
 # 4. Remove the operators.
@@ -502,10 +598,10 @@ SELECT * FROM system.clusters;
 SELECT * FROM system.macros;
 ```
 
-Fix the mismatch, then delete and reapply the PLF:
+Fix the mismatch, then delete and reapply the PLF (PLF is cluster-scoped — do not pass `-n`):
 
 ```bash
-kubectl -n cpaas-system delete platformlogforward platform-default
+kubectl delete platformlogforward platform-default
 kubectl apply -f 40-plf.yaml
 ```
 
