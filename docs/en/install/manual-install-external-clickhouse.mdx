@@ -20,38 +20,60 @@ If none of these apply, the scripted path is strictly simpler — the YAMLs belo
 
 Hand this section to the customer DBA. The XML/SQL below is the **minimum verified** configuration (single-shard single-replica), tested end-to-end against ACP 4.4 and 4.5. Scale the topology as needed, but the cluster name used in `remote_servers` **must** match whatever you later set as `CH_CLUSTER` in Section 0.4.
 
-**1. Keeper / ZooKeeper** — ReplicatedMergeTree requires it:
+Drop the three config blocks into a new file such as `/etc/clickhouse-server/config.d/acp-logs-min.xml`. The entire file is wrapped in a top-level `<clickhouse>` root — paste it as-is:
 
 ```xml
-<zookeeper>
-  <node><host>keeper-0.example</host><port>2181</port></node>
-</zookeeper>
+<clickhouse>
+  <!-- 1. Keeper / ZooKeeper — ReplicatedMergeTree requires it. -->
+  <zookeeper>
+    <node><host>keeper-0.example</host><port>2181</port></node>
+  </zookeeper>
+
+  <!-- 2. remote_servers cluster definition — the cluster name here is what
+       you pass as CH_CLUSTER (default: replicated). -->
+  <remote_servers>
+    <replicated>
+      <shard>
+        <internal_replication>true</internal_replication>
+        <replica><host>ch-0-0.example</host><port>9000</port></replica>
+      </shard>
+    </replicated>
+  </remote_servers>
+
+  <!-- 3. Macros — set per replica, with {shard} and {replica} unique on
+       each replica (so each node has its own macros file). -->
+  <macros>
+    <cluster>replicated</cluster>
+    <shard>0</shard>
+    <replica>ch-0-0</replica>
+  </macros>
+</clickhouse>
 ```
 
-**2. `remote_servers` cluster definition** — the cluster name here is what you pass as `CH_CLUSTER` (default `replicated`):
-
-```xml
-<remote_servers>
-  <replicated>
-    <shard>
-      <internal_replication>true</internal_replication>
-      <replica><host>ch-0-0.example</host><port>9000</port></replica>
-    </shard>
-  </replicated>
-</remote_servers>
-```
-
-**3. Macros** — set per replica, with `{shard}` and `{replica}` unique on each replica:
-
-```xml
-<macros>
-  <cluster>replicated</cluster>
-  <shard>0</shard>
-  <replica>ch-0-0</replica>
-</macros>
-```
+Legacy ClickHouse distributions use `<yandex>` instead of `<clickhouse>` as the root; both are accepted. Reload with `SYSTEM RELOAD CONFIG` or restart the server.
 
 **4. `admin` user** — needs `CREATE DATABASE` + full DDL on `observability` + network access from the ACP cluster CIDR:
+
+:::warning Run the SQL below as a fully privileged account
+A bare `GRANT ALL ON *.* ... WITH GRANT OPTION` can only grant privileges that the **executing user** already holds. On ClickHouse 24.x+, `access_management` alone is not sufficient — three fine-grained sub-privileges were split out and the stock Docker image's `default` user does not have them. The symptom is `Code: 497. DB::Exception: ... ACCESS_DENIED` on the `GRANT` line, after `CREATE USER admin` has already succeeded. You then have an `admin` with no privileges, and every ACP-side DDL step in §4 fails.
+
+Before running the SQL, make sure the executing user (typically `default`) has all four flags turned on. Add this to `/etc/clickhouse-server/users.d/default-access.xml`:
+
+```xml
+<clickhouse>
+  <users>
+    <default>
+      <access_management>1</access_management>
+      <named_collection_control>1</named_collection_control>
+      <show_named_collections>1</show_named_collections>
+      <show_named_collections_secrets>1</show_named_collections_secrets>
+    </default>
+  </users>
+</clickhouse>
+```
+
+Reload (`SYSTEM RELOAD CONFIG`) and re-run the SQL below. If your organization forbids widening `default`, use any pre-existing superuser account that already has these four flags instead.
+:::
 
 ```sql
 CREATE USER admin IDENTIFIED WITH sha256_password BY '<CH_PASSWORD>' HOST ANY;
