@@ -11,7 +11,7 @@ This guide describes the Elasticsearch storage Cluster Plugin's `elasticsearch.a
 **ACP 4.4 and 4.5 do not ship the Elasticsearch backend at all.** Fresh 4.4 or 4.5 installs reach an external ClickHouse or OpenSearch and an external Kafka through the two `platform-default-*` connection Secrets — external interfacing is the default install path, not an opt-in. Follow [Installation](../install/index.mdx) and skip this guide. Customers upgrading from ACP 4.3 on Elasticsearch migrate to ClickHouse or OpenSearch during the upgrade; see the [Upgrade guide](../upgrade.mdx).
 :::
 
-You can interface with external Elasticsearch or Kafka clusters by writing YAML configurations. Depending on your business requirements, you can choose to interface with only the external Elasticsearch cluster (while installing Kafka in the current cluster), or you can interface with both the external Elasticsearch and Kafka clusters simultaneously.
+You can interface with external Elasticsearch or Kafka clusters by writing YAML configurations. Depending on your requirements, you can choose to interface with only the external Elasticsearch cluster (while installing Kafka in the current cluster), or you can interface with both the external Elasticsearch and Kafka clusters simultaneously.
 
 :::tip
 
