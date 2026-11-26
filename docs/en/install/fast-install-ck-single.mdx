@@ -6,6 +6,20 @@ weight: 15
 
 This page covers the one-shot quickstart script that stands up the ACP 4.4 and 4.5 logging stack **on a single-worker ACP cluster** for PoC and demo scenarios. The quickstart ships with ACP 4.4 and installs cleanly on ACP 4.4 and 4.5. For the standard 3-replica production install, see [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx). For integrating with a customer-managed external ClickHouse, see [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx).
 
+:::warning Supported `clickhouse-operator` version — read before downloading the tarball
+
+The log stack has only been validated against **`middleware/clickhouse-operator` v4.3.x and v4.4.0** (both GA and hotfix tags). The script installs whatever version the ACP cluster's `platform` CatalogSource currently advertises for `clickhouse-operator`; if that advertises **v4.5.0 or newer, stop and talk to the log team first** — the schema-migrations contract and the `ClickHouseInstallation` resource shape have not been re-tested on chop 4.5+, and in-flight PLF reconcile may fail in subtle ways (changed CHI pod template defaults, host reconciler sequencing, deprecated fields).
+
+Verify before continuing:
+
+```bash
+kubectl -n cpaas-system get packagemanifest clickhouse-operator \
+  -o jsonpath='{.status.channels[*].currentCSV}{"\n"}'
+```
+
+Any CSV starting with `clickhouse-operator.v4.5` or higher ⇒ downgrade the Subscription channel to a 4.4-compatible channel before running `./install.sh`. Full rationale lives in §1.2 OperatorHub PackageManifests below.
+:::
+
 Pick this path when:
 
 - The target ACP cluster has **one** worker — pre-sales demo, one-box install, developer sandbox.
