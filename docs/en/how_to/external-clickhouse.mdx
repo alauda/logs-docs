@@ -43,7 +43,7 @@ These are non-negotiable — `razor` and the `schema-migrations` Job will refuse
 - Do not pre-create the database. The `schema-migrations` Job issues `CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'` on first run.
 - If you need a different name, override it in the connection Secret's `database` key; the operator will pass the override to all consumers.
 
-### 1.4 Supporting components (installed on the storage cluster, by the SRE)
+### 1.4 Supporting components (installed on the storage cluster, by the SRE) \{#14-supporting-components-installed-on-the-storage-cluster-by-the-sre}
 
 | Component | Supported range | Notes |
 | --- | --- | --- |
