@@ -6,6 +6,16 @@ weight: 17
 
 This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 and 4.5 logging stack **against a customer-managed ClickHouse cluster**, on a fresh target cluster. The quickstart ships with ACP 4.4 and installs cleanly on ACP 4.4 and 4.5. For the standard install where the script also provisions ClickHouse in-cluster, see [Fast Install via Quickstart Script — ClickHouse Backend](./fast-install.mdx); for the detailed, UI-driven external ClickHouse walkthrough, see [How to Integrate the Logging Stack with an External ClickHouse](../how_to/external-clickhouse.mdx).
 
+:::warning Version compatibility — read before downloading the tarball
+
+Two version ceilings apply to this flow **before** you download the tarball or involve the customer DBA:
+
+1. **Customer ClickHouse server**: supported range is `v24.x ≤ CH ≤ v25.8` (recommended `v25.8.x` LTS). **`v26.x` is not yet supported** — CH 26.7 extended the `DateTime64` range and CH 26.8 changed the JSONEachRow default for unquoted numbers from "`DateTime64` ns raw tick" to "Unix seconds", which breaks `aggregate-vector` ingestion with `Code: 407 DECIMAL_OVERFLOW`. Full rationale lives in [How to Integrate the Logging Stack with an External ClickHouse §1.4](../how_to/external-clickhouse.mdx#14-supporting-components-installed-on-the-storage-cluster-by-the-sre).
+2. **If the customer manages CH through `middleware/clickhouse-operator`** (ACP chop): that chop operator must be **≤ v4.4.0** — the schema-migrations contract and the `ClickHouseInstallation` resource shape have not been re-tested on chop 4.5+. Customers using upstream `altinity/clickhouse-operator`, bare StatefulSets, or DBaaS are **not** bound by this rule — only CH server version 1️⃣ above applies to them.
+
+Ask the customer DBA to run `SELECT version();` and confirm their chop version (if any) **before** running `./install.sh`.
+:::
+
 Pick this path when:
 
 - The customer owns and operates their ClickHouse cluster (DBaaS, on-prem managed CH, cross-cluster CH, or a hand-rolled CH quorum with their own Keeper/ZooKeeper).

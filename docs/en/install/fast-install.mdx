@@ -6,6 +6,20 @@ weight: 16
 
 This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 and 4.5 logging stack on a fresh cluster. The quickstart ships with ACP 4.4 and installs cleanly on ACP 4.4 and 4.5 — same operator, same CRD shapes, same connection Secret contract. For the manual `kubectl apply` walkthrough that exposes every field, see [Installation](./index.mdx).
 
+:::warning Supported `clickhouse-operator` version — read before downloading the tarball
+
+The log stack has only been validated against **`middleware/clickhouse-operator` v4.3.x and v4.4.0** (both GA and hotfix tags). The script installs whatever version the ACP cluster's `platform` CatalogSource currently advertises for `clickhouse-operator`; if that advertises **v4.5.0 or newer, stop and talk to the log team first** — the schema-migrations contract and the `ClickHouseInstallation` resource shape have not been re-tested on chop 4.5+, and in-flight PLF reconcile may fail in subtle ways (changed CHI pod template defaults, host reconciler sequencing, deprecated fields).
+
+Verify before continuing:
+
+```bash
+kubectl -n cpaas-system get packagemanifest clickhouse-operator \
+  -o jsonpath='{.status.channels[*].currentCSV}{"\n"}'
+```
+
+Any CSV starting with `clickhouse-operator.v4.5` or higher ⇒ downgrade the Subscription channel to a 4.4-compatible channel before running `./install.sh`. Full rationale lives in §1.2 OperatorHub PackageManifests below.
+:::
+
 Pick this path when:
 
 - The target cluster is a **fresh** ACP 4.4 or 4.5 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.2 or 4.3, see [Fast Upgrade from ACP 4.2 or 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
