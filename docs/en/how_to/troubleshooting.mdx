@@ -4,12 +4,12 @@ weight: 90
 
 # Troubleshooting the Logging Stack
 
-This page indexes the failure modes we have seen on live installs of the ACP 4.4 logging stack, keyed by the symptom SRE sees first. Each entry names the code path or the resource we've verified is at fault, so you can jump straight to the fix instead of bisecting.
+This page indexes the failure modes we have seen on live installs of the ACP 4.4 and 4.5 logging stack, keyed by the symptom SRE sees first. Each entry names the code path or the resource we've verified is at fault, so you can jump straight to the fix instead of bisecting. The same stack ships on ACP 4.4 and 4.5, so both share this troubleshooting index.
 
 Ordering follows the install flow: storage prerequisites, then the operator, then the data path, then the query path.
 
 :::info Zero-touch bar
-The v4.4 install and the v4.3 → v4.4 upgrade are supposed to be zero-touch. If any of the recipes below asks you to manually create a resource that the operator should have created, that is a code gap, not a documentation gap — please file it instead of adopting the workaround. The one exception is the SRE-authored secrets called out in [Installation](../install/index.mdx) (Kafka mq-conn and, for the external OpenSearch / ClickHouse path, the storage-conn secrets), which are user input by design.
+The v4.4 and 4.5 install and the v4.3 → v4.4 and 4.5 upgrade are supposed to be zero-touch. If any of the recipes below asks you to manually create a resource that the operator should have created, that is a code gap, not a documentation gap — please file it instead of adopting the workaround. The one exception is the SRE-authored secrets called out in [Installation](../install/index.mdx) (Kafka mq-conn and, for the external OpenSearch / ClickHouse path, the storage-conn secrets), which are user input by design.
 :::
 
 ## Kafka broker will not start on Alauda OS / FIPS hosts
