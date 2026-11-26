@@ -20,6 +20,17 @@ If none of these apply, the scripted path is strictly simpler — the YAMLs belo
 
 Hand this section to the customer DBA. The XML/SQL below is the **minimum verified** configuration (single-shard single-replica), tested end-to-end against ACP 4.4 and 4.5. Scale the topology as needed, but the cluster name used in `remote_servers` **must** match whatever you later set as `CH_CLUSTER` in Section 0.4.
 
+:::warning CH server version — supported range **v24.x ≤ CH ≤ v25.8**
+
+Before configuring the customer CH, confirm its server version is in the supported range (recommended: `v25.8.x` LTS; verified baseline: `clickhouse-server:v25.8.16.34-d6005b62`). **v26.x and later are not yet supported** — CH 26.7 extended the `DateTime64` range and CH 26.8 changed the JSONEachRow default for unquoted numbers from "`DateTime64` ns raw tick" to "Unix seconds", which causes `aggregate-vector` log ingestion to fail with `Code: 407 DECIMAL_OVERFLOW`. See [How to Integrate the Logging Stack with an External ClickHouse §1.4](../how_to/external-clickhouse.mdx#14-supporting-components-installed-on-the-storage-cluster-by-the-sre) for the full explanation.
+
+Check the current version:
+
+```sql
+SELECT version();
+```
+:::
+
 Drop the three config blocks into a new file such as `/etc/clickhouse-server/config.d/acp-logs-min.xml`. The entire file is wrapped in a top-level `<clickhouse>` root — paste it as-is:
 
 ```xml
