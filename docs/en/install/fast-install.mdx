@@ -4,11 +4,11 @@ weight: 16
 
 # Fast Install via Quickstart Script — ClickHouse Backend
 
-This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4 logging stack on a fresh cluster. For the manual `kubectl apply` walkthrough that exposes every field, see [Installation](./index.mdx).
+This page covers the one-shot quickstart script that stands up the storage side of the ACP 4.4+ logging stack on a fresh cluster. The quickstart ships with ACP 4.4 and installs cleanly on ACP 4.4 and 4.5 — same operator, same CRD shapes, same connection Secret contract. For the manual `kubectl apply` walkthrough that exposes every field, see [Installation](./index.mdx).
 
 Pick this path when:
 
-- The target cluster is a **fresh** ACP 4.4 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.2 or 4.3, see [Fast Upgrade from ACP 4.2 or 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
+- The target cluster is a **fresh** ACP 4.4 or 4.5 install (no legacy `logclickhouse` chart in `cpaas-system`). For upgrade from ACP 4.2 or 4.3, see [Fast Upgrade from ACP 4.2 or 4.3 via Quickstart Script](../upgrade/fast-from-4.3.mdx).
 - The backend is **ClickHouse** (OpenSearch backend is not covered by the script). If the customer already runs their own ClickHouse cluster and only wants Kafka + the logging operator installed by the script, see [Fast Install via Quickstart Script — External ClickHouse Backend](./fast-install-external-clickhouse.mdx) instead. For a **single-worker** PoC / demo cluster, see [Fast Install via Quickstart Script — Single-Node PoC (ClickHouse)](./fast-install-ck-single.mdx).
 - The default topology fits the deployment: **3-node KRaft Kafka** + **1 shard × 3 replica ClickHouse** + **3-pod ClickHouse Keeper quorum**, all on a single `cpaas-system` namespace on one storage cluster.
 

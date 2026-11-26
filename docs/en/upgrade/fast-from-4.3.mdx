@@ -355,7 +355,7 @@ kubectl get deploy -A -l app=clickhouse-operator
 
 Two matching Deployment rows confirm the duplicate. Handle it either way:
 
-- **Keep the OLM-installed chop** (recommended, aligns with the ACP 4.4 architecture). Delete the Helm-installed Deployment, ServiceAccount, Role, and RoleBinding. The CRDs are shared and must stay.
+- **Keep the OLM-installed chop** (recommended, aligns with the ACP 4.4+ architecture). Delete the Helm-installed Deployment, ServiceAccount, Role, and RoleBinding. The CRDs are shared and must stay.
 - **Keep the Helm-installed chop**. Delete the OLM Subscription from `cpaas-logging` and then its CSV.
 
 :::info Recommended pre-upgrade step
