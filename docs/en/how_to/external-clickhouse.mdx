@@ -43,13 +43,25 @@ These are non-negotiable — `razor` and the `schema-migrations` Job will refuse
 - Do not pre-create the database. The `schema-migrations` Job issues `CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER '<cluster>'` on first run.
 - If you need a different name, override it in the connection Secret's `database` key; the operator will pass the override to all consumers.
 
-### 1.4 Supporting components (installed on the storage cluster, by the SRE)
+### 1.4 Supporting components (installed on the storage cluster, by the SRE) \{#14-supporting-components-installed-on-the-storage-cluster-by-the-sre}
 
-| Component | Minimum version | Notes |
+| Component | Supported range | Notes |
 | --- | --- | --- |
-| `clickhouse-operator` (altinity `chop`) | v0.20 | Required for CHI reconciliation. Install cluster-wide or in a middleware namespace. |
-| ClickHouse server | v24.x or newer | Verified baseline: `clickhouse-server:v25.8.16.34-d6005b62`. |
+| `clickhouse-operator` (altinity `chop`) | v0.20 or newer | Required for CHI reconciliation. Install cluster-wide or in a middleware namespace. |
+| ClickHouse server | **v24.x ≤ CH ≤ v25.8** (recommended: v25.8.x LTS) | Verified baseline: `clickhouse-server:v25.8.16.34-d6005b62`. **v26.x and later are not yet supported** — see the note below. |
 | `cert-manager` | any recent | Optional, recommended if you expose ClickHouse over HTTPS. |
+
+:::warning Why CH v26.x is not supported yet
+
+Two breaking changes stacked in CH 26.x make the log stack's current ingestion contract fail:
+
+1. **CH 26.7** extended the `DateTime64` range from `[1900-01-01, 2299-12-31]` to `[0000-01-01, 9999-12-31]`.
+2. **CH 26.8** changed the JSONEachRow default for **unquoted numbers** from "`DateTime64` ns raw tick" to "**Unix seconds**".
+
+As a result, an `aggregate-vector` payload like `{"timestamp": 1789254000000000000, ...}` (a valid ns tick ≈ 2026-09-12 UTC) parses on CH 25.8 but on CH 26.8 is re-interpreted as `1.78e18` Unix seconds (≈ `5.6e10` years), far outside the new [0000..9999] range, and the whole batch is rejected with `Code: 407 DECIMAL_OVERFLOW`. The CH setting `input_format_read_datetime_number_as_raw_value=1` restores the old behavior, but that depends on the customer DBA setting it; `log-storage-operator` cannot force it.
+
+Operator-side mitigation (converting `.timestamp` to `RFC3339` ns string for the four `log_*` CH sinks, so CH goes through the text parser instead of the unquoted-number path) is on `log-storage-operator` master (`log_*_ck_reshape` transforms); once that lands in a patch tag, CH 26.x support will follow. Until then, pin the external CH at v25.8.x.
+:::
 
 ### 1.5 Network reachability
 
