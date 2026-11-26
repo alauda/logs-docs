@@ -45,6 +45,11 @@ kubectl -n cpaas-system get packagemanifest \
 
 All three rows must report a non-empty `AGE`.
 
+:::warning Supported `clickhouse-operator` version — up to v4.4.0
+
+The log stack is validated against **`middleware/clickhouse-operator` v4.3.x and v4.4.0** only (both GA and hotfix tags). The script picks whatever version the `platform` CatalogSource currently advertises for `clickhouse-operator`; if that advertises **v4.5.0 or newer, stop and talk to the log team first**. The schema-migrations contract and the `ClickHouseInstallation` resource shape have not been re-tested on chop 4.5+ — in-flight PLF reconcile may fail in subtle ways (changed defaults for CHI pod template, host reconciler sequencing, deprecated fields). Downgrade the Subscription channel to a 4.4-compatible channel before running `./install.sh`.
+:::
+
 ### 1.3 Jump host
 
 The script runs from any host with `kubectl`, `bash`, `envsubst`, `base64`, and `sha256sum` (all standard on Linux distributions), configured with a kubeconfig that can reach the storage cluster.
