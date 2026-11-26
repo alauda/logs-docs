@@ -42,6 +42,11 @@ These are the same five hard requirements as in [How to Integrate the Logging St
 5. **Network reachability.** Pods in the `cpaas-system` namespace (`aggregate-vector`, `razor`, operator-derived `schema-migrations` Job) must be able to resolve DNS for the CH endpoint and open a TCP connection. NetworkPolicy, firewalls, and egress gateways must all permit it.
 6. **Endpoint scheme + port.** The HTTP interface is `:8123` by default, HTTPS `:8443`. The script accepts either. Self-signed HTTPS certificates are not yet supported in this iteration — see [Known limitations](#known-limitations) below.
 
+:::info Chop operator version, if the customer manages CH through `middleware/clickhouse-operator`
+
+ACP's `middleware/clickhouse-operator` (chop) and the log stack have been validated together **up to chop v4.4.0** only. The customer is free to run their CH pods on any CH server version that satisfies §1.1 requirements 1–6 — this version limit is only about the chop that *manages* those pods, not CH server itself. If the customer plans to use **chop v4.5 or newer** to control their external CH, raise it with the log team first; the `ClickHouseInstallation` shape, Keeper defaults, and reconciler sequencing have not been re-tested on that path, and the ACP log stack's assumptions about CHI pod templates may diverge from what chop 4.5+ produces. Customers who manage CH without chop (upstream `altinity/clickhouse-operator`, bare StatefulSets, DBaaS) are unaffected by this note.
+:::
+
 ### 1.2 Dynamic StorageClass
 
 Kafka broker + controller PVCs are still provisioned in-cluster, so verify at least one dynamic SC is available:
