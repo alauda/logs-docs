@@ -41,6 +41,7 @@ These are the same five hard requirements as in [How to Integrate the Logging St
    Skipping this makes PLF stuck Ready=False (`razor` pings the database at startup and crashloops); the script's Stage 4 wait will time out and the die message points you here.
 5. **Network reachability.** Pods in the `cpaas-system` namespace (`aggregate-vector`, `razor`, operator-derived `schema-migrations` Job) must be able to resolve DNS for the CH endpoint and open a TCP connection. NetworkPolicy, firewalls, and egress gateways must all permit it.
 6. **Endpoint scheme + port.** The HTTP interface is `:8123` by default, HTTPS `:8443`. The script accepts either. Self-signed HTTPS certificates are not yet supported in this iteration — see [Known limitations](#known-limitations) below.
+7. **CH server version.** Supported range: **v24.x ≤ CH ≤ v25.8** (recommended: `v25.8.x` LTS). **v26.x and later are not yet supported** — CH 26.7 extended the `DateTime64` range and CH 26.8 changed the JSONEachRow default for unquoted numbers from "`DateTime64` ns raw tick" to "Unix seconds", which causes `aggregate-vector` log ingestion to fail with `Code: 407 DECIMAL_OVERFLOW`. See [How to Integrate the Logging Stack with an External ClickHouse §1.4](../how_to/external-clickhouse.mdx#14-supporting-components-installed-on-the-storage-cluster-by-the-sre) for the full explanation.
 
 :::info Chop operator version, if the customer manages CH through `middleware/clickhouse-operator`
 
