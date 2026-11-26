@@ -4,7 +4,7 @@ weight: 15
 
 # Upgrade
 
-This chapter covers the supported upgrade paths for the ACP 4.4 logging stack:
+This chapter covers the supported upgrade paths for the ACP 4.4 and 4.5 logging stack (same stack on ACP 4.4 and 4.5):
 
 - **Log Storage for Elasticsearch** on ACP 4.2 or 4.3: follow [Upgrade from Log Storage for Elasticsearch](./upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](./migration/index.mdx). The rest of this page does not apply.
 - **Log Storage for ClickHouse** on ACP 4.2 or 4.3: follow *From ACP 4.2 or 4.3 to 4.4* below.
@@ -14,7 +14,7 @@ This chapter covers the supported upgrade paths for the ACP 4.4 logging stack:
 
 In ACP 4.2 and 4.3, the ClickHouse log storage is the **Log Storage for ClickHouse** Cluster Plugin (`logclickhouse`), a Helm chart that runs ClickHouse inside the cluster. There is no Kafka in that architecture: the collector pushes to Razor, and Razor writes to ClickHouse.
 
-In ACP 4.4 the storage side is the **Alauda Container Platform Log Storage Management** operator (`log-storage-operator`), which connects to a Kafka and a ClickHouse that you provide through connection Secrets. The operator can take over a running `logclickhouse` installation: it keeps the existing ClickHouse and its data, and only adds Kafka in front of it.
+In ACP 4.4 and 4.5 the storage side is the **Alauda Container Platform Log Storage Management** operator (`log-storage-operator`), which connects to a Kafka and a ClickHouse that you provide through connection Secrets. The operator can take over a running `logclickhouse` installation: it keeps the existing ClickHouse and its data, and only adds Kafka in front of it.
 
 The upgrade has four steps on each storage cluster:
 

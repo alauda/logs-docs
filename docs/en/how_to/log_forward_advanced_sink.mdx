@@ -17,7 +17,7 @@ If none of these apply, prefer a typed output and the standard filters in [How t
 ## Prerequisites
 
 - **Alauda Container Platform Log Storage Management** installed, and `PlatformLogForward/platform-default` is `Ready`. See [Installation](../install/index.mdx).
-- The storage operator shipped in the v4.4 release carries the `advancedSink.rawTransforms` field and does not block `batch` / `request` in parameters. The patterns in this document assume you are on that release.
+- The storage operator shipped in ACP 4.4 and 4.5 carries the `advancedSink.rawTransforms` field and does not block `batch` / `request` in parameters. The patterns in this document assume you are on one of those releases.
 - Secrets referenced by `spec.output.authSecretRef` and `spec.output.tls.caSecretRef` live in `cpaas-system`.
 
 :::warning `LogForward` lives in `cpaas-system` only
