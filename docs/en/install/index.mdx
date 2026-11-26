@@ -42,7 +42,7 @@ For a side-by-side comparison of ClickHouse and OpenSearch, see [Log Component S
 :::warning
 
 - **Upgrading from ACP 4.2 or 4.3 that uses Log Storage for Elasticsearch?** Do not follow this chapter. Follow [Upgrade from Log Storage for Elasticsearch](../upgrade/legacy-elasticsearch.mdx) and [Historical Data Migration](../migration/index.mdx) instead. Applying a fresh `PlatformLogForward` on top of a chart-managed installation collides with the operator's auto-adoption path.
-- **Alauda Container Platform Log Storage for Elasticsearch is not offered on ACP 4.4 and later.** Fresh installs pick ClickHouse or OpenSearch only; there is no Elasticsearch install form to fall back to.
+- **Alauda Container Platform Log Storage for Elasticsearch is not offered on ACP 4.4 and 4.5.** Fresh installs pick ClickHouse or OpenSearch only; there is no Elasticsearch install form to fall back to.
 
 :::
 
@@ -778,7 +778,7 @@ Install this Cluster Plugin on every cluster whose logs, events, or audit record
 
 | Parameter | Value |
 | --- | --- |
-| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. The **ClickHouse** and **ElasticSearch** options in the same dropdown belong to the chart-installed stacks from earlier releases; on ACP 4.4 and later they exist only for upgrading customers whose collector still points at a chart-installed storage cluster. Fresh installs must pick **Standard**. |
+| **Log Center Plugin** | Set to **Standard**. This is the current data path managed by `log-storage-operator`; it applies to both ClickHouse and OpenSearch backends. The **ClickHouse** and **ElasticSearch** options in the same dropdown belong to the chart-installed stacks from earlier releases; on ACP 4.4 and 4.5 they exist only for upgrading customers whose collector still points at a chart-installed storage cluster. Fresh installs must pick **Standard**. |
 | **Storage Cluster Name** | Enter the name of the cluster where `PlatformLogForward/platform-default` is `Ready`. When the collector and the storage are the same cluster, enter that cluster's name. This field is a plain text input in the Standard branch. |
 | **Storage Path** | Absolute path for the collector's local working data. Default `/cpaas/data/nevermore`. On Alauda OS nodes use `/var/cpaas/data/nevermore`. **Cannot be changed after installation.** |
 | **Mount Paths** | Optional. Absolute host paths containing log files the collector must read. |
