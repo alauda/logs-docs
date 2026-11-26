@@ -4,7 +4,7 @@ weight: 12
 
 # How to Integrate the Logging Stack with an External ClickHouse
 
-Use this page when you want the ACP v4.4+ logging stack (`log-storage-operator` + `nevermore` + `razor` + `aggregate-vector`) to write to a ClickHouse cluster that your SRE team manages themselves, instead of the in-cluster `ClickHouseInstallation` the [quickstart install flow](../install/fast-install.mdx) provisions. Everything downstream of ClickHouse — schema migrations, TTL, aggregation, query API — remains managed by the operator via `PlatformLogForward`; only the storage engine moves outside. The contract is the same on ACP 4.4 and 4.5.
+Use this page when you want the ACP v4.4 and 4.5 logging stack (`log-storage-operator` + `nevermore` + `razor` + `aggregate-vector`) to write to a ClickHouse cluster that your SRE team manages themselves, instead of the in-cluster `ClickHouseInstallation` the [quickstart install flow](../install/fast-install.mdx) provisions. Everything downstream of ClickHouse — schema migrations, TTL, aggregation, query API — remains managed by the operator via `PlatformLogForward`; only the storage engine moves outside. The contract is the same on ACP 4.4 and 4.5.
 
 :::tip Install walkthroughs available
 This page is the **contract** — requirements, grants, Secret keys, storage policy. For the actual install procedure, pick one of:

@@ -4,7 +4,7 @@ weight: 85
 
 # How to Uninstall the Logging Stack
 
-Removing the ACP 4.4+ logging stack is a three-part sequence: delete the `PlatformLogForward` custom resource, uninstall the Log Storage operator, then clean the parts that are user-owned by design (external Kafka, external ClickHouse or OpenSearch, and the persistent volumes the storage cluster wrote to). The sequence is identical on ACP 4.4 and 4.5.
+Removing the ACP 4.4 and 4.5 logging stack is a three-part sequence: delete the `PlatformLogForward` custom resource, uninstall the Log Storage operator, then clean the parts that are user-owned by design (external Kafka, external ClickHouse or OpenSearch, and the persistent volumes the storage cluster wrote to). The sequence is identical on ACP 4.4 and 4.5.
 
 The operator has been designed so that step 1 is safe to run at any time and never leaves orphans behind, but steps 2 and 3 have manual boundaries called out below. Everything the operator wrote lives under `cpaas-system` on the storage cluster; there is no cluster-wide state to sweep beyond one webhook Secret.
 
